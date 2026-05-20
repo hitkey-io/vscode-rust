@@ -53,6 +53,7 @@ fn make_doc(name: &str, contents: &str, dirty: bool) -> Document {
         cursor_line: 1,
         cursor_col: 1,
         pending_nav: None,
+        pinned: false,
     };
     if dirty {
         doc.text.push_str("\n// edited");

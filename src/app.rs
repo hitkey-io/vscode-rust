@@ -28,6 +28,9 @@ pub struct App {
     search: SearchState,
     show_welcome: bool,
     menu_ids: Option<MenuIds>,
+    /// Open tab context menu: (document index, screen position where it
+    /// was summoned). `None` when no menu is showing.
+    tab_menu: Option<(usize, egui::Pos2)>,
 }
 
 impl App {
@@ -59,6 +62,7 @@ impl App {
             search: SearchState::default(),
             show_welcome: true,
             menu_ids: None,
+            tab_menu: None,
         }
     }
 
@@ -197,6 +201,71 @@ impl App {
         self.documents.clear();
         self.active_doc = None;
         self.status_message = "Closed all editors".into();
+    }
+
+    /// Close every editor except `keep` (pinned tabs are never closed).
+    fn close_others(&mut self, keep: usize) {
+        let Some(keep_path) = self.documents.get(keep).map(|d| d.path.clone()) else {
+            return;
+        };
+        self.documents
+            .retain(|d| d.pinned || d.path == keep_path);
+        self.active_doc = self
+            .documents
+            .iter()
+            .position(|d| d.path == keep_path)
+            .or(if self.documents.is_empty() { None } else { Some(0) });
+    }
+
+    /// Render the per-tab right-click context menu, if one is open.
+    fn show_tab_context_menu(&mut self, ctx: &Context) {
+        use crate::vscode_widgets::composite::{context_menu, ContextMenuItem, ContextMenuProps};
+
+        let Some((idx, pos)) = self.tab_menu else {
+            return;
+        };
+        if idx >= self.documents.len() {
+            self.tab_menu = None;
+            return;
+        }
+        let pinned = self.documents[idx].pinned;
+
+        let items = [
+            ContextMenuItem::new("Close").shortcut("⌘W"),
+            ContextMenuItem::new("Close Others"),
+            ContextMenuItem::new("Close All"),
+            ContextMenuItem::separator(),
+            ContextMenuItem::new(if pinned { "Unpin" } else { "Pin" }),
+        ];
+
+        let mut chosen: Option<usize> = None;
+        let area = egui::Area::new(egui::Id::new("tab_context_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                let resp = context_menu(ui, &ContextMenuProps::default(), &items);
+                chosen = resp.selected;
+            });
+
+        // Dismiss when an item is chosen or the user clicks elsewhere /
+        // presses Escape.
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if let Some(sel) = chosen {
+            match sel {
+                0 => self.close_doc(idx),
+                1 => self.close_others(idx),
+                2 => self.close_all(),
+                4 => {
+                    if let Some(doc) = self.documents.get_mut(idx) {
+                        doc.pinned = !doc.pinned;
+                    }
+                }
+                _ => {}
+            }
+            self.tab_menu = None;
+        } else if escape || area.response.clicked_elsewhere() {
+            self.tab_menu = None;
+        }
     }
 
     fn save_active(&mut self) {
@@ -650,9 +719,22 @@ impl App {
                         if let Some(idx) = tabs_action.close {
                             self.close_doc(idx);
                         }
+                        if let Some(idx) = tabs_action.toggle_pin {
+                            if let Some(doc) = self.documents.get_mut(idx) {
+                                doc.pinned = !doc.pinned;
+                            }
+                        }
+                        if let Some(idx) = tabs_action.right_clicked {
+                            let pos = ctx
+                                .pointer_interact_pos()
+                                .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+                            self.tab_menu = Some((idx, pos));
+                        }
                         if tabs_action.close_welcome {
                             self.show_welcome = false;
                         }
+
+                        self.show_tab_context_menu(ctx);
                     }
 
                     if let Some(idx) = self.active_doc {

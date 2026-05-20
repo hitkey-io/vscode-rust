@@ -1005,6 +1005,20 @@ fn tabs_with_disabled(ui: &mut Ui) {
     );
     write_usize(ui, "tabs_disabled", active);
 }
+fn tabs_pinned_preview(ui: &mut Ui) {
+    let mut active = persisted_usize(ui, "tabs_pinned", 2);
+    tabs(
+        ui,
+        &TabsProps::default(),
+        &[
+            Tab::new("config.rs").icon(icons::FILE).pinned(),
+            Tab::new("main.rs").icon(icons::FILE),
+            Tab::new("preview.rs").icon(icons::FILE).preview(),
+        ],
+        &mut active,
+    );
+    write_usize(ui, "tabs_pinned", active);
+}
 
 pub const TABS: Story = Story {
     widget: "tabs",
@@ -1029,6 +1043,12 @@ pub const TABS: Story = Story {
             caption: "Last tab disabled — dimmed and non-interactive",
             size: (440.0, 56.0),
             draw: tabs_with_disabled,
+        },
+        StoryState {
+            name: "pinned-preview",
+            caption: "First tab pinned (pin glyph), last tab is a dimmed preview",
+            size: (440.0, 56.0),
+            draw: tabs_pinned_preview,
         },
     ],
 };

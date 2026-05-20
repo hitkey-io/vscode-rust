@@ -59,6 +59,8 @@ codepoint!(EXPAND_ALL = 0xeb95);
 codepoint!(CLOSE = 0xea76);
 codepoint!(CIRCLE_FILLED = 0xea71);
 codepoint!(KEBAB_VERTICAL = 0xeb10);
+codepoint!(PINNED = 0xeba0);
+codepoint!(PIN = 0xeba1);
 
 // Status bar
 codepoint!(GIT_BRANCH = 0xec6f);

@@ -10,6 +10,9 @@ pub struct Document {
     pub cursor_col: usize,
     /// (line, byte_offset_within_line) — requested cursor placement, consumed by the view next frame.
     pub pending_nav: Option<(usize, usize)>,
+    /// Tab is pinned to the front of the strip and protected from
+    /// close-others / middle-click close.
+    pub pinned: bool,
 }
 
 impl Document {
@@ -34,6 +37,7 @@ impl Document {
             cursor_line: 1,
             cursor_col: 1,
             pending_nav: None,
+            pinned: false,
         })
     }
 
