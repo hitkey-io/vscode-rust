@@ -69,72 +69,12 @@ pub fn register_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Rasterise the VS Code product glyph (codicon `vscode`, 0xEC29) into a
-/// rounded-square app icon — white mark on the VS Code blue, matching the
-/// dock/taskbar identity. Returns `eframe::egui::IconData` for the viewport.
+/// The application/dock icon. Decodes the bundled `assets/app-icon.png`
+/// (the VS Code application icon) into RGBA for the viewport. Falls back to an
+/// empty icon if decoding fails.
 pub fn app_icon() -> egui::IconData {
-    use ab_glyph::{Font, FontRef, ScaleFont};
-
-    const SIZE: usize = 256;
-    let mut rgba = vec![0u8; SIZE * SIZE * 4];
-
-    // Rounded-square background in VS Code blue (#0098FF), corner radius ~22%.
-    let (bg_r, bg_g, bg_b) = (0x00u8, 0x98u8, 0xFFu8);
-    let radius = (SIZE as f32) * 0.22;
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let fx = x as f32;
-            let fy = y as f32;
-            // Distance into the rounded-rect corner mask (anti-aliased edge).
-            let cx = fx.max(radius).min(SIZE as f32 - radius);
-            let cy = fy.max(radius).min(SIZE as f32 - radius);
-            let d = ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt();
-            let cov = (radius - d + 0.5).clamp(0.0, 1.0);
-            if cov > 0.0 {
-                let i = (y * SIZE + x) * 4;
-                rgba[i] = bg_r;
-                rgba[i + 1] = bg_g;
-                rgba[i + 2] = bg_b;
-                rgba[i + 3] = (cov * 255.0) as u8;
-            }
-        }
-    }
-
-    // Rasterise the glyph centred on the background.
-    if let Ok(font) = FontRef::try_from_slice(include_bytes!("../assets/codicon.ttf")) {
-        let px = SIZE as f32 * 0.62;
-        let scaled = font.as_scaled(px);
-        let glyph_id = font.glyph_id(VSCODE);
-        let glyph = glyph_id.with_scale(px);
-        if let Some(outline) = font.outline_glyph(glyph) {
-            let bounds = outline.px_bounds();
-            let gw = bounds.width();
-            let gh = bounds.height();
-            let _ = scaled;
-            let ox = (SIZE as f32 - gw) / 2.0 - bounds.min.x;
-            let oy = (SIZE as f32 - gh) / 2.0 - bounds.min.y;
-            outline.draw(|gx, gy, c| {
-                let px = (gx as f32 + bounds.min.x + ox).round() as i32;
-                let py = (gy as f32 + bounds.min.y + oy).round() as i32;
-                if px < 0 || py < 0 || px >= SIZE as i32 || py >= SIZE as i32 {
-                    return;
-                }
-                let i = ((py as usize) * SIZE + px as usize) * 4;
-                // Alpha-composite white glyph over the blue background.
-                let a = c.clamp(0.0, 1.0);
-                rgba[i] = (255.0 * a + rgba[i] as f32 * (1.0 - a)) as u8;
-                rgba[i + 1] = (255.0 * a + rgba[i + 1] as f32 * (1.0 - a)) as u8;
-                rgba[i + 2] = (255.0 * a + rgba[i + 2] as f32 * (1.0 - a)) as u8;
-                rgba[i + 3] = rgba[i + 3].max((a * 255.0) as u8);
-            });
-        }
-    }
-
-    egui::IconData {
-        rgba,
-        width: SIZE as u32,
-        height: SIZE as u32,
-    }
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
+        .unwrap_or_default()
 }
 
 macro_rules! codepoint {

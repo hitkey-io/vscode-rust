@@ -41,7 +41,6 @@ usvg = "0.45"
 tiny-skia = "0.11"
 similar = "2"
 notify = "6"
-ab_glyph = "0.2"
 
 [dev-dependencies]
 egui_kittest = { version = "0.34", features = ["wgpu", "snapshot"] }
