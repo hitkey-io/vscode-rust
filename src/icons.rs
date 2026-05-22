@@ -54,6 +54,14 @@ pub fn register_fonts(ctx: &egui::Context) {
             .entry(egui::FontFamily::Monospace)
             .or_default()
             .insert(0, "Menlo".to_owned());
+        // Append Menlo as a fallback to the Proportional family so glyphs the
+        // bundled UI font lacks (e.g. the ⇧ ⌥ ⌘ ⌃ modifier symbols in keyboard
+        // hints) still render instead of showing missing-glyph boxes.
+        fonts
+            .families
+            .entry(egui::FontFamily::Proportional)
+            .or_default()
+            .push("Menlo".to_owned());
     } else {
         // No Menlo: alias editor-mono to the default monospace family.
         fonts.families.insert(

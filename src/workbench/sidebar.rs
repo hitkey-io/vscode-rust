@@ -159,8 +159,13 @@ fn explorer_panel(
         return;
     }
 
+    // Reserve room at the bottom for the collapsed OUTLINE + TIMELINE section
+    // headers, which VS Code pins under the file tree in the Explorer.
+    let section_h = 22.0;
+    let tree_h = (ui.available_height() - section_h * 2.0).max(0.0);
     ScrollArea::both()
         .auto_shrink([false, false])
+        .max_height(tree_h)
         .show(ui, |ui| {
             if let Some(root) = tree.as_mut() {
                 root_row(ui, root);
@@ -173,6 +178,32 @@ fn explorer_panel(
                 }
             }
         });
+
+    explorer_section_header(ui, "OUTLINE");
+    explorer_section_header(ui, "TIMELINE");
+}
+
+/// A collapsed Explorer section header (OUTLINE / TIMELINE): chevron + bold
+/// uppercase title. Inert for now — present for layout parity with VS Code.
+fn explorer_section_header(ui: &mut Ui, title: &str) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
+    let mid = rect.center().y;
+    let p = ui.painter();
+    p.text(
+        egui::pos2(rect.left() + 12.0, mid),
+        egui::Align2::CENTER_CENTER,
+        icons::CHEVRON_RIGHT.to_string(),
+        codicon_font(12.0),
+        Palette::FG_DESCRIPTION,
+    );
+    p.text(
+        egui::pos2(rect.left() + 22.0, mid),
+        egui::Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(11.0),
+        Palette::SIDEBAR_SECTION_HEADER_FG,
+    );
 }
 
 /// The workspace root as a bold, collapsible row (VS Code renders the open
