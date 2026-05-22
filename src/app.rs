@@ -739,6 +739,7 @@ impl App {
 
         TopBottomPanel::top("title_bar")
             .exact_height(bar_height)
+            .show_separator_line(false)
             .frame(
                 Frame::default()
                     .fill(Palette::TITLE_BAR_BG)
@@ -1044,6 +1045,7 @@ impl App {
 
         TopBottomPanel::bottom("status_bar")
             .exact_height(22.0)
+            .show_separator_line(false)
             .frame(
                 Frame::default()
                     .fill(Palette::STATUS_BAR_BG)
@@ -1096,6 +1098,7 @@ impl App {
         SidePanel::left("activity_bar")
             .exact_width(48.0)
             .resizable(false)
+            .show_separator_line(false)
             .frame(
                 Frame::default()
                     .fill(Palette::ACTIVITY_BAR_BG)
@@ -1126,6 +1129,7 @@ impl App {
             {
                 let resp = SidePanel::left(panel_id)
                     .resizable(true)
+                    .show_separator_line(false)
                     .width_range(170.0..=420.0)
                     .default_width(self.sidebar_width)
                     .frame(
