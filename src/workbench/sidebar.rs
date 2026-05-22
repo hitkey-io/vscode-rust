@@ -6,10 +6,7 @@ use crate::fs::FileNode;
 use crate::icons::{self, codicon_font};
 use crate::search::SearchState;
 use crate::theme::Palette;
-use crate::vscode_widgets::layout::{toolbar_container, ToolbarContainerProps};
-use crate::vscode_widgets::primitives::{
-    button, icon_button, label, ButtonProps, IconButtonProps, LabelProps,
-};
+use crate::vscode_widgets::primitives::{button, label, ButtonProps, LabelProps};
 
 use super::ActivityView;
 
@@ -32,6 +29,7 @@ pub fn show(
     git_graph_root: Option<&std::path::Path>,
     scm_ui: &mut super::source_control::ScmUiState,
     git_decorations: &std::collections::BTreeMap<PathBuf, crate::git::ChangeKind>,
+    active_file: Option<&std::path::Path>,
 ) -> SidebarOutput {
     let mut out = SidebarOutput {
         file_to_open: None,
@@ -52,7 +50,7 @@ pub fn show(
 
         match view {
             ActivityView::Explorer => {
-                explorer_panel(ui, workspace_root, tree, &mut out, git_decorations);
+                explorer_panel(ui, workspace_root, tree, &mut out, git_decorations, active_file);
             }
             ActivityView::Search => {
                 let search_out = crate::search::ui::show(ui, workspace_root, search);
@@ -97,59 +95,6 @@ fn header(ui: &mut Ui, view: ActivityView) {
     painter.rect_filled(bottom_border, 0.0, Palette::BORDER);
 }
 
-fn explorer_actions(ui: &mut Ui, out: &mut SidebarOutput, tree: &mut Option<FileNode>) {
-    let title_owned = tree
-        .as_ref()
-        .map(|n| n.name.to_uppercase())
-        .unwrap_or_default();
-
-    // Capture mutable refs via flags so the inline closure stays Fn-flavour.
-    let mut collapse_clicked = false;
-    let mut refresh_clicked = false;
-
-    ui.allocate_ui(egui::vec2(ui.available_width(), 30.0), |ui| {
-        ui.painter().rect_filled(
-            ui.available_rect_before_wrap(),
-            0.0,
-            Palette::SIDEBAR_BG,
-        );
-        toolbar_container(
-            ui,
-            &ToolbarContainerProps::new().title(&title_owned),
-            |ui| {
-                let collapse = icon_button(
-                    ui,
-                    &IconButtonProps::new(icons::COLLAPSE_ALL).icon_size(14.0),
-                )
-                .on_hover_text("Collapse Folders in Explorer");
-                if collapse.clicked() {
-                    collapse_clicked = true;
-                }
-                let refresh = icon_button(
-                    ui,
-                    &IconButtonProps::new(icons::REFRESH).icon_size(14.0),
-                )
-                .on_hover_text("Refresh Explorer");
-                if refresh.clicked() {
-                    refresh_clicked = true;
-                }
-            },
-        );
-    });
-
-    if collapse_clicked {
-        if let Some(root) = tree.as_mut() {
-            collapse_all(root);
-            root.expanded = true;
-        }
-    }
-    if refresh_clicked {
-        if let Some(root) = tree.as_mut() {
-            refresh_tree(root);
-        }
-    }
-    let _ = out;
-}
 
 fn collapse_all(node: &mut FileNode) {
     if node.is_dir {
@@ -177,6 +122,7 @@ fn explorer_panel(
     tree: &mut Option<FileNode>,
     out: &mut SidebarOutput,
     decorations: &Decorations,
+    active_file: Option<&std::path::Path>,
 ) {
     if workspace_root.is_none() || tree.is_none() {
         // Section subheader like VS Code
@@ -213,19 +159,98 @@ fn explorer_panel(
         return;
     }
 
-    explorer_actions(ui, out, tree);
-
     ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if let Some(root) = tree.as_mut() {
-                if let Some(children) = root.children.as_mut() {
-                    for child in children {
-                        render_node(ui, child, 0, out, decorations);
+                root_row(ui, root);
+                if root.expanded {
+                    if let Some(children) = root.children.as_mut() {
+                        for child in children {
+                            render_node(ui, child, 1, out, decorations, active_file);
+                        }
                     }
                 }
             }
         });
+}
+
+/// The workspace root as a bold, collapsible row (VS Code renders the open
+/// folder this way, with its action icons appearing on hover).
+fn root_row(ui: &mut Ui, root: &mut FileNode) {
+    let row_h = 22.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
+    let hovered = response.hovered();
+    if hovered {
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+    }
+    let mid = rect.center().y;
+    let chev = if root.expanded {
+        icons::CHEVRON_DOWN
+    } else {
+        icons::CHEVRON_RIGHT
+    };
+    ui.painter().text(
+        egui::pos2(rect.left() + 12.0, mid),
+        egui::Align2::CENTER_CENTER,
+        chev.to_string(),
+        codicon_font(12.0),
+        Palette::FG_DESCRIPTION,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 22.0, mid),
+        egui::Align2::LEFT_CENTER,
+        root.name.to_uppercase(),
+        FontId::proportional(11.0),
+        Palette::SIDEBAR_SECTION_HEADER_FG,
+    );
+
+    // Hover action cluster (new file / new folder / refresh / collapse all).
+    // Collapse-all and refresh are wired; new file/folder are visual for now.
+    let row_hovered = ui.rect_contains_pointer(rect);
+    let mut collapse_clicked = false;
+    let mut refresh_clicked = false;
+    if row_hovered {
+        let mut x = rect.right() - 18.0;
+        for (i, glyph) in [
+            icons::COLLAPSE_ALL,
+            icons::REFRESH,
+            icons::NEW_FOLDER,
+            icons::NEW_FILE,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let hit = egui::Rect::from_center_size(egui::pos2(x, mid), egui::vec2(20.0, row_h));
+            let r = ui.interact(hit, response.id.with(("rootact", i)), Sense::click());
+            let col = if r.hovered() { Palette::FG } else { Palette::FG_DESCRIPTION };
+            ui.painter().text(
+                egui::pos2(x, mid),
+                egui::Align2::CENTER_CENTER,
+                glyph.to_string(),
+                codicon_font(14.0),
+                col,
+            );
+            if r.clicked() {
+                match i {
+                    0 => collapse_clicked = true,
+                    1 => refresh_clicked = true,
+                    _ => {}
+                }
+            }
+            x -= 22.0;
+        }
+    }
+
+    if collapse_clicked {
+        collapse_all(root);
+        root.expanded = true;
+    } else if refresh_clicked {
+        refresh_tree(root);
+    } else if response.clicked() {
+        root.toggle();
+    }
 }
 
 /// The git decoration that applies to a node: direct change for files, or the
@@ -251,8 +276,9 @@ fn render_node(
     depth: usize,
     out: &mut SidebarOutput,
     decorations: &Decorations,
+    active_file: Option<&std::path::Path>,
 ) {
-    let indent = depth as f32 * 12.0 + 6.0;
+    let indent = depth as f32 * 8.0 + 8.0;
     let row_height = 22.0;
 
     let (rect, response) =
@@ -264,7 +290,13 @@ fn render_node(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
     });
 
-    if response.hovered() {
+    // Selected (active editor file) row gets the inactive-selection wash;
+    // hover gets the lighter list-hover wash.
+    let is_selected = !node.is_dir && active_file == Some(node.path.as_path());
+    if is_selected {
+        ui.painter()
+            .rect_filled(rect, 0.0, Palette::LIST_INACTIVE_SELECTION_BG);
+    } else if response.hovered() {
         ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
     }
 
@@ -288,25 +320,38 @@ fn render_node(
     }
     cursor.x += 12.0;
 
-    let icon = if node.is_dir {
-        if node.expanded {
+    if node.is_dir {
+        // Folders keep the codicon folder glyph (Seti defines no folder icons).
+        let icon = if node.expanded {
             icons::FOLDER_OPENED
         } else {
             icons::FOLDER
-        }
+        };
+        painter.text(
+            cursor + egui::vec2(0.0, mid_y),
+            egui::Align2::LEFT_CENTER,
+            icon.to_string(),
+            codicon_font(15.0),
+            Palette::FG_DESCRIPTION,
+        );
+    } else if let Some((glyph, color)) = crate::file_icons::icon_for(&node.path) {
+        // Files use the VS Code Seti file-type icon (glyph + theme colour).
+        painter.text(
+            cursor + egui::vec2(1.0, mid_y),
+            egui::Align2::LEFT_CENTER,
+            glyph.to_string(),
+            crate::file_icons::seti_font(16.0),
+            color,
+        );
     } else {
-        icons::FILE
-    };
-    // VS Code "2026 Dark" file icon theme paints folder/file icons in the same neutral
-    // foreground as the surrounding text — no special folder accent color.
-    let icon_color = Palette::FG_DESCRIPTION;
-    painter.text(
-        cursor + egui::vec2(0.0, mid_y),
-        egui::Align2::LEFT_CENTER,
-        icon.to_string(),
-        codicon_font(15.0),
-        icon_color,
-    );
+        painter.text(
+            cursor + egui::vec2(0.0, mid_y),
+            egui::Align2::LEFT_CENTER,
+            icons::FILE.to_string(),
+            codicon_font(15.0),
+            Palette::FG_DESCRIPTION,
+        );
+    }
     cursor.x += 20.0;
 
     // Git decoration: tint the name + paint a status letter on the right.
@@ -340,7 +385,7 @@ fn render_node(
     if node.is_dir && node.expanded {
         if let Some(children) = node.children.as_mut() {
             for child in children {
-                render_node(ui, child, depth + 1, out, decorations);
+                render_node(ui, child, depth + 1, out, decorations, active_file);
             }
         }
     }

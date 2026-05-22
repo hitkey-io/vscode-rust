@@ -1,9 +1,74 @@
-use egui::{Layout, Ui};
+use egui::{Align2, FontId, Layout, Sense, Ui};
 
 use crate::editor::Document;
-use crate::icons;
+use crate::icons::{self, codicon_font};
 use crate::theme::Palette;
 use crate::vscode_widgets::primitives::{label, LabelProps};
+
+/// A plain text status item with the standard horizontal padding (used in the
+/// right-to-left cluster: encoding, EOL, indentation, position).
+fn plain(ui: &mut Ui, text: &str) {
+    ui.add_space(6.0);
+    let g = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), FontId::proportional(11.5), Palette::FG);
+    let w = g.size().x + 6.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG);
+    }
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(11.5),
+        Palette::FG,
+    );
+}
+
+/// A left-cluster status segment: a codicon glyph (painted with the codicon
+/// font so it doesn't fall back to the proportional placeholder box) followed
+/// by a proportional text run, as a single clickable, hover-highlighted item.
+fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Response {
+    let icon_font = codicon_font(13.0);
+    let text_font = FontId::proportional(11.5);
+    let icon_w = ui
+        .painter()
+        .layout_no_wrap(glyph.to_string(), icon_font.clone(), Palette::FG)
+        .size()
+        .x;
+    let text_w = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), text_font.clone(), Palette::FG)
+        .size()
+        .x;
+    let gap = 4.0;
+    let pad = 4.0;
+    let w = pad + icon_w + gap + text_w + pad;
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG);
+    }
+    let cy = rect.center().y;
+    let p = ui.painter();
+    p.text(
+        egui::pos2(rect.left() + pad, cy),
+        Align2::LEFT_CENTER,
+        glyph.to_string(),
+        icon_font,
+        Palette::FG,
+    );
+    p.text(
+        egui::pos2(rect.left() + pad + icon_w + gap, cy),
+        Align2::LEFT_CENTER,
+        text,
+        text_font,
+        Palette::FG,
+    );
+    resp.on_hover_text(tip)
+}
 
 /// Domain events from the status bar (clicks on interactive segments).
 #[derive(Default)]
@@ -46,90 +111,76 @@ pub fn show(
 
     ui.allocate_ui_at_rect(row, |ui| {
         ui.horizontal_centered(|ui| {
-            ui.add_space(8.0);
+            // Far-left: remote indicator (`><`), like VS Code's status bar.
+            let _ = status_segment(ui, icons::REMOTE, "", "Open a Remote Window");
+            ui.add_space(2.0);
             // Left cluster: clickable Git branch (with a "*N" change counter)
             // + a sync segment, then any transient action message.
             if let Some(branch) = git_branch {
-                let glyph = format!("{} {}", icons::GIT_BRANCH, branch);
                 let text = if git_changes > 0 {
-                    format!("{glyph} *{git_changes}")
+                    format!("{branch} *{git_changes}")
                 } else {
-                    glyph
+                    branch.to_string()
                 };
-                let resp = ui
-                    .add(
-                        egui::Label::new(
-                            egui::RichText::new(&text)
-                                .size(11.5)
-                                .color(Palette::FG),
-                        )
-                        .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text("Checkout branch…");
+                let resp =
+                    status_segment(ui, icons::GIT_BRANCH, &text, "Checkout branch…");
                 if resp.clicked() {
                     out.branch_clicked = Some(resp.rect);
                 }
-                ui.add_space(10.0);
 
                 // Sync segment when an upstream exists (↓behind ↑ahead);
                 // otherwise a "Publish Branch" affordance.
                 let (ahead, behind) = git_ahead_behind;
-                let (seg, tip) = if git_has_upstream {
-                    (format!("{} {}↓ {}↑", icons::SYNC, behind, ahead),
-                     "Synchronize Changes (pull, then push)")
-                } else {
-                    (format!("{} Publish Branch", icons::CLOUD_UPLOAD),
-                     "Publish Branch")
-                };
-                let sresp = ui
-                    .add(
-                        egui::Label::new(
-                            egui::RichText::new(&seg).size(11.5).color(Palette::FG),
-                        )
-                        .sense(egui::Sense::click()),
+                let sresp = if git_has_upstream {
+                    status_segment(
+                        ui,
+                        icons::SYNC,
+                        &format!("{behind}↓ {ahead}↑"),
+                        "Synchronize Changes (pull, then push)",
                     )
-                    .on_hover_text(tip);
+                } else {
+                    status_segment(
+                        ui,
+                        icons::CLOUD_UPLOAD,
+                        "Publish Branch",
+                        "Publish Branch",
+                    )
+                };
                 if sresp.clicked() {
                     out.sync_clicked = true;
                 }
-                ui.add_space(10.0);
             }
+            // Problems counter (errors / warnings). Zeroed until diagnostics
+            // are wired, matching VS Code's always-present indicator.
+            let _ = status_segment(ui, icons::ERROR_ICON, "0", "No Problems");
+            let _ = status_segment(ui, icons::WARNING_ICON, "0", "No Problems");
+
             // Left: action message (Save status, Open results, etc.).
             if !message.is_empty() {
+                ui.add_space(4.0);
                 label(
                     ui,
                     &LabelProps::new(message).normal().size(11.5).color(Palette::FG),
                 );
             }
-            // Right: document state (Ln/Col, encoding, language).
+            // Right: document + editor state, right-to-left so the first item
+            // added sits at the far right (feedback), matching VS Code order.
             if let Some(doc) = active {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(12.0);
-                    let cursor =
-                        format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col);
-                    label(
+                    ui.add_space(6.0);
+                    let _ = status_segment(ui, icons::FEEDBACK, "", "Tweet Feedback");
+                    let _ = status_segment(ui, icons::BELL, "", "No Notifications");
+                    ui.add_space(2.0);
+                    let _ = status_segment(
                         ui,
-                        &LabelProps::new(doc.language_label())
-                            .normal()
-                            .size(11.5)
-                            .color(Palette::FG),
+                        icons::JSON_BRACES,
+                        doc.language_label(),
+                        "Select Language Mode",
                     );
-                    ui.add_space(14.0);
-                    label(
-                        ui,
-                        &LabelProps::new("UTF-8")
-                            .normal()
-                            .size(11.5)
-                            .color(Palette::FG),
-                    );
-                    ui.add_space(14.0);
-                    label(
-                        ui,
-                        &LabelProps::new(&cursor)
-                            .normal()
-                            .size(11.5)
-                            .color(Palette::FG),
-                    );
+                    plain(ui, "LF");
+                    plain(ui, "Spaces: 2");
+                    plain(ui, "UTF-8");
+                    plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col));
                 });
             }
         });

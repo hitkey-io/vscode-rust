@@ -1,4 +1,5 @@
 pub mod activity_bar;
+pub mod breadcrumbs;
 pub mod command_palette;
 pub mod sidebar;
 pub mod source_control;

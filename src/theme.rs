@@ -25,6 +25,8 @@ impl Palette {
     pub const FG: Color32 = rgb(0xBF, 0xBF, 0xBF);
     pub const FG_BRIGHT: Color32 = rgb(0xFF, 0xFF, 0xFF);
     pub const FG_DESCRIPTION: Color32 = rgb(0x8C, 0x8C, 0x8C);
+    /// `breadcrumb.foreground` — the path segments under the tab strip.
+    pub const BREADCRUMB_FG: Color32 = rgb(0xA9, 0xA9, 0xA9);
     pub const FG_INACTIVE: Color32 = rgb(0x8C, 0x8C, 0x8C);
     pub const ACTIVITY_FG: Color32 = rgb(0xBF, 0xBF, 0xBF);
 
@@ -86,6 +88,8 @@ impl Palette {
     pub const STATUS_BAR_BG: Color32 = Self::PANEL_BG;
     pub const STATUS_BAR_FG: Color32 = Self::FG;
     pub const STATUS_BAR_REMOTE_BG: Color32 = Self::ACCENT;
+    /// `statusBarItem.hoverBackground` — translucent white wash on hover.
+    pub const STATUS_BAR_ITEM_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(0x2A, 0x2A, 0x2A, 0xFF);
 
     // Git decorations — exact `gitDecoration.*` from themes/2026-dark.json.
     pub const GIT_MODIFIED_FG: Color32 = rgb(0xE5, 0xBA, 0x7D); // modified + stageModified
@@ -121,6 +125,10 @@ impl Palette {
     pub const TITLE_BAR_BG: Color32 = Self::PANEL_BG;
     pub const TITLE_BAR_FG: Color32 = Self::FG;
     pub const TITLE_BAR_INACTIVE_FG: Color32 = Self::FG_INACTIVE;
+    /// `commandCenter.background` / `commandCenter.border` — the centered pill.
+    pub const COMMAND_CENTER_BG: Color32 = Color32::from_rgba_premultiplied(0x1C, 0x1C, 0x1C, 0xFF);
+    pub const COMMAND_CENTER_BORDER: Color32 = rgb(0x2B, 0x2B, 0x2B);
+    pub const COMMAND_CENTER_FG: Color32 = rgb(0xCC, 0xCC, 0xCC);
 
     // Errors / state
     pub const ERROR: Color32 = rgb(0xF8, 0x51, 0x49);

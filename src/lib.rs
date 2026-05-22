@@ -1,6 +1,7 @@
 pub mod app;
 pub mod assets;
 pub mod editor;
+pub mod file_icons;
 pub mod git;
 pub mod vscode_widgets;
 pub mod fs;

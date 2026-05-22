@@ -8,6 +8,10 @@
 
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, TextFormat};
+
+// Mirror the editor metrics (VS Code macOS defaults: Menlo 12 / line-height 18).
+const EDITOR_FONT_SIZE: f32 = 12.0;
+const EDITOR_LINE_HEIGHT: f32 = EDITOR_FONT_SIZE * 1.5;
 use once_cell::sync::Lazy;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
@@ -44,7 +48,7 @@ pub fn build_layout_job(
 
     let syntax = pick_syntax(language);
     let mut highlighter = HighlightLines::new(syntax, &DARK_PLUS);
-    let font = FontId::monospace(13.5);
+    let font = crate::icons::editor_mono_font(EDITOR_FONT_SIZE);
 
     // Track nesting state across the whole document so brackets on different
     // lines still get matched.
@@ -56,7 +60,7 @@ pub fn build_layout_job(
         let regions = match highlighter.highlight_line(line, &SYNTAX_SET) {
             Ok(r) => r,
             Err(_) => {
-                job.append(line, 0.0, TextFormat::simple(font.clone(), default_fg()));
+                push_plain(&mut job, line, &font, default_fg());
                 continue;
             }
         };
@@ -121,6 +125,39 @@ pub fn build_layout_job(
     job
 }
 
+/// Per-line syntax-coloured runs `(text, color)`, for the minimap. Lighter
+/// than `build_layout_job` (no bracket colourisation), but uses the same
+/// syntect theme so the miniature matches the editor's palette.
+pub fn line_runs(text: &str, language: &str) -> Vec<Vec<(String, Color32)>> {
+    let syntax = pick_syntax(language);
+    let mut hl = HighlightLines::new(syntax, &DARK_PLUS);
+    let mut out = Vec::new();
+    for line in LinesWithEndings::from(text) {
+        let mut runs = Vec::new();
+        match hl.highlight_line(line, &SYNTAX_SET) {
+            Ok(regions) => {
+                for (style, snippet) in regions {
+                    let s = snippet.trim_end_matches('\n');
+                    if s.is_empty() {
+                        continue;
+                    }
+                    runs.push((
+                        s.to_string(),
+                        Color32::from_rgb(
+                            style.foreground.r,
+                            style.foreground.g,
+                            style.foreground.b,
+                        ),
+                    ));
+                }
+            }
+            Err(_) => runs.push((line.trim_end().to_string(), default_fg())),
+        }
+        out.push(runs);
+    }
+    out
+}
+
 fn push_plain(job: &mut LayoutJob, text: &str, font: &FontId, color: Color32) {
     if text.is_empty() {
         return;
@@ -131,6 +168,7 @@ fn push_plain(job: &mut LayoutJob, text: &str, font: &FontId, color: Color32) {
         TextFormat {
             font_id: font.clone(),
             color,
+            line_height: Some(EDITOR_LINE_HEIGHT),
             ..Default::default()
         },
     );
@@ -174,27 +212,36 @@ fn is_comment_color(c: syntect::highlighting::Color) -> bool {
 }
 
 fn pick_syntax(language: &str) -> &'static syntect::parsing::SyntaxReference {
-    let token = match language {
-        "rs" => "rs",
-        "ts" | "tsx" => "ts",
-        "jsx" | "js" => "js",
-        "py" => "py",
-        "go" => "go",
-        "c" => "c",
-        "cpp" | "cc" | "cxx" => "cpp",
-        "h" | "hpp" => "h",
-        "json" => "json",
-        "md" | "markdown" => "md",
-        "html" => "html",
-        "css" => "css",
-        "toml" => "toml",
-        "yaml" | "yml" => "yaml",
-        "sh" | "bash" | "zsh" => "sh",
-        other => other,
+    // syntect's default syntax set has no TypeScript; fall back to JavaScript
+    // (covers comments / keywords / strings / templates well enough for TS too).
+    let candidates: &[&str] = match language {
+        "rs" => &["rs"],
+        "ts" | "tsx" => &["ts", "tsx", "js"],
+        "jsx" | "js" => &["jsx", "js"],
+        "py" => &["py"],
+        "go" => &["go"],
+        "c" => &["c"],
+        "cpp" | "cc" | "cxx" => &["cpp"],
+        "h" | "hpp" => &["h", "cpp"],
+        "json" => &["json"],
+        "md" | "markdown" => &["md"],
+        "html" => &["html"],
+        "css" => &["css"],
+        "toml" => &["toml"],
+        "yaml" | "yml" => &["yaml"],
+        "sh" | "bash" | "zsh" => &["sh"],
+        other => {
+            return SYNTAX_SET
+                .find_syntax_by_token(other)
+                .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+        }
     };
-    SYNTAX_SET
-        .find_syntax_by_token(token)
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text())
+    for token in candidates {
+        if let Some(s) = SYNTAX_SET.find_syntax_by_token(token) {
+            return s;
+        }
+    }
+    SYNTAX_SET.find_syntax_plain_text()
 }
 
 fn default_fg() -> Color32 {

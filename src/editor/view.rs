@@ -4,15 +4,16 @@ use egui::text::{CCursor, CCursorRange};
 use egui::{Align2, FontId, Sense, TextEdit, Ui};
 
 use crate::git::DiffKind;
-use crate::icons::{codicon_font, CHEVRON_DOWN, CHEVRON_RIGHT};
+use crate::icons::{codicon_font, editor_mono_font, CHEVRON_DOWN, CHEVRON_RIGHT};
 use crate::theme::Palette;
 
 use super::buffer::Document;
 use super::fold;
 use super::highlight::build_layout_job;
 
-const EDITOR_FONT_SIZE: f32 = 13.5;
-const LINE_HEIGHT: f32 = EDITOR_FONT_SIZE * 1.4;
+// VS Code macOS defaults: Menlo, fontSize 12, lineHeight = 1.5 * fontSize = 18.
+const EDITOR_FONT_SIZE: f32 = 12.0;
+const LINE_HEIGHT: f32 = EDITOR_FONT_SIZE * 1.5;
 const CHEVRON_W: f32 = 16.0;
 /// Width of the diff decoration strip on the far left of the gutter.
 const DIFF_W: f32 = 3.0;
@@ -38,16 +39,42 @@ pub fn show(ui: &mut Ui, doc: &mut Document, diff: &BTreeMap<usize, DiffKind>) {
         .collect();
 
     let gutter_digits = line_count.to_string().len();
-    let char_w = 8.0_f32;
+    // Real advance width of a Menlo digit at the editor size.
+    let char_w = ui
+        .painter()
+        .layout_no_wrap("0".to_string(), editor_mono_font(EDITOR_FONT_SIZE), Palette::FG)
+        .size()
+        .x
+        .max(6.0);
     let number_w = (gutter_digits as f32 * char_w + 12.0).max(36.0);
     let gutter_width = number_w + CHEVRON_W;
 
     let has_folds = !doc.folded.is_empty();
 
-    if has_folds {
-        show_folded(ui, doc, &all_lines, &visible, &ranges, gutter_width, number_w, diff);
-    } else {
-        show_editable(ui, doc, line_count, &ranges, gutter_width, number_w, diff);
+    // Split the editor area: code body on the left, minimap on the right.
+    let full = ui.available_rect_before_wrap();
+    let show_minimap = full.width() > super::minimap::WIDTH + 200.0;
+    let mm_w = if show_minimap { super::minimap::WIDTH } else { 0.0 };
+    let editor_rect = egui::Rect::from_min_max(
+        full.min,
+        egui::pos2(full.right() - mm_w, full.bottom()),
+    );
+
+    ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect).layout(*ui.layout()), |ui| {
+        if has_folds {
+            show_folded(ui, doc, &all_lines, &visible, &ranges, gutter_width, number_w, diff);
+        } else {
+            show_editable(ui, doc, line_count, &ranges, gutter_width, number_w, diff);
+        }
+    });
+
+    if show_minimap {
+        let mm_rect = egui::Rect::from_min_max(
+            egui::pos2(full.right() - mm_w, full.top()),
+            full.max,
+        );
+        let visible_rows = (editor_rect.height() / LINE_HEIGHT).ceil() as usize;
+        super::minimap::show(ui, mm_rect, doc, 0, visible_rows);
     }
 }
 
@@ -114,7 +141,7 @@ fn paint_gutter(
             egui::pos2(gutter_rect.left() + number_w - 4.0, y),
             Align2::RIGHT_CENTER,
             ln.to_string(),
-            FontId::monospace(13.0),
+            editor_mono_font(EDITOR_FONT_SIZE),
             color,
         );
 

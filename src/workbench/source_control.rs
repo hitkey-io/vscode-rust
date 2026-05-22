@@ -30,6 +30,8 @@ pub struct ScmUiState {
     pub commit_messages: HashMap<PathBuf, String>,
     pub expanded: HashSet<PathBuf>,
     pub graph_open: bool,
+    /// The "CHANGES" parent group (multi-repo) collapse state.
+    pub changes_open: bool,
     /// Commit ids whose changed-file list is expanded in the GRAPH.
     pub expanded_commits: HashSet<String>,
     /// `false` until the first render decides the initial expand state.
@@ -83,11 +85,12 @@ pub fn show(
         return out;
     }
 
-    // First render: expand all repos (single-repo is always expanded anyway).
+    // First render: expand all repos + the CHANGES group.
     if !st.initialized {
         for r in &model.repos {
             st.expanded.insert(r.root.clone());
         }
+        st.changes_open = true;
         st.initialized = true;
     }
 
@@ -97,8 +100,19 @@ pub fn show(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.style_mut().spacing.scroll.floating = true;
-            for repo in &model.repos {
-                repo_section(ui, repo, single, st, &mut out);
+
+            if single {
+                if let Some(repo) = model.repos.first() {
+                    repo_section(ui, repo, true, st, &mut out);
+                }
+            } else {
+                // Multi-repo: a "CHANGES" parent group containing repo rows.
+                changes_header(ui, model, st);
+                if st.changes_open {
+                    for repo in &model.repos {
+                        repo_section(ui, repo, false, st, &mut out);
+                    }
+                }
             }
 
             // GRAPH section (active repo's history).
@@ -107,6 +121,22 @@ pub fn show(
         });
 
     out
+}
+
+/// The "CHANGES" parent group header (multi-repo) with collapse-all + "…".
+fn changes_header(ui: &mut Ui, _model: &Model, st: &mut ScmUiState) {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
+    let p = ui.painter();
+    let cy = rect.center().y;
+    let chev = if st.changes_open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+    p.text(egui::pos2(rect.left() + 12.0, cy), Align2::CENTER_CENTER, chev.to_string(),
+        codicon_font(12.0), Palette::FG_DESCRIPTION);
+    p.text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, "CHANGES",
+        FontId::proportional(11.0), Palette::FG);
+    if resp.clicked() {
+        st.changes_open = !st.changes_open;
+    }
 }
 
 fn title_row(ui: &mut Ui) {
@@ -145,23 +175,30 @@ fn repo_section(
         }
         let p = ui.painter();
         let cy = rect.center().y;
+        // Indent under the "CHANGES" parent group (+ a left guide line).
+        let lx = rect.left() + 12.0;
+        p.line_segment(
+            [egui::pos2(lx, rect.top()), egui::pos2(lx, rect.bottom())],
+            Stroke::new(1.0, Palette::VSCE_TREE_INDENT_GUIDE),
+        );
         let chev = if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-        p.text(egui::pos2(rect.left() + 12.0, cy), Align2::CENTER_CENTER, chev.to_string(),
+        p.text(egui::pos2(rect.left() + 24.0, cy), Align2::CENTER_CENTER, chev.to_string(),
             codicon_font(12.0), Palette::FG_DESCRIPTION);
-        p.text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, icons::REPO.to_string(),
+        p.text(egui::pos2(rect.left() + 38.0, cy), Align2::LEFT_CENTER, icons::REPO.to_string(),
             codicon_font(14.0), Palette::FG_DESCRIPTION);
-        p.text(egui::pos2(rect.left() + 46.0, cy), Align2::LEFT_CENTER, &repo.name,
+        p.text(egui::pos2(rect.left() + 58.0, cy), Align2::LEFT_CENTER, &repo.name,
             FontId::proportional(13.0), Palette::FG);
-        // Branch label after the name.
+        // Branch indicator: git-branch glyph (codicon font!) + name (proportional).
         let name_w = p
             .layout_no_wrap(repo.name.clone(), FontId::proportional(13.0), Palette::FG)
             .size()
             .x;
         if let Some(b) = &repo.branch {
-            let bx = rect.left() + 46.0 + name_w + 10.0;
-            p.text(egui::pos2(bx, cy), Align2::LEFT_CENTER,
-                format!("{} {}", icons::GIT_BRANCH, b), FontId::proportional(11.5),
-                Palette::FG_DESCRIPTION);
+            let bx = rect.left() + 58.0 + name_w + 12.0;
+            p.text(egui::pos2(bx, cy), Align2::LEFT_CENTER, icons::GIT_BRANCH.to_string(),
+                codicon_font(13.0), Palette::FG_DESCRIPTION);
+            p.text(egui::pos2(bx + 16.0, cy), Align2::LEFT_CENTER, b,
+                FontId::proportional(11.5), Palette::FG_DESCRIPTION);
         }
 
         if resp.clicked() {
@@ -245,22 +282,32 @@ fn commit_box(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut Scm
         }
     });
     ui.add_space(4.0);
+    // The Commit button is muted (disabled-look) when there is nothing to
+    // commit — matching VS Code, which only brightens it once changes exist.
+    let has_changes = repo.total() > 0;
+    let caret_a = if has_changes { 1.0 } else { 0.45 };
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         let total_w = ui.available_width() - 16.0;
         let mut clicked = false;
         ui.allocate_ui(egui::vec2(total_w - 24.0, 28.0), |ui| {
-            clicked = button(ui, &ButtonProps::new("✓ Commit").block()).clicked();
+            let mut bp = ButtonProps::new("Commit").icon(icons::CHECK).block();
+            if !has_changes {
+                bp = bp.disabled();
+            }
+            clicked = button(ui, &bp).clicked();
         });
-        if clicked {
+        if clicked && has_changes {
             out.commit = Some((repo.root.clone(), CommitMode::Plain));
         }
-        // Dropdown caret → Commit & Push / Commit & Sync.
+        // Dropdown caret → Commit & Push / Commit & Sync (same tint as button).
         let (rect, cr) = ui.allocate_exact_size(egui::vec2(22.0, 26.0), Sense::click());
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2), Palette::BUTTON_BG);
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(2),
+            with_alpha(Palette::BUTTON_BG, caret_a));
         ui.painter().text(rect.center(), Align2::CENTER_CENTER,
-            icons::CHEVRON_DOWN.to_string(), codicon_font(12.0), Palette::FG_BRIGHT);
-        if cr.clicked() {
+            icons::CHEVRON_DOWN.to_string(), codicon_font(12.0),
+            with_alpha(Palette::FG_BRIGHT, caret_a));
+        if cr.clicked() && has_changes {
             out.commit_menu = Some((repo.root.clone(), rect.left_bottom()));
         }
         ui.add_space(8.0);
@@ -565,19 +612,43 @@ fn graph_row(ui: &mut Ui, row: &GraphRow) -> bool {
             RefKind::Remote => Palette::SCM_REF_REMOTE,
             RefKind::Tag => Palette::SCM_REF_BASE,
         };
-        let txt = format!("{} {}", icons::GIT_BRANCH, rf.name);
-        let g = p.layout_no_wrap(txt.clone(), FontId::proportional(11.0), col);
-        let w = g.size().x + 10.0;
+        // The ref glyph must be drawn with the codicon font; a tag uses the
+        // tag glyph, branches/remotes the git-branch fork.
+        let glyph = if rf.kind == RefKind::Tag { icons::TAG } else { icons::GIT_BRANCH };
+        let icon_font = codicon_font(11.0);
+        let name_font = FontId::proportional(11.0);
+        let icon_w = p.layout_no_wrap(glyph.to_string(), icon_font.clone(), col).size().x;
+        let name_g = p.layout_no_wrap(rf.name.clone(), name_font.clone(), col);
+        let w = icon_w + 4.0 + name_g.size().x + 10.0;
         let pill = egui::Rect::from_min_size(egui::pos2(tx, mid - 8.0), egui::vec2(w, 16.0));
         p.rect_filled(pill, egui::CornerRadius::same(8), with_alpha(col, 0.18));
-        p.text(egui::pos2(tx + 5.0, mid), Align2::LEFT_CENTER, txt, FontId::proportional(11.0), col);
+        p.text(egui::pos2(tx + 5.0, mid), Align2::LEFT_CENTER, glyph.to_string(), icon_font, col);
+        p.text(egui::pos2(tx + 5.0 + icon_w + 4.0, mid), Align2::LEFT_CENTER, &rf.name, name_font, col);
         tx += w + 4.0;
     }
-    p.text(egui::pos2(tx, mid), Align2::LEFT_CENTER, &row.commit.summary,
-        FontId::proportional(12.5), Palette::FG);
-    // Author, right-aligned.
+    // Author, right-aligned; reserve its width so the subject can be clipped
+    // before it collides with it.
+    let author_font = FontId::proportional(11.0);
+    let author_w = p
+        .layout_no_wrap(row.commit.author.clone(), author_font.clone(), Palette::FG_DESCRIPTION)
+        .size()
+        .x;
     p.text(egui::pos2(rect.right() - 10.0, mid), Align2::RIGHT_CENTER, &row.commit.author,
-        FontId::proportional(11.0), Palette::FG_DESCRIPTION);
+        author_font, Palette::FG_DESCRIPTION);
+    // Subject, single line, ellipsised to the space left of the author column.
+    let avail = (rect.right() - 10.0 - author_w - 12.0 - tx).max(20.0);
+    let mut job = egui::text::LayoutJob::single_section(
+        row.commit.summary.clone(),
+        egui::text::TextFormat::simple(FontId::proportional(12.5), Palette::FG),
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: avail,
+        max_rows: 1,
+        overflow_character: Some('…'),
+        ..Default::default()
+    };
+    let galley = p.layout_job(job);
+    p.galley(egui::pos2(tx, mid - galley.size().y * 0.5), galley, Palette::FG);
 
     resp.clicked()
 }

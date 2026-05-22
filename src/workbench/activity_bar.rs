@@ -88,6 +88,51 @@ pub fn show(
                     }
                 }
             }
+
+            // Run & Debug and Extensions complete the icon column visually
+            // (VS Code's default activity bar). They are inert for now.
+            for (glyph, label) in [
+                (icons::DEBUG_ALT, "Run and Debug (⇧⌘D)"),
+                (icons::EXTENSIONS, "Extensions (⇧⌘X)"),
+            ] {
+                let resp = icon_button(
+                    ui,
+                    &IconButtonProps::new(glyph)
+                        .size(ITEM_HEIGHT)
+                        .icon_size(24.0)
+                        .no_hover_bg()
+                        .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
+                        .hover_color(Palette::ACTIVITY_BAR_FG),
+                );
+                resp.on_hover_text(label);
+            }
+        },
+    );
+
+    // Bottom cluster: Accounts + Manage (gear), anchored to the bar's bottom.
+    let bottom = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.bottom() - 2.0 * ITEM_HEIGHT),
+        rect.max,
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(bottom).layout(Layout::top_down(Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (glyph, label) in [
+                (icons::ACCOUNT, "Accounts"),
+                (icons::SETTINGS_GEAR, "Manage"),
+            ] {
+                let resp = icon_button(
+                    ui,
+                    &IconButtonProps::new(glyph)
+                        .size(ITEM_HEIGHT)
+                        .icon_size(24.0)
+                        .no_hover_bg()
+                        .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
+                        .hover_color(Palette::ACTIVITY_BAR_FG),
+                );
+                resp.on_hover_text(label);
+            }
         },
     );
 }

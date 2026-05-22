@@ -47,6 +47,28 @@ impl FileNode {
             self.ensure_loaded();
         }
     }
+
+    /// Expand every ancestor folder of `target` so the file becomes visible in
+    /// the tree (VS Code's "reveal active file"). Loads children lazily along
+    /// the path. Returns true if `target` is within this subtree.
+    pub fn reveal(&mut self, target: &std::path::Path) -> bool {
+        if target == self.path {
+            return true;
+        }
+        if !self.is_dir || !target.starts_with(&self.path) {
+            return false;
+        }
+        self.expanded = true;
+        self.ensure_loaded();
+        if let Some(children) = self.children.as_mut() {
+            for child in children {
+                if target.starts_with(&child.path) && child.reveal(target) {
+                    return true;
+                }
+            }
+        }
+        true
+    }
 }
 
 /// Files/folders never shown in the Explorer. Mirrors VS Code's default

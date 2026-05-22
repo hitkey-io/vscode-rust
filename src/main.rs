@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use vscode_rust::{app, menubar};
+use vscode_rust::{app, icons, menubar};
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -35,7 +35,8 @@ fn main() -> eframe::Result<()> {
         .with_title_shown(false)
         .with_titlebar_shown(false)
         .with_fullsize_content_view(true)
-        .with_titlebar_buttons_shown(true);
+        .with_titlebar_buttons_shown(true)
+        .with_icon(icons::app_icon());
 
     let native_options = eframe::NativeOptions {
         viewport,

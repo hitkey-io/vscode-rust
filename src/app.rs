@@ -317,6 +317,11 @@ impl App {
     }
 
     fn open_file(&mut self, path: PathBuf) {
+        // Reveal the file in the Explorer tree (expand its ancestor folders),
+        // matching VS Code's "reveal active file" behaviour.
+        if let Some(root) = self.file_tree.as_mut() {
+            root.reveal(&path);
+        }
         if let Some(idx) = self.documents.iter().position(|d| d.path == path) {
             self.active_doc = Some(idx);
             self.refresh_git_line_changes();
@@ -742,36 +747,73 @@ impl App {
                 );
                 ui.painter().rect_filled(bottom_border, 0.0, Palette::BORDER);
 
-                // Centered title
-                let title = match (&self.workspace_root, self.active_doc.and_then(|i| self.documents.get(i))) {
-                    (Some(root), Some(doc)) => {
-                        let dirty = if doc.dirty { " ●" } else { "" };
-                        format!(
-                            "{}{} — {} — vscode-rust",
-                            doc.display_name(),
-                            dirty,
-                            root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-                        )
-                    }
-                    (Some(root), None) => {
-                        format!(
-                            "{} — vscode-rust",
-                            root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-                        )
-                    }
-                    (None, Some(doc)) => {
-                        let dirty = if doc.dirty { " ●" } else { "" };
-                        format!("{}{} — vscode-rust", doc.display_name(), dirty)
-                    }
-                    _ => "vscode-rust".to_string(),
-                };
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    title,
-                    egui::FontId::proportional(13.0),
-                    Palette::TITLE_BAR_FG,
+                use crate::icons::codicon_font;
+                let p = ui.painter().clone();
+                let cy = rect.center().y;
+
+                // Left: back / forward navigation arrows (after the traffic lights).
+                let nav_x = rect.left() + left_inset + 6.0;
+                for (i, glyph) in [crate::icons::ARROW_LEFT, crate::icons::ARROW_RIGHT].into_iter().enumerate() {
+                    p.text(
+                        egui::pos2(nav_x + i as f32 * 26.0, cy),
+                        egui::Align2::LEFT_CENTER,
+                        glyph.to_string(),
+                        codicon_font(16.0),
+                        Palette::TITLE_BAR_INACTIVE_FG,
+                    );
+                }
+
+                // Centre: command-center pill (search icon + workspace name).
+                let workspace_name = self
+                    .workspace_root
+                    .as_ref()
+                    .and_then(|r| r.file_name())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "vscode-rust".to_string());
+                let pill_w = 360.0_f32.min(rect.width() * 0.4);
+                let pill = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, cy),
+                    egui::vec2(pill_w, 22.0),
                 );
+                p.rect(
+                    pill,
+                    egui::CornerRadius::same(6),
+                    Palette::COMMAND_CENTER_BG,
+                    egui::Stroke::new(1.0, Palette::COMMAND_CENTER_BORDER),
+                    egui::StrokeKind::Inside,
+                );
+                p.text(
+                    egui::pos2(pill.left() + 10.0, cy),
+                    egui::Align2::LEFT_CENTER,
+                    crate::icons::SEARCH.to_string(),
+                    codicon_font(13.0),
+                    Palette::COMMAND_CENTER_FG,
+                );
+                p.text(
+                    pill.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &workspace_name,
+                    egui::FontId::proportional(12.5),
+                    Palette::COMMAND_CENTER_FG,
+                );
+
+                // Right: layout-control cluster (toggle sidebars / panel / customise).
+                let mut rx = rect.right() - 22.0;
+                for glyph in [
+                    crate::icons::LAYOUT,
+                    crate::icons::LAYOUT_SIDEBAR_RIGHT,
+                    crate::icons::LAYOUT_PANEL,
+                    crate::icons::LAYOUT_SIDEBAR_LEFT,
+                ] {
+                    p.text(
+                        egui::pos2(rx, cy),
+                        egui::Align2::CENTER_CENTER,
+                        glyph.to_string(),
+                        codicon_font(16.0),
+                        Palette::TITLE_BAR_INACTIVE_FG,
+                    );
+                    rx -= 30.0;
+                }
 
                 // VS Code on macOS uses the native system menu bar (NSMenu) instead of an
                 // in-window one. Only render the in-window menu bar on non-macOS platforms,
@@ -1087,6 +1129,10 @@ impl App {
                     )
                     .show(ctx, |ui| {
                         let graph_root = self.active_repo_root();
+                        let active_file: Option<PathBuf> = self
+                            .active_doc
+                            .and_then(|i| self.documents.get(i))
+                            .map(|d| d.path.clone());
                         sidebar::show(
                             ui,
                             self.active_view,
@@ -1098,6 +1144,7 @@ impl App {
                             graph_root.as_deref(),
                             &mut self.scm_ui,
                             &self.git_decorations,
+                            active_file.as_deref(),
                         )
                     });
                 sidebar_output = resp.inner;
@@ -1173,6 +1220,14 @@ impl App {
                     }
 
                     if let Some(idx) = self.active_doc {
+                        // Breadcrumbs row (path of the active file), like VS Code.
+                        if let Some(doc) = self.documents.get(idx) {
+                            crate::workbench::breadcrumbs::show(
+                                ui,
+                                &doc.path,
+                                self.workspace_root.as_deref(),
+                            );
+                        }
                         if let Some(doc) = self.documents.get_mut(idx) {
                             crate::editor::view::show(ui, doc, &self.git_line_changes);
                         }
