@@ -9,6 +9,7 @@ fn main() -> eframe::Result<()> {
     let mut cli_search: Option<String> = None;
     let mut cli_files: Vec<PathBuf> = Vec::new();
     let mut cli_no_welcome = false;
+    let mut cli_scm = false;
     let mut i = 2usize;
     while i < args.len() {
         if args[i] == "--search" {
@@ -16,6 +17,9 @@ fn main() -> eframe::Result<()> {
             i += 2;
         } else if args[i] == "--no-welcome" {
             cli_no_welcome = true;
+            i += 1;
+        } else if args[i] == "--scm" {
+            cli_scm = true;
             i += 1;
         } else {
             cli_files.push(PathBuf::from(&args[i]));
@@ -66,6 +70,9 @@ fn main() -> eframe::Result<()> {
             }
             if cli_no_welcome {
                 a.bootstrap_hide_welcome();
+            }
+            if cli_scm {
+                a.bootstrap_scm();
             }
             // Keep the InstalledMenu alive for the duration of the app.
             std::mem::forget(installed_menu);

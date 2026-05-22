@@ -291,14 +291,24 @@ fn render_results(
             Palette::FG_DESCRIPTION,
         );
 
-        // File icon
-        painter.text(
-            egui::pos2(rect.left() + 28.0, mid_y),
-            egui::Align2::LEFT_CENTER,
-            icons::FILE.to_string(),
-            codicon_font(14.0),
-            Palette::FG_DESCRIPTION,
-        );
+        // File icon — Seti file-type glyph (matches the Explorer tree).
+        if let Some((glyph, color)) = crate::file_icons::icon_for(&fr.path) {
+            painter.text(
+                egui::pos2(rect.left() + 28.0, mid_y),
+                egui::Align2::LEFT_CENTER,
+                glyph.to_string(),
+                crate::file_icons::seti_font(15.0),
+                color,
+            );
+        } else {
+            painter.text(
+                egui::pos2(rect.left() + 28.0, mid_y),
+                egui::Align2::LEFT_CENTER,
+                icons::FILE.to_string(),
+                codicon_font(14.0),
+                Palette::FG_DESCRIPTION,
+            );
+        }
 
         // File name
         let name_galley = painter.layout_no_wrap(
@@ -380,13 +390,16 @@ fn draw_match_row(
     // Indent to align under file name
     let indent_x = rect.left() + 36.0;
 
-    // Try to highlight the matched range inside the preview.
+    // Highlight the matched range inside the preview (engine gives us the
+    // preview-relative byte offset + length).
     let preview = hit.preview.clone();
-    // Find the match span inside the preview (preview is trim_start()'ed, so
-    // adjust the byte position relative to it).
-    let highlight_start = locate_highlight_start(&preview, hit);
-    let highlight_len = hit_byte_len(hit);
-    let font = FontId::monospace(12.0);
+    let highlight_start = if hit.match_len > 0 && hit.preview_start <= preview.len() {
+        Some(hit.preview_start)
+    } else {
+        None
+    };
+    let highlight_len = hit.match_len;
+    let font = crate::icons::editor_mono_font(12.0);
 
     if let Some(start) = highlight_start {
         let before = &preview[..start];
@@ -436,20 +449,6 @@ fn draw_match_row(
     if resp.clicked() {
         out.navigate_to = Some((file, hit.line, hit.byte_start));
     }
-}
-
-fn locate_highlight_start(preview: &str, hit: &super::engine::SearchHit) -> Option<usize> {
-    // We can't reliably recompute the position because the preview was
-    // produced by `trim_start()` on the original line. Best-effort: find the
-    // first occurrence of the searched-for text — but we don't have it here.
-    // Fallback: assume the engine's byte_start - leading_whitespace_count works.
-    // For simplicity, return None to disable highlighting if not directly available.
-    let _ = (preview, hit);
-    None
-}
-
-fn hit_byte_len(_hit: &super::engine::SearchHit) -> usize {
-    0
 }
 
 fn plural(n: usize) -> &'static str {

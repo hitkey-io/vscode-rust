@@ -91,6 +91,7 @@ pub fn show(
             st.expanded.insert(r.root.clone());
         }
         st.changes_open = true;
+        st.graph_open = true; // VS Code shows the GRAPH section expanded by default
         st.initialized = true;
     }
 

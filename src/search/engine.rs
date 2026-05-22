@@ -11,6 +11,11 @@ pub struct SearchHit {
     pub line: usize,
     pub byte_start: usize,
     pub preview: String,
+    /// Byte offset of the match within `preview` (which is the line trimmed of
+    /// leading whitespace), for highlighting.
+    pub preview_start: usize,
+    /// Byte length of the matched text.
+    pub match_len: usize,
 }
 
 pub struct FileResult {
@@ -223,11 +228,14 @@ fn walk(root: &Path, matcher: &Matcher, outcome: &mut SearchOutcome) {
         let mut file_hits: Vec<SearchHit> = Vec::new();
         let mut stop = false;
         for (i, line) in content.lines().enumerate() {
-            for (s, _e) in matcher.find_all(line) {
+            let leading = line.len() - line.trim_start().len();
+            for (s, e) in matcher.find_all(line) {
                 file_hits.push(SearchHit {
                     line: i + 1,
                     byte_start: s,
                     preview: trim_preview(line),
+                    preview_start: s.saturating_sub(leading),
+                    match_len: e.saturating_sub(s),
                 });
                 if outcome.total_hits + file_hits.len() >= MAX_TOTAL_HITS {
                     outcome.truncated = true;

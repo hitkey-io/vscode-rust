@@ -149,6 +149,12 @@ impl App {
         self.show_welcome = false;
     }
 
+    /// Open the Source Control view on launch (used by the `--scm` CLI flag).
+    pub fn bootstrap_scm(&mut self) {
+        self.show_view(ActivityView::SourceControl);
+        self.sidebar_visible = true;
+    }
+
     /// Force-hide the Welcome tab on launch (used by `--no-welcome` CLI flag).
     pub fn bootstrap_hide_welcome(&mut self) {
         self.show_welcome = false;
