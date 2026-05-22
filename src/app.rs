@@ -1388,42 +1388,37 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
 
             ui.add_space(36.0);
 
-            let col_w = (content_w - 32.0) / 2.0;
+            // Left column: Start + Recent (stacked); right column: Walkthroughs.
+            let left_w = (content_w * 0.52).min(content_w - 260.0).max(220.0);
+            let right_w = content_w - left_w - 40.0;
             ui.horizontal_top(|ui| {
                 ui.allocate_ui_with_layout(
-                    egui::vec2(col_w, 240.0),
+                    egui::vec2(left_w, 320.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.label(
-                            egui::RichText::new("Start")
-                                .size(20.0)
-                                .color(Palette::FG)
-                                .strong(),
+                            egui::RichText::new("Start").size(20.0).color(Palette::FG).strong(),
                         );
                         ui.add_space(8.0);
-                        if welcome_link(ui, "Open File…").clicked() {
+                        let _ = welcome_link_icon(ui, Some(crate::icons::NEW_FILE), "New File…");
+                        if welcome_link_icon(ui, Some(crate::icons::FILE), "Open File…").clicked() {
                             action.open_file = true;
                         }
-                        if welcome_link(ui, "Open Folder…").clicked() {
+                        if welcome_link_icon(ui, Some(crate::icons::FOLDER_OPENED), "Open Folder…")
+                            .clicked()
+                        {
                             action.open_folder = true;
                         }
-                        if welcome_link(ui, "Show All Commands  ⇧⌘P").clicked() {
+                        let _ = welcome_link_icon(ui, Some(crate::icons::REPO), "Clone Git Repository…");
+                        if welcome_link_icon(ui, Some(crate::icons::SEARCH), "Show All Commands  ⇧⌘P")
+                            .clicked()
+                        {
                             action.open_palette = true;
                         }
-                    },
-                );
 
-                ui.add_space(32.0);
-
-                ui.allocate_ui_with_layout(
-                    egui::vec2(col_w, 240.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
+                        ui.add_space(28.0);
                         ui.label(
-                            egui::RichText::new("Recent")
-                                .size(20.0)
-                                .color(Palette::FG)
-                                .strong(),
+                            egui::RichText::new("Recent").size(20.0).color(Palette::FG).strong(),
                         );
                         ui.add_space(8.0);
                         ui.label(
@@ -1432,14 +1427,102 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
                         );
                     },
                 );
+
+                ui.add_space(40.0);
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_w, 320.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new("Walkthroughs")
+                                .size(20.0)
+                                .color(Palette::FG)
+                                .strong(),
+                        );
+                        ui.add_space(10.0);
+                        walkthrough_card(
+                            ui,
+                            "Get Started with VS Code",
+                            "Customize your editor, learn the basics, and start coding",
+                        );
+                        ui.add_space(8.0);
+                        walkthrough_card(ui, "Learn the Fundamentals", "");
+                    },
+                );
             });
+
+            ui.add_space(40.0);
+            let mut show_on_startup = true;
+            ui.checkbox(
+                &mut show_on_startup,
+                egui::RichText::new("Show welcome page on startup")
+                    .size(13.0)
+                    .color(Palette::FG_DESCRIPTION),
+            );
         });
     });
 
     action
 }
 
+/// A Walkthroughs card: codicon tile + title + optional subtitle.
+fn walkthrough_card(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    let h = if subtitle.is_empty() { 40.0 } else { 56.0 };
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let bg = if resp.hovered() {
+        Palette::LIST_HOVER_BG
+    } else {
+        Palette::SIDEBAR_SECTION_HEADER_BG
+    };
+    ui.painter().rect(
+        rect,
+        egui::CornerRadius::same(6),
+        bg,
+        egui::Stroke::new(1.0, Palette::BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let icon_c = egui::pos2(rect.left() + 22.0, rect.center().y);
+    ui.painter().text(
+        icon_c,
+        egui::Align2::CENTER_CENTER,
+        crate::icons::VSCODE.to_string(),
+        crate::icons::codicon_font(20.0),
+        Palette::ACCENT,
+    );
+    let tx = rect.left() + 44.0;
+    if subtitle.is_empty() {
+        ui.painter().text(
+            egui::pos2(tx, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(13.5),
+            Palette::FG,
+        );
+    } else {
+        ui.painter().text(
+            egui::pos2(tx, rect.top() + 16.0),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(13.5),
+            Palette::FG,
+        );
+        ui.painter().text(
+            egui::pos2(tx, rect.top() + 36.0),
+            egui::Align2::LEFT_CENTER,
+            subtitle,
+            egui::FontId::proportional(12.0),
+            Palette::FG_DESCRIPTION,
+        );
+    }
+}
+
 fn welcome_link(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    welcome_link_icon(ui, None, text)
+}
+
+fn welcome_link_icon(ui: &mut egui::Ui, icon: Option<char>, text: &str) -> egui::Response {
     let parts: Vec<&str> = text.splitn(2, "  ").collect();
     let label = parts[0];
     let shortcut = parts.get(1).copied().unwrap_or("");
@@ -1455,8 +1538,19 @@ fn welcome_link(ui: &mut egui::Ui, text: &str) -> egui::Response {
     } else {
         Palette::ACCENT
     };
+    let mut tx = rect.left();
+    if let Some(g) = icon {
+        painter.text(
+            egui::pos2(rect.left() + 8.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            g.to_string(),
+            crate::icons::codicon_font(15.0),
+            color,
+        );
+        tx += 24.0;
+    }
     painter.text(
-        rect.left_center(),
+        egui::pos2(tx, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
         egui::FontId::proportional(14.0),
@@ -1464,7 +1558,7 @@ fn welcome_link(ui: &mut egui::Ui, text: &str) -> egui::Response {
     );
     if !shortcut.is_empty() {
         painter.text(
-            rect.left_center() + egui::vec2(label.len() as f32 * 7.5 + 16.0, 0.0),
+            egui::pos2(tx + label.len() as f32 * 7.5 + 16.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             shortcut,
             egui::FontId::proportional(12.0),
