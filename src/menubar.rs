@@ -90,16 +90,21 @@ pub fn install() -> InstalledMenu {
         &close_folder,
     ]);
 
-    // Edit menu — predefined items for standard text editing
+    // Edit menu. NOTE: we deliberately do NOT use PredefinedMenuItem here.
+    // Predefined cut/copy/paste/selectAll bind the native Cmd+X/C/V/A
+    // accelerators and route through the NSResponder chain, which cannot reach
+    // egui's custom-drawn text — so they would swallow the shortcuts and do
+    // nothing. Plain items without accelerators keep the menu present for
+    // parity while letting egui's editor handle the shortcuts directly.
     let edit_m = Submenu::new("Edit", true);
     let _ = edit_m.append_items(&[
-        &PredefinedMenuItem::undo(None),
-        &PredefinedMenuItem::redo(None),
+        &MenuItem::new("Undo", true, None),
+        &MenuItem::new("Redo", true, None),
         &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::cut(None),
-        &PredefinedMenuItem::copy(None),
-        &PredefinedMenuItem::paste(None),
-        &PredefinedMenuItem::select_all(None),
+        &MenuItem::new("Cut", true, None),
+        &MenuItem::new("Copy", true, None),
+        &MenuItem::new("Paste", true, None),
+        &MenuItem::new("Select All", true, None),
     ]);
 
     // View menu
