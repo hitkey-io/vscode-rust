@@ -17,6 +17,8 @@ pub struct SidebarOutput {
     pub file_to_open: Option<PathBuf>,
     pub open_folder_requested: bool,
     pub navigate_to: Option<(PathBuf, usize, usize)>,
+    /// Source Control events (multi-repo). Default = no-op.
+    pub scm: super::source_control::ScmOutput,
 }
 
 pub fn show(
@@ -25,26 +27,45 @@ pub fn show(
     workspace_root: &Option<PathBuf>,
     tree: &mut Option<FileNode>,
     search: &mut SearchState,
+    git_model: &crate::git::Model,
+    git_history: &[crate::git::GraphRow],
+    git_graph_root: Option<&std::path::Path>,
+    scm_ui: &mut super::source_control::ScmUiState,
+    git_decorations: &std::collections::BTreeMap<PathBuf, crate::git::ChangeKind>,
 ) -> SidebarOutput {
     let mut out = SidebarOutput {
         file_to_open: None,
         open_folder_requested: false,
         navigate_to: None,
+        scm: super::source_control::ScmOutput::default(),
     };
 
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
 
     ui.vertical(|ui| {
-        header(ui, view);
+        // The SCM view draws its own "SOURCE CONTROL" title; others get the
+        // sidebar section header here.
+        if view != ActivityView::SourceControl {
+            header(ui, view);
+        }
 
         match view {
             ActivityView::Explorer => {
-                explorer_panel(ui, workspace_root, tree, &mut out);
+                explorer_panel(ui, workspace_root, tree, &mut out, git_decorations);
             }
             ActivityView::Search => {
                 let search_out = crate::search::ui::show(ui, workspace_root, search);
                 out.navigate_to = search_out.navigate_to;
+            }
+            ActivityView::SourceControl => {
+                out.scm = super::source_control::show(
+                    ui,
+                    git_model,
+                    git_history,
+                    git_graph_root,
+                    scm_ui,
+                );
             }
         }
     });
@@ -56,6 +77,7 @@ fn header(ui: &mut Ui, view: ActivityView) {
     let title = match view {
         ActivityView::Explorer => "EXPLORER",
         ActivityView::Search => "SEARCH",
+        ActivityView::SourceControl => "SOURCE CONTROL",
     };
     let (header_rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 35.0), Sense::hover());
@@ -147,11 +169,14 @@ fn refresh_tree(node: &mut FileNode) {
     }
 }
 
+type Decorations = std::collections::BTreeMap<PathBuf, crate::git::ChangeKind>;
+
 fn explorer_panel(
     ui: &mut Ui,
     workspace_root: &Option<PathBuf>,
     tree: &mut Option<FileNode>,
     out: &mut SidebarOutput,
+    decorations: &Decorations,
 ) {
     if workspace_root.is_none() || tree.is_none() {
         // Section subheader like VS Code
@@ -196,14 +221,37 @@ fn explorer_panel(
             if let Some(root) = tree.as_mut() {
                 if let Some(children) = root.children.as_mut() {
                     for child in children {
-                        render_node(ui, child, 0, out);
+                        render_node(ui, child, 0, out, decorations);
                     }
                 }
             }
         });
 }
 
-fn render_node(ui: &mut Ui, node: &mut FileNode, depth: usize, out: &mut SidebarOutput) {
+/// The git decoration that applies to a node: direct change for files, or the
+/// strongest descendant change rolled up for folders (VS Code tints a folder
+/// when anything inside it changed).
+fn node_decoration(
+    node: &FileNode,
+    decorations: &Decorations,
+) -> Option<crate::git::ChangeKind> {
+    if node.is_dir {
+        decorations
+            .iter()
+            .find(|(p, _)| p.starts_with(&node.path))
+            .map(|(_, k)| *k)
+    } else {
+        decorations.get(&node.path).copied()
+    }
+}
+
+fn render_node(
+    ui: &mut Ui,
+    node: &mut FileNode,
+    depth: usize,
+    out: &mut SidebarOutput,
+    decorations: &Decorations,
+) {
     let indent = depth as f32 * 12.0 + 6.0;
     let row_height = 22.0;
 
@@ -261,13 +309,25 @@ fn render_node(ui: &mut Ui, node: &mut FileNode, depth: usize, out: &mut Sidebar
     );
     cursor.x += 20.0;
 
+    // Git decoration: tint the name + paint a status letter on the right.
+    let deco = node_decoration(node, decorations);
+    let name_color = deco.map(|k| k.decoration_color()).unwrap_or(Palette::FG);
     painter.text(
         cursor + egui::vec2(0.0, mid_y),
         egui::Align2::LEFT_CENTER,
         &node.name,
         FontId::proportional(13.0),
-        Palette::FG,
+        name_color,
     );
+    if let Some(kind) = deco {
+        painter.text(
+            egui::pos2(rect.right() - 16.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            kind.badge(),
+            FontId::proportional(11.5),
+            name_color,
+        );
+    }
 
     if response.clicked() {
         if node.is_dir {
@@ -280,7 +340,7 @@ fn render_node(ui: &mut Ui, node: &mut FileNode, depth: usize, out: &mut Sidebar
     if node.is_dir && node.expanded {
         if let Some(children) = node.children.as_mut() {
             for child in children {
-                render_node(ui, child, depth + 1, out);
+                render_node(ui, child, depth + 1, out, decorations);
             }
         }
     }

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::CreationContext;
 use egui::{Context, Frame, Key, Margin, Modifiers, SidePanel, TopBottomPanel};
@@ -31,6 +31,30 @@ pub struct App {
     /// Open tab context menu: (document index, screen position where it
     /// was summoned). `None` when no menu is showing.
     tab_menu: Option<(usize, egui::Pos2)>,
+    /// All repositories discovered in the workspace (root + nested).
+    git_model: crate::git::Model,
+    /// Commit-graph rows for the active repository (the GRAPH section).
+    git_history: Vec<crate::git::GraphRow>,
+    /// Source Control view UI state (commit messages, expanded repos, graph).
+    scm_ui: crate::workbench::source_control::ScmUiState,
+    /// Per-line diff decorations for the active document (vs. HEAD), keyed by
+    /// 1-based line number. Recomputed on save / file switch.
+    git_line_changes: std::collections::BTreeMap<usize, crate::git::DiffKind>,
+    /// Explorer git decorations: absolute path → change kind (union of repos).
+    git_decorations: std::collections::BTreeMap<PathBuf, crate::git::ChangeKind>,
+    /// Filesystem watcher for the workspace; sets a dirty flag the update loop
+    /// polls to auto-refresh git status.
+    git_watcher: Option<crate::git::Watcher>,
+    /// HEAD text of the active document, cached for live (as-you-type) gutter
+    /// diffing without spawning `git`.
+    git_head_blob: Option<String>,
+    /// The working text last diffed against `git_head_blob`; lets the update
+    /// loop detect edits and recompute the gutter only when the text changed.
+    git_diff_snapshot: String,
+    /// Open branch-picker popup: `(repo_root, anchor)`.
+    branch_picker: Option<(PathBuf, egui::Pos2)>,
+    /// Open Commit-mode dropdown: `(repo_root, anchor)`.
+    commit_menu: Option<(PathBuf, egui::Pos2)>,
 }
 
 impl App {
@@ -63,6 +87,16 @@ impl App {
             show_welcome: true,
             menu_ids: None,
             tab_menu: None,
+            git_model: crate::git::Model::default(),
+            git_history: Vec::new(),
+            scm_ui: crate::workbench::source_control::ScmUiState::default(),
+            git_line_changes: std::collections::BTreeMap::new(),
+            git_decorations: std::collections::BTreeMap::new(),
+            git_watcher: None,
+            git_head_blob: None,
+            git_diff_snapshot: String::new(),
+            branch_picker: None,
+            commit_menu: None,
         }
     }
 
@@ -76,6 +110,8 @@ impl App {
             Some(CommandId::OpenFolder)
         } else if id == &ids.open_file {
             Some(CommandId::OpenFile)
+        } else if id == &ids.close_folder {
+            Some(CommandId::CloseFolder)
         } else if id == &ids.save {
             Some(CommandId::Save)
         } else if id == &ids.save_all {
@@ -149,11 +185,141 @@ impl App {
         self.workspace_root = Some(path.clone());
         self.file_tree = Some(FileNode::root(path.clone()));
         self.status_message = format!("Opened folder: {}", path.display());
+        self.git_watcher = crate::git::Watcher::new(&path);
+        self.git_model = crate::git::Model::discover(&path);
+        self.scm_ui = crate::workbench::source_control::ScmUiState::default();
+        self.refresh_git();
+    }
+
+    /// The repository that owns the active document (longest-prefix match),
+    /// else the first repo. Drives the status bar + GRAPH section.
+    fn active_repo_root(&self) -> Option<PathBuf> {
+        if let Some(idx) = self.active_doc {
+            if let Some(doc) = self.documents.get(idx) {
+                if let Some(r) = self.git_model.repo_for(&doc.path) {
+                    return Some(r.root.clone());
+                }
+            }
+        }
+        self.git_model.repos.first().map(|r| r.root.clone())
+    }
+
+    /// Re-run status for every repository, rebuild Explorer decorations and
+    /// the active repo's commit graph, and recompute the active-doc gutter.
+    fn refresh_git(&mut self) {
+        self.git_model.refresh();
+        self.git_decorations = self.git_model.decorations();
+        // Commit graph for the active repository.
+        self.git_history = match self.active_repo_root() {
+            Some(root) => crate::git::build_graph(&crate::git::log(&root, 200)),
+            None => Vec::new(),
+        };
+        self.refresh_git_line_changes();
+    }
+
+    /// Commit `repo_root` with its SCM message box, in `mode`. Commits staged
+    /// changes; if nothing is staged, commits all tracked changes (`-a`) —
+    /// VS Code prompts here; we commit-all directly to keep the flow simple.
+    fn do_commit(&mut self, repo_root: &Path, mode: crate::git::CommitMode) {
+        let msg = self
+            .scm_ui
+            .commit_messages
+            .get(repo_root)
+            .map(|m| m.trim().to_string())
+            .unwrap_or_default();
+        if msg.is_empty() {
+            self.status_message = "Commit message is empty".into();
+            return;
+        }
+        let Some(repo) = self.git_model.repo_for(repo_root) else {
+            return;
+        };
+        let all = repo.index.is_empty();
+        if all && repo.working.is_empty() && repo.merge.is_empty() {
+            self.status_message = "Nothing to commit".into();
+            return;
+        }
+        match crate::git::commit_with(repo_root, &msg, all, mode) {
+            Ok(()) => {
+                self.scm_ui.commit_messages.remove(repo_root);
+                self.status_message = "Committed".into();
+            }
+            Err(e) => {
+                self.status_message = format!("Commit failed: {}", e.lines().next().unwrap_or(""));
+            }
+        }
+        self.refresh_git();
+    }
+
+    /// Recompute the active document's per-line gutter diff against HEAD, and
+    /// cache the HEAD blob so subsequent edits diff live (in-process) without
+    /// spawning git. Resolves the file's repository via `repo_for`.
+    fn refresh_git_line_changes(&mut self) {
+        self.git_line_changes.clear();
+        self.git_head_blob = None;
+        self.git_diff_snapshot.clear();
+        let Some(idx) = self.active_doc else { return };
+        let Some(doc) = self.documents.get(idx) else { return };
+        if doc.diff_base.is_some() {
+            return;
+        }
+        let Some(repo) = self.git_model.repo_for(&doc.path) else {
+            return;
+        };
+        let rel = doc
+            .path
+            .strip_prefix(&repo.root)
+            .unwrap_or(&doc.path)
+            .to_string_lossy()
+            .into_owned();
+        if let Some(blob) = crate::git::head_blob(&repo.root, &rel) {
+            self.git_line_changes = crate::git::line_changes_diff(&blob, &doc.text);
+            self.git_diff_snapshot = doc.text.clone();
+            self.git_head_blob = Some(blob);
+        }
+    }
+
+    /// Cheap per-frame check: if the active document's text changed since the
+    /// last diff, recompute the gutter strip live from the cached HEAD blob.
+    fn poll_live_gutter_diff(&mut self) {
+        let Some(idx) = self.active_doc else { return };
+        let Some(blob) = &self.git_head_blob else { return };
+        let Some(doc) = self.documents.get(idx) else {
+            return;
+        };
+        if doc.diff_base.is_some() || doc.text == self.git_diff_snapshot {
+            return;
+        }
+        self.git_line_changes = crate::git::line_changes_diff(blob, &doc.text);
+        self.git_diff_snapshot = doc.text.clone();
+    }
+
+    /// Close the current workspace folder (VS Code's "Close Folder"). Clears
+    /// the explorer tree and any search results, and returns to the Welcome
+    /// view. Open editors are left untouched — matching VS Code, which keeps
+    /// already-open files visible after the folder is closed.
+    fn close_folder(&mut self) {
+        if self.workspace_root.is_none() {
+            return;
+        }
+        self.workspace_root = None;
+        self.file_tree = None;
+        self.search = SearchState::default();
+        self.git_watcher = None;
+        self.git_model = crate::git::Model::default();
+        self.git_history.clear();
+        self.git_decorations.clear();
+        self.scm_ui = crate::workbench::source_control::ScmUiState::default();
+        if self.documents.is_empty() {
+            self.show_welcome = true;
+        }
+        self.status_message = "Closed folder".into();
     }
 
     fn open_file(&mut self, path: PathBuf) {
         if let Some(idx) = self.documents.iter().position(|d| d.path == path) {
             self.active_doc = Some(idx);
+            self.refresh_git_line_changes();
             return;
         }
         match Document::open(path.clone()) {
@@ -161,6 +327,7 @@ impl App {
                 self.documents.push(doc);
                 self.active_doc = Some(self.documents.len() - 1);
                 self.status_message = format!("Opened {}", path.display());
+                self.refresh_git_line_changes();
             }
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 // Binary file — silently refuse, like VS Code's untrusted/binary
@@ -171,6 +338,44 @@ impl App {
             Err(e) => {
                 self.status_message = format!("Failed to open {}: {}", path.display(), e);
             }
+        }
+    }
+
+    /// Open a read-only diff tab for `path` (working tree vs HEAD), matching
+    /// VS Code's behaviour when a changed file is clicked in Source Control.
+    /// Falls back to a plain open for files with no HEAD version (new files).
+    fn open_diff(&mut self, path: PathBuf) {
+        let Some(repo) = self.git_model.repo_for(&path) else {
+            self.open_file(path);
+            return;
+        };
+        let root = repo.root.clone();
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let Some(base) = crate::git::head_blob(&root, &rel) else {
+            // Untracked / added file — no base to diff against; open plain.
+            self.open_file(path);
+            return;
+        };
+        // Reuse an existing diff tab for this path if open.
+        if let Some(idx) = self
+            .documents
+            .iter()
+            .position(|d| d.path == path && d.diff_base.is_some())
+        {
+            self.active_doc = Some(idx);
+            return;
+        }
+        match Document::open(path.clone()) {
+            Ok(mut doc) => {
+                doc.diff_base = Some(base);
+                self.documents.push(doc);
+                self.active_doc = Some(self.documents.len() - 1);
+            }
+            Err(_) => self.open_file(path),
         }
     }
 
@@ -215,6 +420,167 @@ impl App {
             .iter()
             .position(|d| d.path == keep_path)
             .or(if self.documents.is_empty() { None } else { Some(0) });
+    }
+
+    /// Branch-picker popup (status-bar branch click): a context menu of local
+    /// branches; selecting one checks it out.
+    fn show_branch_picker(&mut self, ctx: &Context) {
+        use crate::vscode_widgets::composite::{context_menu, ContextMenuItem, ContextMenuProps};
+
+        let Some((root, pos)) = self.branch_picker.clone() else {
+            return;
+        };
+        let branches = crate::git::branches(&root);
+        if branches.is_empty() {
+            self.branch_picker = None;
+            return;
+        }
+        let items: Vec<ContextMenuItem> =
+            branches.iter().map(|b| ContextMenuItem::new(b)).collect();
+
+        // Anchor the menu so its bottom sits at `pos.y` (it grows upward from
+        // the status bar). Approximate height = items * 26 + padding.
+        let height = items.len() as f32 * 26.0 + 8.0;
+        let mut chosen = None;
+        let area = egui::Area::new(egui::Id::new("branch_picker"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(pos.x, pos.y - height))
+            .show(ctx, |ui| {
+                let resp = context_menu(ui, &ContextMenuProps::default(), &items);
+                chosen = resp.selected;
+            });
+
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if let Some(sel) = chosen {
+            if let Some(name) = branches.get(sel) {
+                if crate::git::checkout(&root, name) {
+                    self.status_message = format!("Switched to branch '{name}'");
+                } else {
+                    self.status_message =
+                        format!("Could not switch to '{name}' (uncommitted changes?)");
+                }
+                self.refresh_git();
+            }
+            self.branch_picker = None;
+        } else if escape || area.response.clicked_elsewhere() {
+            self.branch_picker = None;
+        }
+    }
+
+    /// Apply the Source Control view's emitted events to git, then refresh.
+    fn dispatch_scm(&mut self, scm: crate::workbench::source_control::ScmOutput) {
+        let mut dirty = false;
+        if let Some((root, rel, _staged)) = scm.open_diff {
+            self.open_diff(root.join(rel));
+        }
+        if let Some((root, rel)) = scm.stage {
+            crate::git::stage(&root, &rel);
+            dirty = true;
+        }
+        if let Some((root, rel)) = scm.unstage {
+            crate::git::unstage(&root, &rel);
+            dirty = true;
+        }
+        if let Some((root, rel, untracked)) = scm.discard {
+            crate::git::discard(&root, &rel, untracked);
+            dirty = true;
+        }
+        if let Some(root) = scm.stage_all {
+            crate::git::stage_all(&root);
+            dirty = true;
+        }
+        if let Some(root) = scm.unstage_all {
+            crate::git::unstage_all(&root);
+            dirty = true;
+        }
+        if let Some(root) = scm.refresh {
+            let _ = root;
+            dirty = true;
+        }
+        if let Some(root) = scm.sync {
+            crate::git::pull(&root);
+            crate::git::push(&root);
+            dirty = true;
+        }
+        if let Some((root, mode)) = scm.commit {
+            self.do_commit(&root, mode); // refreshes itself
+        }
+        if let Some((root, anchor)) = scm.commit_menu {
+            self.commit_menu = Some((root, anchor));
+        }
+        if let Some((root, anchor)) = scm.repo_menu {
+            // Reuse the branch picker location for now: open a small repo menu.
+            let _ = anchor;
+            let _ = root;
+        }
+        if let Some((root, rel, parent, commit)) = scm.open_commit_diff {
+            self.open_commit_diff(&root, &rel, &parent, &commit);
+        }
+        if dirty {
+            self.refresh_git();
+        }
+    }
+
+    /// Open a read-only diff tab for a file at a commit (its first parent on
+    /// the left, the commit on the right) — VS Code's behaviour when you click
+    /// a file under a commit in the GRAPH.
+    fn open_commit_diff(&mut self, root: &Path, rel: &str, parent: &str, commit: &str) {
+        let base = if parent.is_empty() {
+            String::new()
+        } else {
+            crate::git::blob_at(root, parent, rel).unwrap_or_default()
+        };
+        let working = crate::git::blob_at(root, commit, rel).unwrap_or_default();
+        let path = root.join(rel);
+        let short = |r: &str| r.chars().take(7).collect::<String>();
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        let title = format!("{name} ({}) ↔ {name} ({})", short(parent), short(commit));
+        // Reuse an existing identical diff tab.
+        if let Some(idx) = self
+            .documents
+            .iter()
+            .position(|d| d.diff_title.as_deref() == Some(title.as_str()))
+        {
+            self.active_doc = Some(idx);
+            return;
+        }
+        let doc = Document::diff(path, base, working, title);
+        self.documents.push(doc);
+        self.active_doc = Some(self.documents.len() - 1);
+    }
+
+    /// The Commit-mode dropdown (Commit / Commit & Push / Commit & Sync).
+    fn show_commit_menu(&mut self, ctx: &Context) {
+        use crate::vscode_widgets::composite::{context_menu, ContextMenuItem, ContextMenuProps};
+        use crate::git::CommitMode;
+
+        let Some((root, pos)) = self.commit_menu.clone() else {
+            return;
+        };
+        let items = [
+            ContextMenuItem::new("Commit"),
+            ContextMenuItem::new("Commit & Push"),
+            ContextMenuItem::new("Commit & Sync"),
+        ];
+        let mut chosen = None;
+        let area = egui::Area::new(egui::Id::new("commit_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                chosen = context_menu(ui, &ContextMenuProps::default(), &items).selected;
+            });
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if let Some(sel) = chosen {
+            let mode = match sel {
+                1 => CommitMode::AndPush,
+                2 => CommitMode::AndSync,
+                _ => CommitMode::Plain,
+            };
+            self.commit_menu = None;
+            self.do_commit(&root, mode);
+        } else if escape || area.response.clicked_elsewhere() {
+            self.commit_menu = None;
+        }
     }
 
     /// Render the per-tab right-click context menu, if one is open.
@@ -281,6 +647,7 @@ impl App {
                 }
             }
         }
+        self.refresh_git();
     }
 
     fn save_all(&mut self) {
@@ -307,6 +674,9 @@ impl App {
         if view == ActivityView::Search {
             self.search.focus_input = true;
         }
+        if view == ActivityView::SourceControl {
+            self.refresh_git();
+        }
     }
 
     fn navigate_to(&mut self, path: PathBuf, line: usize, byte_in_line: usize) {
@@ -329,12 +699,14 @@ impl App {
                 doc.pending_nav = Some((line, byte_in_line));
             }
         }
+        self.refresh_git_line_changes();
     }
 
     fn execute_command(&mut self, ctx: &Context, cmd: CommandId) {
         match cmd {
             CommandId::OpenFolder => self.open_folder_dialog(),
             CommandId::OpenFile => self.open_file_dialog(),
+            CommandId::CloseFolder => self.close_folder(),
             CommandId::Save => self.save_active(),
             CommandId::SaveAll => self.save_all(),
             CommandId::CloseFile => self.close_active(),
@@ -610,6 +982,14 @@ impl App {
             self.dispatch_menu_event(ctx, &ev.id);
         }
 
+        // Filesystem watcher → auto-refresh git when the working tree changes.
+        if self.git_watcher.as_ref().is_some_and(|w| w.take_dirty()) {
+            self.refresh_git();
+            ctx.request_repaint();
+        }
+        // Live (as-you-type) gutter diff for the active editor.
+        self.poll_live_gutter_diff();
+
         self.handle_shortcuts(ctx);
 
         self.title_bar(ctx);
@@ -624,8 +1004,46 @@ impl App {
             .show(ctx, |ui| {
                 let active = self.active_doc.and_then(|i| self.documents.get(i));
                 let has_workspace = self.workspace_root.is_some();
-                status_bar::show(ui, active, &self.status_message, has_workspace);
+                // Status bar reflects the active repository.
+                let active_root = self.active_repo_root();
+                let repo = active_root
+                    .as_ref()
+                    .and_then(|r| self.git_model.repo_for(r));
+                let branch = repo.and_then(|r| r.branch.as_deref());
+                let changes = repo.map(|r| r.total()).unwrap_or(0);
+                let ahead_behind = repo.map(|r| (r.ahead, r.behind)).unwrap_or((0, 0));
+                let has_upstream = repo.map(|r| r.has_upstream).unwrap_or(false);
+                let sb = status_bar::show(
+                    ui,
+                    active,
+                    &self.status_message,
+                    has_workspace,
+                    branch,
+                    changes,
+                    ahead_behind,
+                    has_upstream,
+                );
+                if let Some(rect) = sb.branch_clicked {
+                    if let Some(root) = active_root.clone() {
+                        self.branch_picker =
+                            Some((root, egui::pos2(rect.left(), rect.top() - 4.0)));
+                    }
+                }
+                if sb.sync_clicked {
+                    if let Some(root) = active_root {
+                        if has_upstream {
+                            crate::git::pull(&root);
+                            crate::git::push(&root);
+                        } else {
+                            crate::git::push(&root); // Publish (push)
+                        }
+                        self.refresh_git();
+                    }
+                }
             });
+
+        self.show_branch_picker(ctx);
+        self.show_commit_menu(ctx);
 
         SidePanel::left("activity_bar")
             .exact_width(48.0)
@@ -636,7 +1054,15 @@ impl App {
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
-                activity_bar::show(ui, &mut self.active_view, &mut self.sidebar_visible);
+                let prev_view = self.active_view;
+                let scm_count = self.git_model.total_changes();
+                activity_bar::show(ui, &mut self.active_view, &mut self.sidebar_visible, scm_count);
+                // Refresh Git when the user just switched to Source Control.
+                if self.active_view == ActivityView::SourceControl
+                    && prev_view != ActivityView::SourceControl
+                {
+                    self.refresh_git();
+                }
             });
 
         if self.sidebar_visible {
@@ -646,6 +1072,7 @@ impl App {
             let panel_id = match self.active_view {
                 ActivityView::Explorer => "sidebar_explorer",
                 ActivityView::Search => "sidebar_search",
+                ActivityView::SourceControl => "sidebar_scm",
             };
             let sidebar_output: SidebarOutput;
             {
@@ -659,12 +1086,18 @@ impl App {
                             .inner_margin(Margin::ZERO),
                     )
                     .show(ctx, |ui| {
+                        let graph_root = self.active_repo_root();
                         sidebar::show(
                             ui,
                             self.active_view,
                             &self.workspace_root,
                             &mut self.file_tree,
                             &mut self.search,
+                            &self.git_model,
+                            &self.git_history,
+                            graph_root.as_deref(),
+                            &mut self.scm_ui,
+                            &self.git_decorations,
                         )
                     });
                 sidebar_output = resp.inner;
@@ -680,6 +1113,7 @@ impl App {
             if let Some((path, line, col)) = sidebar_output.navigate_to {
                 self.navigate_to(path, line, col);
             }
+            self.dispatch_scm(sidebar_output.scm);
         }
 
         let mut welcome_pending_folder = false;
@@ -715,6 +1149,7 @@ impl App {
 
                         if let Some(idx) = tabs_action.activate {
                             self.active_doc = Some(idx);
+                            self.refresh_git_line_changes();
                         }
                         if let Some(idx) = tabs_action.close {
                             self.close_doc(idx);
@@ -739,7 +1174,7 @@ impl App {
 
                     if let Some(idx) = self.active_doc {
                         if let Some(doc) = self.documents.get_mut(idx) {
-                            crate::editor::view::show(ui, doc);
+                            crate::editor::view::show(ui, doc, &self.git_line_changes);
                         }
                     } else if self.show_welcome {
                         let act = welcome_screen(ui);

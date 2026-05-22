@@ -10,6 +10,7 @@ use crate::vscode_widgets::primitives::{label, LabelProps};
 pub enum CommandId {
     OpenFolder,
     OpenFile,
+    CloseFolder,
     Save,
     SaveAll,
     CloseFile,
@@ -39,6 +40,12 @@ pub const COMMANDS: &[CommandEntry] = &[
         title: "Open File…",
         category: "File",
         shortcut: None,
+    },
+    CommandEntry {
+        id: CommandId::CloseFolder,
+        title: "Close Folder",
+        category: "File",
+        shortcut: Some("⌘K F"),
     },
     CommandEntry {
         id: CommandId::Save,

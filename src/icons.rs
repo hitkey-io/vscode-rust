@@ -62,6 +62,18 @@ codepoint!(KEBAB_VERTICAL = 0xeb10);
 codepoint!(PINNED = 0xeba0);
 codepoint!(PIN = 0xeba1);
 
+// Source Control
+codepoint!(REPO = 0xea62);
+codepoint!(ELLIPSIS = 0xea7c);
+codepoint!(DISCARD = 0xeae2);
+codepoint!(ADD = 0xea60);
+codepoint!(REMOVE = 0xeb3b);
+codepoint!(GIT_COMMIT = 0xeafc);
+codepoint!(GIT_MERGE = 0xeafe);
+codepoint!(CLOUD_UPLOAD = 0xeac3);
+codepoint!(ARROW_UP = 0xeaa1);
+codepoint!(ARROW_DOWN = 0xea9a);
+
 // Status bar
 codepoint!(GIT_BRANCH = 0xec6f);
 codepoint!(SYNC = 0xea77);

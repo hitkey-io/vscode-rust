@@ -1,4 +1,4 @@
-use egui::{Align, Layout, Ui};
+use egui::{Align, Align2, FontId, Layout, Ui};
 
 use crate::icons;
 use crate::theme::Palette;
@@ -8,7 +8,13 @@ use super::ActivityView;
 
 const ITEM_HEIGHT: f32 = 48.0;
 
-pub fn show(ui: &mut Ui, current: &mut ActivityView, sidebar_visible: &mut bool) {
+/// `scm_count` paints the Source Control count badge (VS Code `scm.countBadge`).
+pub fn show(
+    ui: &mut Ui,
+    current: &mut ActivityView,
+    sidebar_visible: &mut bool,
+    scm_count: usize,
+) {
     let painter = ui.painter();
     let rect = ui.max_rect();
     painter.rect_filled(rect, 0.0, Palette::ACTIVITY_BAR_BG);
@@ -27,6 +33,11 @@ pub fn show(ui: &mut Ui, current: &mut ActivityView, sidebar_visible: &mut bool)
             for (view, glyph, label) in [
                 (ActivityView::Explorer, icons::FILES, "Explorer (⇧⌘E)"),
                 (ActivityView::Search, icons::SEARCH, "Search (⇧⌘F)"),
+                (
+                    ActivityView::SourceControl,
+                    icons::SOURCE_CONTROL,
+                    "Source Control (⌃⇧G)",
+                ),
             ] {
                 let is_selected = *current == view && *sidebar_visible;
                 let mut props = IconButtonProps::new(glyph)
@@ -39,6 +50,27 @@ pub fn show(ui: &mut Ui, current: &mut ActivityView, sidebar_visible: &mut bool)
                     props = props.active_stripe().color(Palette::ACTIVITY_BAR_FG);
                 }
                 let response = icon_button(ui, &props);
+
+                // Source Control count badge (blue pill, bottom-right of icon).
+                if view == ActivityView::SourceControl && scm_count > 0 {
+                    let r = response.rect;
+                    let center = egui::pos2(r.right() - 13.0, r.bottom() - 13.0);
+                    let txt = if scm_count > 99 { "99+".to_string() } else { scm_count.to_string() };
+                    let w = (txt.len() as f32 * 6.0 + 8.0).max(16.0);
+                    let badge = egui::Rect::from_center_size(center, egui::vec2(w, 16.0));
+                    ui.painter().rect_filled(
+                        badge,
+                        egui::CornerRadius::same(8),
+                        Palette::ACCENT,
+                    );
+                    ui.painter().text(
+                        center,
+                        Align2::CENTER_CENTER,
+                        txt,
+                        FontId::proportional(10.5),
+                        Palette::FG_BRIGHT,
+                    );
+                }
 
                 // Make the icon findable in the AccessKit tree (kittest get_by_label).
                 let tip = label.to_string();

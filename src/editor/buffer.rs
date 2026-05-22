@@ -13,6 +13,15 @@ pub struct Document {
     /// Tab is pinned to the front of the strip and protected from
     /// close-others / middle-click close.
     pub pinned: bool,
+    /// Folded fold-header line numbers (1-based). When non-empty the editor
+    /// renders a read-only collapsed view; clearing it returns to edit mode.
+    pub folded: std::collections::BTreeSet<usize>,
+    /// When `Some`, this document is a read-only **diff** tab: the string is
+    /// the base (left) version of the file, diffed inline against `text`.
+    pub diff_base: Option<String>,
+    /// Optional tab-title override for diff tabs
+    /// (e.g. `env.ts (a1b2c) ↔ env.ts (d4e5f)`).
+    pub diff_title: Option<String>,
 }
 
 impl Document {
@@ -38,7 +47,31 @@ impl Document {
             cursor_col: 1,
             pending_nav: None,
             pinned: false,
+            folded: std::collections::BTreeSet::new(),
+            diff_base: None,
+            diff_title: None,
         })
+    }
+
+    /// Build a read-only diff document from two in-memory blobs (no disk
+    /// read) — used for commit diffs in the GRAPH, where the file may not
+    /// exist on disk at the requested revisions.
+    pub fn diff(path: PathBuf, base: String, working: String, title: String) -> Self {
+        let language = detect_language(&path);
+        Self {
+            saved_text: working.clone(),
+            text: working,
+            dirty: false,
+            language,
+            path,
+            cursor_line: 1,
+            cursor_col: 1,
+            pending_nav: None,
+            pinned: false,
+            folded: std::collections::BTreeSet::new(),
+            diff_base: Some(base),
+            diff_title: Some(title),
+        }
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {

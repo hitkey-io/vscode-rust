@@ -54,6 +54,9 @@ fn make_doc(name: &str, contents: &str, dirty: bool) -> Document {
         cursor_col: 1,
         pending_nav: None,
         pinned: false,
+        folded: std::collections::BTreeSet::new(),
+        diff_base: None,
+        diff_title: None,
     };
     if dirty {
         doc.text.push_str("\n// edited");
@@ -123,7 +126,7 @@ fn activity_bar_explorer_selected() {
         CentralPanel::default()
             .frame(egui::Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG))
             .show(ctx, |ui| {
-                activity_bar::show(ui, &mut current, &mut visible);
+                activity_bar::show(ui, &mut current, &mut visible, 0);
             });
     });
     let mut harness = Harness::builder()
@@ -143,7 +146,7 @@ fn activity_bar_search_selected() {
         CentralPanel::default()
             .frame(egui::Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG))
             .show(ctx, |ui| {
-                activity_bar::show(ui, &mut current, &mut visible);
+                activity_bar::show(ui, &mut current, &mut visible, 0);
             });
     });
     let mut harness = Harness::builder()
@@ -170,6 +173,11 @@ fn sidebar_explorer_with_tree() {
                     &workspace,
                     &mut tree,
                     &mut search,
+                    &vscode_rust::git::Model::default(),
+                    &[],
+                    None,
+                    &mut vscode_rust::workbench::source_control::ScmUiState::default(),
+                    &std::collections::BTreeMap::new(),
                 );
             });
     });
@@ -197,6 +205,11 @@ fn sidebar_explorer_no_workspace() {
                     &workspace,
                     &mut tree,
                     &mut search,
+                    &vscode_rust::git::Model::default(),
+                    &[],
+                    None,
+                    &mut vscode_rust::workbench::source_control::ScmUiState::default(),
+                    &std::collections::BTreeMap::new(),
                 );
             });
     });
@@ -241,7 +254,7 @@ fn status_bar_with_doc() {
         CentralPanel::default()
             .frame(egui::Frame::default().fill(theme::Palette::STATUS_BAR_BG))
             .show(ctx, |ui| {
-                status_bar::show(ui, Some(&docs[0]), "Ready", false);
+                let _ = status_bar::show(ui, Some(&docs[0]), "Ready", false, None, 0, (0, 0), false);
             });
     });
     let mut harness = Harness::builder()
@@ -258,7 +271,7 @@ fn status_bar_no_doc() {
         CentralPanel::default()
             .frame(egui::Frame::default().fill(theme::Palette::STATUS_BAR_BG))
             .show(ctx, |ui| {
-                status_bar::show(ui, None, "", false);
+                let _ = status_bar::show(ui, None, "", false, None, 0, (0, 0), false);
             });
     });
     let mut harness = Harness::builder()
@@ -330,7 +343,7 @@ fn full_app_welcome() {
             .exact_height(22.0)
             .frame(Frame::default().fill(theme::Palette::STATUS_BAR_BG).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                status_bar::show(ui, None, "", false);
+                let _ = status_bar::show(ui, None, "", false, None, 0, (0, 0), false);
             });
 
         // Activity bar
@@ -339,7 +352,7 @@ fn full_app_welcome() {
             .resizable(false)
             .frame(Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                activity_bar::show(ui, &mut active_view, &mut sidebar_visible);
+                activity_bar::show(ui, &mut active_view, &mut sidebar_visible, 0);
             });
 
         // Sidebar
@@ -355,6 +368,11 @@ fn full_app_welcome() {
                     &workspace,
                     &mut tree,
                     &mut search,
+                    &vscode_rust::git::Model::default(),
+                    &[],
+                    None,
+                    &mut vscode_rust::workbench::source_control::ScmUiState::default(),
+                    &std::collections::BTreeMap::new(),
                 );
             });
 
@@ -412,7 +430,7 @@ fn full_app_with_doc_and_palette() {
             .exact_height(22.0)
             .frame(Frame::default().fill(theme::Palette::STATUS_BAR_BG).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                status_bar::show(ui, Some(&docs[0]), "", true);
+                let _ = status_bar::show(ui, Some(&docs[0]), "", true, None, 0, (0, 0), false);
             });
 
         SidePanel::left("activity")
@@ -420,7 +438,7 @@ fn full_app_with_doc_and_palette() {
             .resizable(false)
             .frame(Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                activity_bar::show(ui, &mut active_view, &mut sidebar_visible);
+                activity_bar::show(ui, &mut active_view, &mut sidebar_visible, 0);
             });
 
         SidePanel::left("sidebar")
@@ -428,7 +446,7 @@ fn full_app_with_doc_and_palette() {
             .default_width(260.0)
             .frame(Frame::default().fill(theme::Palette::SIDEBAR_BG).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                let _ = sidebar::show(ui, active_view, &workspace, &mut tree, &mut search);
+                let _ = sidebar::show(ui, active_view, &workspace, &mut tree, &mut search, &vscode_rust::git::Model::default(), &[], None, &mut vscode_rust::workbench::source_control::ScmUiState::default(), &std::collections::BTreeMap::new());
             });
 
         egui::CentralPanel::default()

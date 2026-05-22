@@ -14,6 +14,7 @@ use muda::{
 pub struct MenuIds {
     pub open_folder: MenuId,
     pub open_file: MenuId,
+    pub close_folder: MenuId,
     pub save: MenuId,
     pub save_all: MenuId,
     pub close_editor: MenuId,
@@ -57,6 +58,7 @@ pub fn install() -> InstalledMenu {
     let file_m = Submenu::new("File", true);
     let open_folder = MenuItem::new("Open Folder…", true, None);
     let open_file = MenuItem::new("Open File…", true, None);
+    let close_folder = MenuItem::new("Close Folder", true, None);
     let save = MenuItem::new(
         "Save",
         true,
@@ -85,6 +87,7 @@ pub fn install() -> InstalledMenu {
         &PredefinedMenuItem::separator(),
         &close_editor,
         &close_all,
+        &close_folder,
     ]);
 
     // Edit menu — predefined items for standard text editing
@@ -157,6 +160,7 @@ pub fn install() -> InstalledMenu {
     let ids = MenuIds {
         open_folder: open_folder.id().clone(),
         open_file: open_file.id().clone(),
+        close_folder: close_folder.id().clone(),
         save: save.id().clone(),
         save_all: save_all.id().clone(),
         close_editor: close_editor.id().clone(),

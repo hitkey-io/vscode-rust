@@ -87,6 +87,36 @@ impl Palette {
     pub const STATUS_BAR_FG: Color32 = Self::FG;
     pub const STATUS_BAR_REMOTE_BG: Color32 = Self::ACCENT;
 
+    // Git decorations — exact `gitDecoration.*` from themes/2026-dark.json.
+    pub const GIT_MODIFIED_FG: Color32 = rgb(0xE5, 0xBA, 0x7D); // modified + stageModified
+    pub const GIT_ADDED_FG: Color32 = rgb(0x73, 0xC9, 0x91); // added + untracked
+    pub const GIT_RENAMED_FG: Color32 = rgb(0x73, 0xC9, 0x91); // renamed + copied
+    pub const GIT_DELETED_FG: Color32 = rgb(0xF4, 0x87, 0x71); // deleted + stageDeleted
+    pub const GIT_CONFLICT_FG: Color32 = rgb(0xF4, 0x87, 0x71); // conflicting
+    pub const GIT_IGNORED_FG: Color32 = rgb(0x8C, 0x8C, 0x8C);
+    pub const GIT_SUBMODULE_FG: Color32 = rgb(0x8D, 0xB9, 0xE2);
+    // editorGutter.* (dirty-diff strip): 2026-dark added/deleted; modified
+    // not overridden → dark default.
+    pub const GIT_GUTTER_MODIFIED: Color32 = rgb(0x1B, 0x81, 0xA8);
+    pub const GIT_GUTTER_ADDED: Color32 = rgb(0x72, 0xC8, 0x92);
+    pub const GIT_GUTTER_DELETED: Color32 = rgb(0xF2, 0x87, 0x72);
+
+    // Diff editor line washes — exact diffEditor.* from themes/2026-dark.json.
+    pub const DIFF_INSERTED_BG: Color32 = rgba(0x34, 0x7D, 0x39, 0x26);
+    pub const DIFF_REMOVED_BG: Color32 = rgba(0xC9, 0x3C, 0x37, 0x26);
+
+    // SCM graph lane palette (scmGraph.foreground1-5) + ref-badge colours.
+    pub const SCM_GRAPH_LANES: [Color32; 5] = [
+        rgb(0xFF, 0xB0, 0x00),
+        rgb(0xDC, 0x26, 0x7F),
+        rgb(0x99, 0x4F, 0x00),
+        rgb(0x40, 0xB0, 0xA6),
+        rgb(0xB6, 0x6D, 0xFF),
+    ];
+    pub const SCM_REF_LOCAL: Color32 = rgb(0x37, 0x94, 0xFF); // chartsBlue (editorInfo)
+    pub const SCM_REF_REMOTE: Color32 = rgb(0xB1, 0x80, 0xD7); // chartsPurple
+    pub const SCM_REF_BASE: Color32 = rgb(0xEA, 0x5C, 0x00);
+
     // Title bar
     pub const TITLE_BAR_BG: Color32 = Self::PANEL_BG;
     pub const TITLE_BAR_FG: Color32 = Self::FG;

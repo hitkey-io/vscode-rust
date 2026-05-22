@@ -36,7 +36,18 @@ pub fn show(
     // Build the unified tab list: optional welcome tab, then every document.
     // The welcome tab is just a regular tab item with a distinct label and
     // codicon — the routing of clicks/closes is what makes it "welcome".
-    let labels: Vec<String> = docs.iter().map(|d| d.display_name()).collect();
+    let labels: Vec<String> = docs
+        .iter()
+        .map(|d| {
+            if let Some(t) = &d.diff_title {
+                t.clone()
+            } else if d.diff_base.is_some() {
+                format!("{} (Working Tree)", d.display_name())
+            } else {
+                d.display_name()
+            }
+        })
+        .collect();
     let tooltips: Vec<String> = docs
         .iter()
         .map(|d| d.path.to_string_lossy().into_owned())
