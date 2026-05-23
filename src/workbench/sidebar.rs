@@ -30,6 +30,8 @@ pub fn show(
     scm_ui: &mut super::source_control::ScmUiState,
     git_decorations: &std::collections::BTreeMap<PathBuf, crate::git::ChangeKind>,
     active_file: Option<&std::path::Path>,
+    outline_expanded: &mut bool,
+    timeline_expanded: &mut bool,
 ) -> SidebarOutput {
     let mut out = SidebarOutput {
         file_to_open: None,
@@ -50,7 +52,10 @@ pub fn show(
 
         match view {
             ActivityView::Explorer => {
-                explorer_panel(ui, workspace_root, tree, &mut out, git_decorations, active_file);
+                explorer_panel(
+                    ui, workspace_root, tree, &mut out, git_decorations, active_file,
+                    outline_expanded, timeline_expanded,
+                );
             }
             ActivityView::Search => {
                 let search_out = crate::search::ui::show(ui, workspace_root, search);
@@ -123,6 +128,8 @@ fn explorer_panel(
     out: &mut SidebarOutput,
     decorations: &Decorations,
     active_file: Option<&std::path::Path>,
+    outline_expanded: &mut bool,
+    timeline_expanded: &mut bool,
 ) {
     if workspace_root.is_none() || tree.is_none() {
         // Section subheader like VS Code
@@ -159,10 +166,15 @@ fn explorer_panel(
         return;
     }
 
-    // Reserve room at the bottom for the collapsed OUTLINE + TIMELINE section
-    // headers, which VS Code pins under the file tree in the Explorer.
-    let section_h = 22.0;
-    let tree_h = (ui.available_height() - section_h * 2.0).max(0.0);
+    // Reserve room at the bottom for the OUTLINE + TIMELINE section headers,
+    // which VS Code pins under the file tree in the Explorer. When a section
+    // is expanded, it gets extra space for its (currently empty) body.
+    let header_h = 22.0;
+    let body_h = 80.0;
+    let bottom_h = header_h * 2.0
+        + if *outline_expanded { body_h } else { 0.0 }
+        + if *timeline_expanded { body_h } else { 0.0 };
+    let tree_h = (ui.available_height() - bottom_h).max(0.0);
     ScrollArea::both()
         .auto_shrink([false, false])
         .max_height(tree_h)
@@ -179,21 +191,25 @@ fn explorer_panel(
             }
         });
 
-    explorer_section_header(ui, "OUTLINE");
-    explorer_section_header(ui, "TIMELINE");
+    explorer_section(ui, "OUTLINE", outline_expanded, "The active editor cannot provide outline information.");
+    explorer_section(ui, "TIMELINE", timeline_expanded, "No timeline providers available.");
 }
 
-/// A collapsed Explorer section header (OUTLINE / TIMELINE): chevron + bold
-/// uppercase title. Inert for now — present for layout parity with VS Code.
-fn explorer_section_header(ui: &mut Ui, title: &str) {
-    let (rect, _) =
+/// Collapsible Explorer section (OUTLINE / TIMELINE): clickable chevron-row
+/// header that toggles `expanded`, plus a muted placeholder body when open.
+fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &str) {
+    let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+    }
     let mid = rect.center().y;
+    let chev = if *expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
     let p = ui.painter();
     p.text(
         egui::pos2(rect.left() + 12.0, mid),
         egui::Align2::CENTER_CENTER,
-        icons::CHEVRON_RIGHT.to_string(),
+        chev.to_string(),
         codicon_font(12.0),
         Palette::FG_DESCRIPTION,
     );
@@ -204,6 +220,20 @@ fn explorer_section_header(ui: &mut Ui, title: &str) {
         FontId::proportional(11.0),
         Palette::SIDEBAR_SECTION_HEADER_FG,
     );
+    if resp.clicked() {
+        *expanded = !*expanded;
+    }
+    if *expanded {
+        let (body, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 80.0), Sense::hover());
+        ui.painter().text(
+            egui::pos2(body.left() + 18.0, body.top() + 14.0),
+            egui::Align2::LEFT_TOP,
+            empty_msg,
+            FontId::proportional(12.0),
+            Palette::FG_DESCRIPTION,
+        );
+    }
 }
 
 /// The workspace root as a bold, collapsible row (VS Code renders the open

@@ -55,6 +55,9 @@ pub struct App {
     branch_picker: Option<(PathBuf, egui::Pos2)>,
     /// Open Commit-mode dropdown: `(repo_root, anchor)`.
     commit_menu: Option<(PathBuf, egui::Pos2)>,
+    /// Explorer OUTLINE / TIMELINE section expanded state.
+    outline_expanded: bool,
+    timeline_expanded: bool,
 }
 
 impl App {
@@ -97,6 +100,8 @@ impl App {
             git_diff_snapshot: String::new(),
             branch_picker: None,
             commit_menu: None,
+            outline_expanded: false,
+            timeline_expanded: false,
         }
     }
 
@@ -759,18 +764,29 @@ impl App {
                 let cy = rect.center().y;
 
                 // Left: back / forward navigation arrows (after the traffic lights).
+                // Inert for now (no navigation history) — but they hover.
                 let nav_x = rect.left() + left_inset + 6.0;
                 for (i, glyph) in [crate::icons::ARROW_LEFT, crate::icons::ARROW_RIGHT].into_iter().enumerate() {
-                    p.text(
-                        egui::pos2(nav_x + i as f32 * 26.0, cy),
-                        egui::Align2::LEFT_CENTER,
-                        glyph.to_string(),
-                        codicon_font(16.0),
-                        Palette::TITLE_BAR_INACTIVE_FG,
+                    let r = egui::Rect::from_center_size(
+                        egui::pos2(nav_x + 8.0 + i as f32 * 26.0, cy),
+                        egui::vec2(24.0, 22.0),
                     );
+                    let resp = ui.interact(r, ui.id().with(("tnav", i)), egui::Sense::click());
+                    let (bg, fg) = if resp.hovered() {
+                        (Palette::COMMAND_CENTER_BG, Palette::FG)
+                    } else {
+                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG)
+                    };
+                    ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
+                    ui.painter().text(
+                        r.center(), egui::Align2::CENTER_CENTER,
+                        glyph.to_string(), codicon_font(16.0), fg,
+                    );
+                    resp.on_hover_text(if i == 0 { "Go Back" } else { "Go Forward" });
                 }
 
                 // Centre: command-center pill (search icon + workspace name).
+                // Clicking it opens the command palette, matching VS Code.
                 let workspace_name = self
                     .workspace_root
                     .as_ref()
@@ -782,43 +798,67 @@ impl App {
                     egui::pos2(rect.center().x, cy),
                     egui::vec2(pill_w, 22.0),
                 );
-                p.rect(
+                let pill_resp =
+                    ui.interact(pill, ui.id().with("tcmdcenter"), egui::Sense::click());
+                let pill_bg = if pill_resp.hovered() {
+                    Palette::LIST_HOVER_BG
+                } else {
+                    Palette::COMMAND_CENTER_BG
+                };
+                ui.painter().rect(
                     pill,
                     egui::CornerRadius::same(6),
-                    Palette::COMMAND_CENTER_BG,
+                    pill_bg,
                     egui::Stroke::new(1.0, Palette::COMMAND_CENTER_BORDER),
                     egui::StrokeKind::Inside,
                 );
-                p.text(
+                ui.painter().text(
                     egui::pos2(pill.left() + 10.0, cy),
                     egui::Align2::LEFT_CENTER,
                     crate::icons::SEARCH.to_string(),
                     codicon_font(13.0),
                     Palette::COMMAND_CENTER_FG,
                 );
-                p.text(
+                ui.painter().text(
                     pill.center(),
                     egui::Align2::CENTER_CENTER,
                     &workspace_name,
                     egui::FontId::proportional(12.5),
                     Palette::COMMAND_CENTER_FG,
                 );
+                if pill_resp.clicked() {
+                    self.palette.open();
+                }
+                pill_resp.on_hover_text("Show All Commands (⇧⌘P)");
 
-                // Right: layout-control cluster (toggle sidebars / panel / customise).
+                // Right: layout-control cluster. The leftmost icon
+                // (`layout-sidebar-left`) toggles the primary sidebar; the
+                // others are placeholders for parity with VS Code.
                 let mut rx = rect.right() - 22.0;
-                for glyph in [
-                    crate::icons::LAYOUT,
-                    crate::icons::LAYOUT_SIDEBAR_RIGHT,
-                    crate::icons::LAYOUT_PANEL,
-                    crate::icons::LAYOUT_SIDEBAR_LEFT,
-                ] {
-                    p.text(
-                        egui::pos2(rx, cy),
-                        egui::Align2::CENTER_CENTER,
-                        glyph.to_string(),
-                        codicon_font(16.0),
-                        Palette::TITLE_BAR_INACTIVE_FG,
+                let layout_items: [(char, &str); 4] = [
+                    (crate::icons::LAYOUT, "Customize Layout…"),
+                    (crate::icons::LAYOUT_SIDEBAR_RIGHT, "Toggle Secondary Side Bar"),
+                    (crate::icons::LAYOUT_PANEL, "Toggle Panel"),
+                    (crate::icons::LAYOUT_SIDEBAR_LEFT, "Toggle Primary Side Bar (⌘B)"),
+                ];
+                for (i, (glyph, tip)) in layout_items.into_iter().enumerate() {
+                    let r = egui::Rect::from_center_size(egui::pos2(rx, cy), egui::vec2(26.0, 22.0));
+                    let resp = ui.interact(r, ui.id().with(("tlayout", i)), egui::Sense::click());
+                    let (bg, fg) = if resp.hovered() {
+                        (Palette::COMMAND_CENTER_BG, Palette::FG)
+                    } else {
+                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG)
+                    };
+                    ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
+                    ui.painter().text(
+                        r.center(), egui::Align2::CENTER_CENTER,
+                        glyph.to_string(), codicon_font(16.0), fg,
                     );
+                    // Only the primary side bar toggle is wired up for now.
+                    if i == 3 && resp.clicked() {
+                        self.sidebar_visible = !self.sidebar_visible;
+                    }
+                    resp.on_hover_text(tip);
                     rx -= 30.0;
                 }
 
@@ -1155,6 +1195,8 @@ impl App {
                             &mut self.scm_ui,
                             &self.git_decorations,
                             active_file.as_deref(),
+                            &mut self.outline_expanded,
+                            &mut self.timeline_expanded,
                         )
                     });
                 sidebar_output = resp.inner;

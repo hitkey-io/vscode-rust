@@ -160,6 +160,10 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<CommandId>
         return chosen;
     }
 
+    // Snapshot the flag now: `palette_input` (inside the area) also consumes
+    // `just_opened` to grab focus, so by the time we check click-outside the
+    // flag would already be cleared.
+    let was_just_opened = state.just_opened;
     let area = egui::Area::new(egui::Id::new("command_palette_area"))
         .order(Order::Foreground)
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 38.0))
@@ -183,7 +187,10 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<CommandId>
                 });
         });
 
-    if area.response.clicked_elsewhere() {
+    // Skip the click-outside dismissal on the very frame the palette opens —
+    // otherwise the click that toggled it open (e.g. on the title bar command
+    // centre) is re-evaluated as "outside" and closes the palette immediately.
+    if !was_just_opened && area.response.clicked_elsewhere() {
         state.visible = false;
     }
 
