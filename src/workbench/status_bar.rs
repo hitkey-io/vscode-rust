@@ -7,7 +7,7 @@ use crate::vscode_widgets::primitives::{label, LabelProps};
 
 /// A plain text status item with the standard horizontal padding (used in the
 /// right-to-left cluster: encoding, EOL, indentation, position).
-fn plain(ui: &mut Ui, text: &str) {
+fn plain(ui: &mut Ui, text: &str) -> egui::Response {
     ui.add_space(6.0);
     let g = ui
         .painter()
@@ -24,6 +24,7 @@ fn plain(ui: &mut Ui, text: &str) {
         FontId::proportional(11.5),
         Palette::FG,
     );
+    resp
 }
 
 /// A left-cluster status segment: a codicon glyph (painted with the codicon
@@ -78,6 +79,10 @@ pub struct StatusBarOutput {
     pub branch_clicked: Option<egui::Rect>,
     /// The sync (ahead/behind) segment was clicked.
     pub sync_clicked: bool,
+    /// An inert status item (problems, language, EOL, indent, encoding, bell,
+    /// feedback, remote, cursor position) was clicked — VS Code routes most of
+    /// these through the command palette, so the caller opens it.
+    pub palette_requested: bool,
 }
 
 /// VS Code-style status bar. We only render segments that map to real, working
@@ -112,7 +117,9 @@ pub fn show(
     ui.allocate_ui_at_rect(row, |ui| {
         ui.horizontal_centered(|ui| {
             // Far-left: remote indicator (`><`), like VS Code's status bar.
-            let _ = status_segment(ui, icons::REMOTE, "", "Open a Remote Window");
+            if status_segment(ui, icons::REMOTE, "", "Open a Remote Window").clicked() {
+                out.palette_requested = true;
+            }
             ui.add_space(2.0);
             // Left cluster: clickable Git branch (with a "*N" change counter)
             // + a sync segment, then any transient action message.
@@ -152,8 +159,12 @@ pub fn show(
             }
             // Problems counter (errors / warnings). Zeroed until diagnostics
             // are wired, matching VS Code's always-present indicator.
-            let _ = status_segment(ui, icons::ERROR_ICON, "0", "No Problems");
-            let _ = status_segment(ui, icons::WARNING_ICON, "0", "No Problems");
+            if status_segment(ui, icons::ERROR_ICON, "0", "No Problems").clicked() {
+                out.palette_requested = true;
+            }
+            if status_segment(ui, icons::WARNING_ICON, "0", "No Problems").clicked() {
+                out.palette_requested = true;
+            }
 
             // Left: action message (Save status, Open results, etc.).
             if !message.is_empty() {
@@ -168,19 +179,28 @@ pub fn show(
             if let Some(doc) = active {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(6.0);
-                    let _ = status_segment(ui, icons::FEEDBACK, "", "Tweet Feedback");
-                    let _ = status_segment(ui, icons::BELL, "", "No Notifications");
+                    if status_segment(ui, icons::FEEDBACK, "", "Tweet Feedback").clicked() {
+                        out.palette_requested = true;
+                    }
+                    if status_segment(ui, icons::BELL, "", "No Notifications").clicked() {
+                        out.palette_requested = true;
+                    }
                     ui.add_space(2.0);
-                    let _ = status_segment(
+                    if status_segment(
                         ui,
                         icons::JSON_BRACES,
                         doc.language_label(),
                         "Select Language Mode",
-                    );
-                    plain(ui, "LF");
-                    plain(ui, "Spaces: 2");
-                    plain(ui, "UTF-8");
-                    plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col));
+                    )
+                    .clicked()
+                    {
+                        out.palette_requested = true;
+                    }
+                    if plain(ui, "LF").clicked() { out.palette_requested = true; }
+                    if plain(ui, "Spaces: 2").clicked() { out.palette_requested = true; }
+                    if plain(ui, "UTF-8").clicked() { out.palette_requested = true; }
+                    if plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col))
+                        .clicked() { out.palette_requested = true; }
                 });
             }
         });

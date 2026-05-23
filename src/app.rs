@@ -1130,6 +1130,9 @@ impl App {
                         self.refresh_git();
                     }
                 }
+                if sb.palette_requested {
+                    self.palette.open();
+                }
             });
 
         self.show_branch_picker(ctx);
@@ -1147,7 +1150,9 @@ impl App {
             .show(ctx, |ui| {
                 let prev_view = self.active_view;
                 let scm_count = self.git_model.total_changes();
-                activity_bar::show(ui, &mut self.active_view, &mut self.sidebar_visible, scm_count);
+                if activity_bar::show(ui, &mut self.active_view, &mut self.sidebar_visible, scm_count) {
+                    self.palette.open();
+                }
                 // Refresh Git when the user just switched to Source Control.
                 if self.active_view == ActivityView::SourceControl
                     && prev_view != ActivityView::SourceControl

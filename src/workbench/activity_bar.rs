@@ -9,12 +9,15 @@ use super::ActivityView;
 const ITEM_HEIGHT: f32 = 48.0;
 
 /// `scm_count` paints the Source Control count badge (VS Code `scm.countBadge`).
+/// Returns `true` if the user clicked one of the visual-only icons (Run/Debug,
+/// Extensions, Accounts, Manage gear); the caller opens the command palette.
 pub fn show(
     ui: &mut Ui,
     current: &mut ActivityView,
     sidebar_visible: &mut bool,
     scm_count: usize,
-) {
+) -> bool {
+    let mut palette_requested = false;
     let painter = ui.painter();
     let rect = ui.max_rect();
     painter.rect_filled(rect, 0.0, Palette::ACTIVITY_BAR_BG);
@@ -90,7 +93,8 @@ pub fn show(
             }
 
             // Run & Debug and Extensions complete the icon column visually
-            // (VS Code's default activity bar). They are inert for now.
+            // (VS Code's default activity bar). Clicking them opens the
+            // command palette so users can route to the relevant action.
             for (glyph, label) in [
                 (icons::DEBUG_ALT, "Run and Debug (⇧⌘D)"),
                 (icons::EXTENSIONS, "Extensions (⇧⌘X)"),
@@ -104,6 +108,9 @@ pub fn show(
                         .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
                         .hover_color(Palette::ACTIVITY_BAR_FG),
                 );
+                if resp.clicked() {
+                    palette_requested = true;
+                }
                 resp.on_hover_text(label);
             }
         },
@@ -131,8 +138,13 @@ pub fn show(
                         .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
                         .hover_color(Palette::ACTIVITY_BAR_FG),
                 );
+                if resp.clicked() {
+                    palette_requested = true;
+                }
                 resp.on_hover_text(label);
             }
         },
     );
+
+    palette_requested
 }
