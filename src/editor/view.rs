@@ -18,7 +18,12 @@ const CHEVRON_W: f32 = 16.0;
 /// Width of the diff decoration strip on the far left of the gutter.
 const DIFF_W: f32 = 3.0;
 
-pub fn show(ui: &mut Ui, doc: &mut Document, diff: &BTreeMap<usize, DiffKind>) {
+pub fn show(
+    ui: &mut Ui,
+    doc: &mut Document,
+    diff: &BTreeMap<usize, DiffKind>,
+    find: Option<&super::highlight::FindHighlight>,
+) {
     // Diff tabs render a read-only inline diff against their HEAD base.
     if let Some(base) = &doc.diff_base {
         super::diff_view::show(ui, base, &doc.text, doc.language);
@@ -64,7 +69,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, diff: &BTreeMap<usize, DiffKind>) {
         if has_folds {
             show_folded(ui, doc, &all_lines, &visible, &ranges, gutter_width, number_w, diff);
         } else {
-            show_editable(ui, doc, line_count, &ranges, gutter_width, number_w, diff);
+            show_editable(ui, doc, line_count, &ranges, gutter_width, number_w, diff, find);
         }
     });
 
@@ -189,13 +194,22 @@ fn show_editable(
     gutter_width: f32,
     number_w: f32,
     diff: &BTreeMap<usize, DiffKind>,
+    find: Option<&super::highlight::FindHighlight>,
 ) {
     let pending = doc.pending_nav.take();
     let ctx = ui.ctx().clone();
     let style = ui.style().clone();
     let language = doc.language;
+    let find_owned = find.cloned();
     let mut layouter = move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-        let job = build_layout_job(&ctx, &style, text.as_str(), language, wrap_width);
+        let job = build_layout_job(
+            &ctx,
+            &style,
+            text.as_str(),
+            language,
+            wrap_width,
+            find_owned.as_ref(),
+        );
         ui.ctx().fonts_mut(|f| f.layout_job(job))
     };
 
@@ -341,6 +355,7 @@ fn show_folded(
                         &line_text,
                         language,
                         f32::INFINITY,
+                        None,
                     );
                     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
                     let y = code_rect.top() + 4.0 + row as f32 * LINE_HEIGHT

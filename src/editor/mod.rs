@@ -1,5 +1,6 @@
 pub mod buffer;
 pub mod diff_view;
+pub mod find;
 pub mod fold;
 pub mod highlight;
 pub mod minimap;

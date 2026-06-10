@@ -91,6 +91,12 @@ impl Palette {
     /// `statusBarItem.hoverBackground` — translucent white wash on hover.
     pub const STATUS_BAR_ITEM_HOVER_BG: Color32 = Color32::from_rgba_premultiplied(0x2A, 0x2A, 0x2A, 0xFF);
 
+    /// `editor.findMatchHighlightBackground` — all non-current find matches
+    /// (the current one uses the brighter `FIND_MATCH_BG`).
+    pub const FIND_MATCH_HL_BG: Color32 = rgba(0x27, 0x67, 0x82, 0x80);
+    /// `editorWidget.border`
+    pub const EDITOR_WIDGET_BORDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+
     // Git decorations — exact `gitDecoration.*` from themes/2026-dark.json.
     pub const GIT_MODIFIED_FG: Color32 = rgb(0xE5, 0xBA, 0x7D); // modified + stageModified
     pub const GIT_ADDED_FG: Color32 = rgb(0x73, 0xC9, 0x91); // added + untracked

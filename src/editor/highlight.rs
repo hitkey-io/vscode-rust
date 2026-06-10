@@ -36,12 +36,25 @@ const BRACKET_COLORS: [Color32; 3] = [
 
 const UNMATCHED_BRACKET: Color32 = Color32::from_rgb(0xFF, 0x12, 0x12);
 
+/// Find-match decoration for `build_layout_job`: byte ranges of every match in
+/// the document plus the index of the current one. The current match gets the
+/// brighter `editor.findMatchBackground`; the rest get the dimmer
+/// `findMatchHighlightBackground` — exactly VS Code's split.
+#[derive(Clone, Default)]
+pub struct FindHighlight {
+    /// Sorted, non-overlapping byte ranges `(start, end)` into the text.
+    pub ranges: Vec<(usize, usize)>,
+    /// Index into `ranges` of the current match.
+    pub current: usize,
+}
+
 pub fn build_layout_job(
     _ctx: &egui::Context,
     _style: &egui::Style,
     text: &str,
     language: &str,
     wrap_width: f32,
+    find: Option<&FindHighlight>,
 ) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap_width;
@@ -49,6 +62,7 @@ pub fn build_layout_job(
     let syntax = pick_syntax(language);
     let mut highlighter = HighlightLines::new(syntax, &DARK_PLUS);
     let font = crate::icons::editor_mono_font(EDITOR_FONT_SIZE);
+    let mut w = JobWriter { job: &mut job, pos: 0, find };
 
     // Track nesting state across the whole document so brackets on different
     // lines still get matched.
@@ -60,7 +74,7 @@ pub fn build_layout_job(
         let regions = match highlighter.highlight_line(line, &SYNTAX_SET) {
             Ok(r) => r,
             Err(_) => {
-                push_plain(&mut job, line, &font, default_fg());
+                w.push(line, &font, default_fg());
                 continue;
             }
         };
@@ -77,8 +91,7 @@ pub fn build_layout_job(
             in_comment = snippet_in_comment;
 
             if snippet_in_string || snippet_in_comment {
-                push_plain(
-                    &mut job,
+                w.push(
                     snippet,
                     &font,
                     Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b),
@@ -95,13 +108,13 @@ pub fn build_layout_job(
             );
             for ch in snippet.chars() {
                 if is_open_bracket(ch) {
-                    flush(&mut job, &mut buf, &font, base_color);
+                    flush(&mut w, &mut buf, &font, base_color);
                     let level = bracket_stack.len();
                     bracket_stack.push(ch);
                     let color = BRACKET_COLORS[level % BRACKET_COLORS.len()];
-                    push_plain(&mut job, &ch.to_string(), &font, syntect_rgb(color));
+                    w.push(&ch.to_string(), &font, syntect_rgb(color));
                 } else if is_close_bracket(ch) {
-                    flush(&mut job, &mut buf, &font, base_color);
+                    flush(&mut w, &mut buf, &font, base_color);
                     let matched = matches!(
                         (bracket_stack.last().copied(), ch),
                         (Some('('), ')') | (Some('['), ']') | (Some('{'), '}')
@@ -113,12 +126,12 @@ pub fn build_layout_job(
                     } else {
                         UNMATCHED_BRACKET
                     };
-                    push_plain(&mut job, &ch.to_string(), &font, syntect_rgb(color));
+                    w.push(&ch.to_string(), &font, syntect_rgb(color));
                 } else {
                     buf.push(ch);
                 }
             }
-            flush(&mut job, &mut buf, &font, base_color);
+            flush(&mut w, &mut buf, &font, base_color);
         }
     }
     let _ = (in_string, in_comment);
@@ -158,24 +171,81 @@ pub fn line_runs(text: &str, language: &str) -> Vec<Vec<(String, Color32)>> {
     out
 }
 
-fn push_plain(job: &mut LayoutJob, text: &str, font: &FontId, color: Color32) {
-    if text.is_empty() {
-        return;
+/// Appends runs to the LayoutJob while tracking the byte offset into the
+/// source text, splitting each run at find-match boundaries so matched spans
+/// get a background wash (`editor.findMatch*Background`).
+struct JobWriter<'a> {
+    job: &'a mut LayoutJob,
+    pos: usize,
+    find: Option<&'a FindHighlight>,
+}
+
+impl JobWriter<'_> {
+    fn push(&mut self, text: &str, font: &FontId, color: Color32) {
+        if text.is_empty() {
+            return;
+        }
+        let start = self.pos;
+        let end = start + text.len();
+        self.pos = end;
+
+        // Fast path: no find decoration, or no range touches this run.
+        let overlapping: &[(usize, usize)] = match self.find {
+            Some(f) if !f.ranges.is_empty() => &f.ranges,
+            _ => &[],
+        };
+        let mut cuts: Vec<(usize, usize, bool)> = Vec::new(); // (s, e, is_current)
+        if let Some(f) = self.find {
+            for (i, &(s, e)) in overlapping.iter().enumerate() {
+                if e > start && s < end {
+                    cuts.push((s.max(start), e.min(end), i == f.current));
+                }
+            }
+        }
+        if cuts.is_empty() {
+            self.append(text, font, color, None);
+            return;
+        }
+
+        // Emit alternating plain / highlighted segments.
+        let mut at = start;
+        for (s, e, is_current) in cuts {
+            if s > at {
+                self.append(&text[at - start..s - start], font, color, None);
+            }
+            let bg = if is_current {
+                crate::theme::Palette::FIND_MATCH_BG
+            } else {
+                crate::theme::Palette::FIND_MATCH_HL_BG
+            };
+            self.append(&text[s - start..e - start], font, color, Some(bg));
+            at = e;
+        }
+        if at < end {
+            self.append(&text[at - start..], font, color, None);
+        }
     }
-    job.append(
-        text,
-        0.0,
-        TextFormat {
-            font_id: font.clone(),
-            color,
-            line_height: Some(EDITOR_LINE_HEIGHT),
-            ..Default::default()
-        },
-    );
+
+    fn append(&mut self, text: &str, font: &FontId, color: Color32, bg: Option<Color32>) {
+        if text.is_empty() {
+            return;
+        }
+        self.job.append(
+            text,
+            0.0,
+            TextFormat {
+                font_id: font.clone(),
+                color,
+                background: bg.unwrap_or(Color32::TRANSPARENT),
+                line_height: Some(EDITOR_LINE_HEIGHT),
+                ..Default::default()
+            },
+        );
+    }
 }
 
 fn flush(
-    job: &mut LayoutJob,
+    w: &mut JobWriter<'_>,
     buf: &mut String,
     font: &FontId,
     color: Color32,
@@ -183,7 +253,7 @@ fn flush(
     if buf.is_empty() {
         return;
     }
-    push_plain(job, buf, font, color);
+    w.push(buf, font, color);
     buf.clear();
 }
 

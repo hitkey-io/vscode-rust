@@ -58,6 +58,8 @@ pub struct App {
     /// Explorer OUTLINE / TIMELINE section expanded state.
     outline_expanded: bool,
     timeline_expanded: bool,
+    /// In-editor find widget (Cmd+F) state.
+    find: crate::editor::find::FindState,
 }
 
 impl App {
@@ -102,6 +104,7 @@ impl App {
             commit_menu: None,
             outline_expanded: false,
             timeline_expanded: false,
+            find: crate::editor::find::FindState::default(),
         }
     }
 
@@ -1045,6 +1048,15 @@ impl App {
             self.show_view(ActivityView::Search);
         }
 
+        // Cmd+F — in-editor find (only when a document is open). Must come
+        // after the Cmd+Shift+F check so the chord with Shift wins.
+        let find_in_editor = ctx.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::F))
+        });
+        if find_in_editor && self.active_doc.is_some() {
+            self.find.open();
+        }
+
         let show_explorer = ctx.input_mut(|i| {
             i.consume_shortcut(&egui::KeyboardShortcut::new(
                 Modifiers::COMMAND | Modifiers::SHIFT,
@@ -1221,6 +1233,7 @@ impl App {
         }
 
         let mut welcome_pending_folder = false;
+        let mut find_matches_for_widget: Vec<(usize, usize)> = Vec::new();
         let mut welcome_pending_file = false;
 
         egui::CentralPanel::default()
@@ -1285,9 +1298,31 @@ impl App {
                                 self.workspace_root.as_deref(),
                             );
                         }
+                        // Find matches for the active document (Cmd+F widget).
+                        let find_matches: Vec<(usize, usize)> = if self.find.open {
+                            self.documents
+                                .get(idx)
+                                .map(|d| {
+                                    crate::editor::find::compute_matches(
+                                        &d.text,
+                                        &self.find.query,
+                                    )
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        };
+                        let find_hl =
+                            crate::editor::find::highlight_for(&self.find, &find_matches);
                         if let Some(doc) = self.documents.get_mut(idx) {
-                            crate::editor::view::show(ui, doc, &self.git_line_changes);
+                            crate::editor::view::show(
+                                ui,
+                                doc,
+                                &self.git_line_changes,
+                                find_hl.as_ref(),
+                            );
                         }
+                        find_matches_for_widget = find_matches;
                     } else if self.show_welcome {
                         let act = welcome_screen(ui);
                         if act.open_folder {
@@ -1310,6 +1345,20 @@ impl App {
         }
         if welcome_pending_file {
             self.open_file_dialog();
+        }
+
+        // In-editor find widget (drawn over the editor, after all panels).
+        if self.find.open && self.active_doc.is_some() {
+            let fr = crate::editor::find::show(ctx, &mut self.find, &find_matches_for_widget);
+            if let Some(byte) = fr.goto {
+                if let Some(doc) = self.active_doc.and_then(|i| self.documents.get_mut(i)) {
+                    // Byte offset → (1-based line, byte offset within that line).
+                    let upto = &doc.text[..byte.min(doc.text.len())];
+                    let line = upto.matches('\n').count() + 1;
+                    let line_start = upto.rfind('\n').map(|p| p + 1).unwrap_or(0);
+                    doc.pending_nav = Some((line, byte - line_start));
+                }
+            }
         }
 
         if let Some(cmd) = command_palette::show(ctx, &mut self.palette) {

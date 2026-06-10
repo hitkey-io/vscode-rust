@@ -134,7 +134,7 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
                 );
 
                 // Syntax-highlighted line content.
-                let job = build_layout_job(&ctx, &style, row.text, language, f32::INFINITY);
+                let job = build_layout_job(&ctx, &style, row.text, language, f32::INFINITY, None);
                 let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
                 let ty = cy - galley.size().y / 2.0;
                 ui.painter()
