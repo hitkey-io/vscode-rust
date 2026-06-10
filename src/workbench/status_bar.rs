@@ -196,9 +196,11 @@ pub fn show(
                     {
                         out.palette_requested = true;
                     }
+                    // Right-to-left order: LF, then UTF-8, then Spaces — so the
+                    // visual left-to-right order is Spaces, UTF-8, LF (VS Code's).
                     if plain(ui, "LF").clicked() { out.palette_requested = true; }
-                    if plain(ui, "Spaces: 2").clicked() { out.palette_requested = true; }
                     if plain(ui, "UTF-8").clicked() { out.palette_requested = true; }
+                    if plain(ui, "Spaces: 2").clicked() { out.palette_requested = true; }
                     if plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col))
                         .clicked() { out.palette_requested = true; }
                 });
