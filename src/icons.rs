@@ -122,6 +122,7 @@ codepoint!(PIN = 0xeba1);
 
 // Source Control
 codepoint!(REPO = 0xea62);
+codepoint!(REPO_SELECTED = 0xec69);
 codepoint!(ELLIPSIS = 0xea7c);
 codepoint!(DISCARD = 0xeae2);
 codepoint!(ADD = 0xea60);

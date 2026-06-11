@@ -184,7 +184,11 @@ fn repo_section(
         let chev = if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
         p.text(egui::pos2(rect.left() + 24.0, cy), Align2::CENTER_CENTER, chev.to_string(),
             codicon_font(12.0), Palette::FG_DESCRIPTION);
-        p.text(egui::pos2(rect.left() + 38.0, cy), Align2::LEFT_CENTER, icons::REPO.to_string(),
+        // With multiple repositories VS Code shows the "repo-selected" glyph
+        // (a repo with a check) rather than the plain repo icon
+        // (scmRepositoryRenderer.ts: showSelectedIcon).
+        p.text(egui::pos2(rect.left() + 38.0, cy), Align2::LEFT_CENTER,
+            icons::REPO_SELECTED.to_string(),
             codicon_font(14.0), Palette::FG_DESCRIPTION);
         p.text(egui::pos2(rect.left() + 58.0, cy), Align2::LEFT_CENTER, &repo.name,
             FontId::proportional(13.0), Palette::FG);
@@ -209,13 +213,14 @@ fn repo_section(
             }
         }
 
-        // Right action cluster (right-to-left): "…", refresh, sync, commit ✓.
+        // Right action cluster (right-to-left): "…", refresh, commit ✓, sync.
+        // Visual left-to-right = sync, commit, refresh, "…" (VS Code order).
         let mut x = rect.right() - 18.0;
         for (glyph, tip) in [
             (icons::ELLIPSIS, "More Actions…"),
             (icons::REFRESH, "Refresh"),
-            (icons::SYNC, "Synchronize Changes"),
             (icons::CHECK, "Commit"),
+            (icons::SYNC, "Synchronize Changes"),
         ] {
             let c = egui::pos2(x, cy);
             let r = egui::Rect::from_center_size(c, egui::vec2(20.0, 20.0));
