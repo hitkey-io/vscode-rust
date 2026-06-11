@@ -20,7 +20,6 @@ use crate::git::{
 };
 use crate::icons::{self, codicon_font};
 use crate::theme::Palette;
-use crate::vscode_widgets::forms::{textarea, TextareaProps};
 use crate::vscode_widgets::primitives::{badge, button, icon_button, label, BadgeProps, ButtonProps,
     IconButtonProps, LabelProps};
 
@@ -268,50 +267,122 @@ fn repo_section(
 
 fn commit_box(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut ScmOutput) {
     let branch = repo.branch.clone().unwrap_or_else(|| "HEAD".into());
-    let placeholder = format!("Message (⌘Enter to commit on '{branch}')");
-    ui.add_space(4.0);
+    let placeholder = format!("Message (⌘Enter to commit on \"{branch}\")");
+    let pad_l = 16.0;
+    let pad_r = 8.0;
+    ui.add_space(3.0);
+
+    // --- message input: VS Code's .scm-editor — single line, 26px, input
+    // background, 1px input border (focus border when focused), radius 4.
+    let input_h = 26.0;
+    let w = ui.available_width() - pad_l - pad_r;
+    let mut commit_now = false;
     ui.horizontal(|ui| {
-        ui.add_space(8.0);
+        ui.add_space(pad_l);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, input_h), Sense::hover());
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(4), Palette::VSCE_INPUT_BG);
         let msg = st.commit_messages.entry(repo.root.clone()).or_default();
-        let resp = textarea(
-            ui,
-            &TextareaProps::new().rows(1).placeholder(&placeholder).width(ui.available_width() - 16.0),
-            msg,
+        let inner = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 8.0, rect.top() + 4.0),
+            egui::vec2(rect.width() - 16.0, rect.height() - 8.0),
+        );
+        let resp = ui
+            .scope_builder(
+                egui::UiBuilder::new().max_rect(inner).layout(*ui.layout()),
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(msg)
+                            .background_color(egui::Color32::TRANSPARENT)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(&placeholder)
+                            .font(FontId::proportional(12.5))
+                            .text_color(Palette::FG),
+                    )
+                },
+            )
+            .inner;
+        let border = if resp.has_focus() {
+            Palette::FOCUS_BORDER
+        } else {
+            Palette::INPUT_BORDER
+        };
+        ui.painter().rect_stroke(
+            rect,
+            egui::CornerRadius::same(4),
+            Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
         );
         if resp.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
-            out.commit = Some((repo.root.clone(), CommitMode::Plain));
+            commit_now = true;
         }
     });
+    if commit_now {
+        out.commit = Some((repo.root.clone(), CommitMode::Plain));
+    }
     ui.add_space(4.0);
-    // The Commit button is muted (disabled-look) when there is nothing to
-    // commit — matching VS Code, which only brightens it once changes exist.
+
+    // --- commit split button: one 26px monaco-button-dropdown — centred
+    // "✓ Commit", a 1px divider, then the caret. Muted when no changes.
     let has_changes = repo.total() > 0;
-    let caret_a = if has_changes { 1.0 } else { 0.45 };
+    let a = if has_changes { 1.0 } else { 0.45 };
     ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        let total_w = ui.available_width() - 16.0;
-        let mut clicked = false;
-        ui.allocate_ui(egui::vec2(total_w - 24.0, 28.0), |ui| {
-            let mut bp = ButtonProps::new("Commit").icon(icons::CHECK).block();
-            if !has_changes {
-                bp = bp.disabled();
+        ui.add_space(pad_l);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, input_h), Sense::click());
+        let caret_w = 20.0;
+        let main = egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.right() - caret_w, rect.bottom()),
+        );
+        let caret = egui::Rect::from_min_max(main.right_top(), rect.max);
+        let hovered = has_changes && resp.hovered();
+        let bg = if hovered { Palette::BUTTON_HOVER } else { Palette::BUTTON_BG };
+        let p = ui.painter();
+        p.rect_filled(rect, egui::CornerRadius::same(2), with_alpha(bg, a));
+        // divider between the button body and the caret
+        p.vline(
+            caret.left(),
+            caret.y_range().shrink(5.0),
+            Stroke::new(1.0, with_alpha(egui::Color32::BLACK, 0.4 * a)),
+        );
+        let fg = with_alpha(Palette::FG_BRIGHT, if has_changes { 1.0 } else { 0.6 });
+        // centred "✓ Commit"
+        let label_w = p
+            .layout_no_wrap("Commit".into(), FontId::proportional(13.0), fg)
+            .size()
+            .x;
+        let cxs = main.center().x - (label_w + 18.0) / 2.0;
+        p.text(
+            egui::pos2(cxs + 8.0, main.center().y),
+            Align2::CENTER_CENTER,
+            icons::CHECK.to_string(),
+            codicon_font(13.0),
+            fg,
+        );
+        p.text(
+            egui::pos2(cxs + 18.0, main.center().y),
+            Align2::LEFT_CENTER,
+            "Commit",
+            FontId::proportional(13.0),
+            fg,
+        );
+        p.text(
+            caret.center(),
+            Align2::CENTER_CENTER,
+            icons::CHEVRON_DOWN.to_string(),
+            codicon_font(12.0),
+            fg,
+        );
+        if has_changes && resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if pos.x >= caret.left() {
+                    out.commit_menu = Some((repo.root.clone(), caret.left_bottom()));
+                } else {
+                    out.commit = Some((repo.root.clone(), CommitMode::Plain));
+                }
             }
-            clicked = button(ui, &bp).clicked();
-        });
-        if clicked && has_changes {
-            out.commit = Some((repo.root.clone(), CommitMode::Plain));
         }
-        // Dropdown caret → Commit & Push / Commit & Sync (same tint as button).
-        let (rect, cr) = ui.allocate_exact_size(egui::vec2(22.0, 26.0), Sense::click());
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(2),
-            with_alpha(Palette::BUTTON_BG, caret_a));
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER,
-            icons::CHEVRON_DOWN.to_string(), codicon_font(12.0),
-            with_alpha(Palette::FG_BRIGHT, caret_a));
-        if cr.clicked() && has_changes {
-            out.commit_menu = Some((repo.root.clone(), rect.left_bottom()));
-        }
-        ui.add_space(8.0);
+        ui.add_space(pad_r);
     });
     ui.add_space(4.0);
 }
