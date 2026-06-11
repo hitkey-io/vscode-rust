@@ -23,6 +23,9 @@ use egui::{Align2, Color32, CornerRadius, FontId, Response, Sense, Ui, Vec2};
 pub struct Tab<'a> {
     pub label: &'a str,
     pub icon: Option<char>,
+    /// File-type icon from the Seti icon font (glyph + theme colour). Takes
+    /// precedence over `icon`, which renders from the codicon font.
+    pub seti_icon: Option<(char, egui::Color32)>,
     pub closable: bool,
     pub dirty: bool,
     pub disabled: bool,
@@ -41,6 +44,7 @@ impl<'a> Tab<'a> {
         Self {
             label,
             icon: None,
+            seti_icon: None,
             closable: true,
             dirty: false,
             disabled: false,
@@ -52,6 +56,11 @@ impl<'a> Tab<'a> {
 
     pub fn icon(mut self, glyph: char) -> Self {
         self.icon = Some(glyph);
+        self
+    }
+
+    pub fn seti_icon(mut self, glyph: char, color: egui::Color32) -> Self {
+        self.seti_icon = Some((glyph, color));
         self
     }
 
@@ -208,7 +217,7 @@ fn draw_single_tab(
     );
 
     let mut content_w = label_galley.size().x;
-    if tab.icon.is_some() {
+    if tab.icon.is_some() || tab.seti_icon.is_some() {
         content_w += icon_size + icon_gap;
     }
     content_w += trailing_slot;
@@ -259,7 +268,16 @@ fn draw_single_tab(
 
     let mut cursor = rect.left() + pad_x;
     let cy = rect.center().y;
-    if let Some(glyph) = tab.icon {
+    if let Some((glyph, color)) = tab.seti_icon {
+        painter.text(
+            egui::pos2(cursor + icon_size * 0.5, cy),
+            Align2::CENTER_CENTER,
+            glyph.to_string(),
+            crate::file_icons::seti_font(icon_size + 1.0),
+            color,
+        );
+        cursor += icon_size + icon_gap;
+    } else if let Some(glyph) = tab.icon {
         painter.text(
             egui::pos2(cursor + icon_size * 0.5, cy),
             Align2::CENTER_CENTER,

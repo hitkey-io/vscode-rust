@@ -59,7 +59,12 @@ pub fn show(
         items.push(Tab::new("Welcome").icon(icons::VSCODE).closable(true));
     }
     for (idx, label) in labels.iter().enumerate() {
-        let mut t = Tab::new(label).icon(icons::FILE).tooltip(&tooltips[idx]);
+        // File-type icon from the Seti theme (codicon file glyph as fallback).
+        let mut t = match crate::file_icons::icon_for(&docs[idx].path) {
+            Some((glyph, color)) => Tab::new(label).seti_icon(glyph, color),
+            None => Tab::new(label).icon(icons::FILE),
+        }
+        .tooltip(&tooltips[idx]);
         if dirty_flags[idx] {
             t = t.dirty();
         }

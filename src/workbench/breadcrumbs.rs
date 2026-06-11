@@ -34,7 +34,6 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
     }
 
     let label_font = FontId::proportional(12.0);
-    let icon_font = codicon_font(13.0);
     let cy = rect.center().y;
     let mut x = rect.left() + 10.0;
     let last = comps.len() - 1;
@@ -51,18 +50,39 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
             );
             x += 13.0;
         }
-        let is_file = i == last;
-        let glyph = if is_file { icons::FILE } else { icons::FOLDER };
-        p.text(
-            egui::pos2(x, cy),
-            Align2::LEFT_CENTER,
-            glyph.to_string(),
-            icon_font.clone(),
-            Palette::FG_DESCRIPTION,
-        );
-        x += 18.0;
+        // Folder segments have no icon (matches VS Code with the Seti theme);
+        // the file segment gets its Seti file-type glyph.
+        if i == last {
+            if let Some((glyph, color)) = crate::file_icons::icon_for(path) {
+                p.text(
+                    egui::pos2(x, cy),
+                    Align2::LEFT_CENTER,
+                    glyph.to_string(),
+                    crate::file_icons::seti_font(14.0),
+                    color,
+                );
+                x += 18.0;
+            }
+        }
         let g = p.layout_no_wrap(name.clone(), label_font.clone(), Palette::BREADCRUMB_FG);
         p.galley(egui::pos2(x, cy - g.size().y * 0.5), g.clone(), Palette::BREADCRUMB_FG);
         x += g.size().x + 6.0;
     }
+
+    // Trailing "› …" symbol-path placeholder, like VS Code's breadcrumbs when
+    // no document symbol is selected.
+    p.text(
+        egui::pos2(x, cy),
+        Align2::LEFT_CENTER,
+        icons::CHEVRON_RIGHT.to_string(),
+        codicon_font(11.0),
+        Palette::FG_DESCRIPTION,
+    );
+    p.text(
+        egui::pos2(x + 13.0, cy),
+        Align2::LEFT_CENTER,
+        "…",
+        label_font,
+        Palette::FG_DESCRIPTION,
+    );
 }
