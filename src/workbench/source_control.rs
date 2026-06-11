@@ -467,8 +467,16 @@ fn file_row(
         let _ = it.next();
         it.next().unwrap_or("").to_string()
     };
-    p.text(egui::pos2(rect.left() + 12.0, cy), Align2::LEFT_CENTER, icons::FILE.to_string(),
-        codicon_font(14.0), dim);
+    // File-type icon from the Seti theme (same as the Explorer tree), tinted
+    // by the row's faded alpha. Falls back to the codicon file glyph.
+    let icon_path = repo.root.join(&fc.rel);
+    if let Some((glyph, color)) = crate::file_icons::icon_for(&icon_path) {
+        p.text(egui::pos2(rect.left() + 13.0, cy), Align2::LEFT_CENTER, glyph.to_string(),
+            crate::file_icons::seti_font(15.0), with_alpha(color, alpha));
+    } else {
+        p.text(egui::pos2(rect.left() + 12.0, cy), Align2::LEFT_CENTER, icons::FILE.to_string(),
+            codicon_font(14.0), dim);
+    }
     let name_pos = egui::pos2(rect.left() + 32.0, cy);
     let name_galley = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), fg);
     let name_w = name_galley.size().x;
@@ -611,8 +619,13 @@ fn commit_file_row(ui: &mut Ui, f: &crate::git::CommitFile) -> bool {
         it.next().unwrap_or("").to_string()
     };
     let p = ui.painter();
-    p.text(egui::pos2(rect.left() + 34.0, cy), Align2::LEFT_CENTER, icons::FILE.to_string(),
-        codicon_font(14.0), Palette::FG_DESCRIPTION);
+    if let Some((glyph, color)) = crate::file_icons::icon_for(std::path::Path::new(&f.rel)) {
+        p.text(egui::pos2(rect.left() + 35.0, cy), Align2::LEFT_CENTER, glyph.to_string(),
+            crate::file_icons::seti_font(15.0), color);
+    } else {
+        p.text(egui::pos2(rect.left() + 34.0, cy), Align2::LEFT_CENTER, icons::FILE.to_string(),
+            codicon_font(14.0), Palette::FG_DESCRIPTION);
+    }
     let np = egui::pos2(rect.left() + 54.0, cy);
     let g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG);
     let nw = g.size().x;
