@@ -561,22 +561,58 @@ fn graph_section(
     st: &mut ScmUiState,
     out: &mut ScmOutput,
 ) {
-    // Collapsible "GRAPH" header.
+    // Collapsible "GRAPH" header with the SCM-History toolbar
+    // (scmHistoryViewPane.ts: repository picker + reference picker "Auto" +
+    // fetch / pull / push + refresh).
     let h = 22.0;
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), h), Sense::click());
-    let p = ui.painter();
     let cy = rect.center().y;
-    let chev = if st.graph_open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-    p.text(egui::pos2(rect.left() + 12.0, cy), Align2::CENTER_CENTER, chev.to_string(),
-        codicon_font(12.0), Palette::FG_DESCRIPTION);
-    p.text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, "GRAPH",
-        FontId::proportional(11.0), Palette::FG_DESCRIPTION);
+    {
+        let p = ui.painter();
+        let chev = if st.graph_open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+        p.text(egui::pos2(rect.left() + 12.0, cy), Align2::CENTER_CENTER, chev.to_string(),
+            codicon_font(12.0), Palette::FG_DESCRIPTION);
+        p.text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, "GRAPH",
+            FontId::proportional(11.0), Palette::FG_DESCRIPTION);
+    }
     if resp.clicked() {
         st.graph_open = !st.graph_open;
     }
     if !st.graph_open {
         return;
+    }
+
+    // Toolbar row: repository picker + reference picker, then fetch/pull/push.
+    if let Some(root) = graph_root {
+        let (bar, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::hover());
+        let by = bar.center().y;
+        let repo_name = root.file_name().map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        {
+            let p = ui.painter();
+            // Repository picker: repo glyph + name.
+            p.text(egui::pos2(bar.left() + 14.0, by), Align2::LEFT_CENTER,
+                icons::REPO.to_string(), codicon_font(13.0), Palette::FG_DESCRIPTION);
+            let nx = bar.left() + 30.0;
+            let ng = p.layout_no_wrap(repo_name.clone(), FontId::proportional(12.0), Palette::FG);
+            let nw = ng.size().x;
+            p.galley(egui::pos2(nx, by - ng.size().y / 2.0), ng, Palette::FG);
+            // Reference picker: git-branch glyph + "Auto".
+            let rx = nx + nw + 14.0;
+            p.text(egui::pos2(rx, by), Align2::LEFT_CENTER,
+                icons::GIT_BRANCH.to_string(), codicon_font(12.0), Palette::FG_DESCRIPTION);
+            p.text(egui::pos2(rx + 16.0, by), Align2::LEFT_CENTER, "Auto",
+                FontId::proportional(12.0), Palette::FG_DESCRIPTION);
+        }
+        // Right cluster: fetch / pull / push (inert visual parity for now).
+        let mut x = bar.right() - 18.0;
+        for glyph in [icons::ARROW_UP, icons::ARROW_DOWN, icons::SYNC] {
+            ui.painter().text(egui::pos2(x, by), Align2::CENTER_CENTER, glyph.to_string(),
+                codicon_font(13.0), Palette::FG_DESCRIPTION);
+            x -= 24.0;
+        }
     }
 
     for row in history {
