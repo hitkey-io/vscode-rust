@@ -381,39 +381,29 @@ fn render_node(
     }
     cursor.x += 12.0;
 
-    if node.is_dir {
-        // Folders keep the codicon folder glyph (Seti defines no folder icons).
-        let icon = if node.expanded {
-            icons::FOLDER_OPENED
+    // Folders render NO icon in the Seti file-icon theme — just the chevron,
+    // with the folder name starting where a file's type icon would sit
+    // (matches VS Code's Explorer exactly). Files get their Seti glyph.
+    if !node.is_dir {
+        if let Some((glyph, color)) = crate::file_icons::icon_for(&node.path) {
+            painter.text(
+                cursor + egui::vec2(1.0, mid_y),
+                egui::Align2::LEFT_CENTER,
+                glyph.to_string(),
+                crate::file_icons::seti_font(16.0),
+                color,
+            );
         } else {
-            icons::FOLDER
-        };
-        painter.text(
-            cursor + egui::vec2(0.0, mid_y),
-            egui::Align2::LEFT_CENTER,
-            icon.to_string(),
-            codicon_font(15.0),
-            Palette::FG_DESCRIPTION,
-        );
-    } else if let Some((glyph, color)) = crate::file_icons::icon_for(&node.path) {
-        // Files use the VS Code Seti file-type icon (glyph + theme colour).
-        painter.text(
-            cursor + egui::vec2(1.0, mid_y),
-            egui::Align2::LEFT_CENTER,
-            glyph.to_string(),
-            crate::file_icons::seti_font(16.0),
-            color,
-        );
-    } else {
-        painter.text(
-            cursor + egui::vec2(0.0, mid_y),
-            egui::Align2::LEFT_CENTER,
-            icons::FILE.to_string(),
-            codicon_font(15.0),
-            Palette::FG_DESCRIPTION,
-        );
+            painter.text(
+                cursor + egui::vec2(0.0, mid_y),
+                egui::Align2::LEFT_CENTER,
+                icons::FILE.to_string(),
+                codicon_font(15.0),
+                Palette::FG_DESCRIPTION,
+            );
+        }
+        cursor.x += 20.0;
     }
-    cursor.x += 20.0;
 
     // Git decoration: tint the name + paint a status letter on the right.
     let deco = node_decoration(node, decorations);
