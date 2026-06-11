@@ -16,8 +16,9 @@ use super::highlight::line_runs;
 /// typical content).
 pub const WIDTH: f32 = 72.0;
 
-const LINE_H: f32 = 3.0; // vertical px per source line in the minimap
-const CHAR_W: f32 = 0.95; // horizontal px per character
+// VS Code's minimap at scale 1 spends ~2 device px per line; at our 2x DPR
+// that is ~2.2 logical points per source line, micro-glyphs slightly larger.
+const LINE_H: f32 = 2.2;
 const PAD: f32 = 4.0;
 
 /// Paint the minimap into `area` (the right-hand strip of the editor). `top`
@@ -30,6 +31,10 @@ pub fn show(ui: &Ui, area: Rect, doc: &Document, top_line: usize, visible_rows: 
     let runs = line_runs(&doc.text, doc.language);
     let max_rows = ((area.height() - PAD) / LINE_H).floor() as usize;
 
+    // Each run renders as real (micro) text in the editor's monospace font —
+    // tiny letterforms like VS Code's renderCharacters minimap, instead of
+    // flat blocks. Tabs expand so indentation stays proportional.
+    let micro = crate::icons::editor_mono_font(LINE_H + 0.4);
     for (i, line) in runs.iter().enumerate() {
         if i >= max_rows {
             break;
@@ -37,23 +42,19 @@ pub fn show(ui: &Ui, area: Rect, doc: &Document, top_line: usize, visible_rows: 
         let y = area.top() + PAD + i as f32 * LINE_H;
         let mut x = area.left() + PAD;
         for (text, color) in line {
-            for ch in text.chars() {
-                if ch == ' ' || ch == '\t' {
-                    x += CHAR_W * if ch == '\t' { 4.0 } else { 1.0 };
-                    continue;
-                }
-                if x + CHAR_W > area.right() - 2.0 {
-                    break;
-                }
-                // Dim the block slightly, like VS Code's minimap rendering.
-                let c = color.gamma_multiply(0.75);
-                p.rect_filled(
-                    Rect::from_min_size(egui::pos2(x, y), egui::vec2(CHAR_W, LINE_H - 1.0)),
-                    0.0,
-                    c,
-                );
-                x += CHAR_W;
+            if x > area.right() - 2.0 {
+                break;
             }
+            let txt = text.replace('\t', "    ");
+            let c = color.gamma_multiply(0.85);
+            let galley = p.layout_no_wrap(txt, micro.clone(), c);
+            let w = galley.size().x.min(area.right() - 2.0 - x);
+            p.with_clip_rect(Rect::from_min_size(
+                egui::pos2(x, y),
+                egui::vec2(w, LINE_H),
+            ))
+            .galley(egui::pos2(x, y), galley.clone(), c);
+            x += galley.size().x;
         }
     }
 

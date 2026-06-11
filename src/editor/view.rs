@@ -242,6 +242,22 @@ fn show_editable(
                     diff,
                 );
 
+                // Current-line highlight (editor.lineHighlightBackground),
+                // painted under the TextEdit — whose frame is therefore
+                // transparent (the CentralPanel supplies the editor fill).
+                if cursor_line >= 1 {
+                    let hl_y =
+                        gutter_rect.top() + 4.0 + (cursor_line as f32 - 1.0) * LINE_HEIGHT;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(gutter_rect.right(), hl_y),
+                            egui::vec2(ui.available_width().max(200.0), LINE_HEIGHT),
+                        ),
+                        0.0,
+                        Palette::LINE_HIGHLIGHT_BG,
+                    );
+                }
+
                 ui.add(
                     TextEdit::multiline(&mut doc.text)
                         .font(FontId::monospace(EDITOR_FONT_SIZE))
@@ -251,7 +267,7 @@ fn show_editable(
                         .lock_focus(true)
                         .frame(
                             egui::Frame::default()
-                                .fill(Palette::EDITOR_BG)
+                                .fill(egui::Color32::TRANSPARENT)
                                 .inner_margin(egui::Margin::symmetric(6, 4)),
                         )
                         .layouter(&mut layouter),
