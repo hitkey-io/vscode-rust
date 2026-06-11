@@ -214,6 +214,31 @@ const LANE_COUNT: usize = 5;
 
 /// Port of `toISCMHistoryItemViewModelArray` (`scmHistory.ts:289-360`):
 /// compute input/output swimlanes per commit.
+/// Lane "colours" ≥ `REF_COLOR_BASE` are sentinels for the reference colours
+/// (chartsBlue / purple / orange) rather than indices into the rotating
+/// 5-colour swimlane palette. VS Code colours the backbone lane with the
+/// colour of the branch/remote/tag ref that sits on it (scmHistory.ts
+/// `getLabelColorIdentifier`), and that colour is inherited down the chain;
+/// only unlabelled merge lanes use the rotating palette.
+pub const REF_COLOR_LOCAL: usize = 100;
+pub const REF_COLOR_REMOTE: usize = 101;
+pub const REF_COLOR_BASE: usize = 102;
+
+/// The ref colour a commit imposes on its lane, if it carries a ref.
+fn ref_lane_color(commit: &Commit) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for r in &commit.refs {
+        let c = match r.kind {
+            RefKind::Head | RefKind::Local => REF_COLOR_LOCAL,
+            RefKind::Remote => REF_COLOR_REMOTE,
+            RefKind::Tag => REF_COLOR_BASE,
+        };
+        // Prefer local/head (blue) over remote/tag, mirroring the ref order.
+        best = Some(best.map_or(c, |b| b.min(c)));
+    }
+    best
+}
+
 pub fn build_graph(commits: &[Commit]) -> Vec<GraphRow> {
     let mut rows: Vec<GraphRow> = Vec::with_capacity(commits.len());
     let mut color_index: usize = 0; // rotates for new lanes
@@ -232,13 +257,20 @@ pub fn build_graph(commits: &[Commit]) -> Vec<GraphRow> {
             .iter()
             .position(|l| l.id == commit.id)
             .unwrap_or(input.len());
-        let circle_color = input
-            .get(circle_lane)
-            .map(|l| l.color)
+        // The commit's own ref colour wins (and gets inherited downward via the
+        // first-parent output lane); otherwise inherit the input lane's colour.
+        // A brand-new backbone lane (lane 0) is the current branch → blue, like
+        // VS Code; only merge lanes (≥1) draw from the rotating palette.
+        let circle_color = ref_lane_color(commit)
+            .or_else(|| input.get(circle_lane).map(|l| l.color))
             .unwrap_or_else(|| {
-                let c = color_index;
-                color_index = next_color(&mut color_index);
-                c
+                if circle_lane == 0 {
+                    REF_COLOR_LOCAL
+                } else {
+                    let c = color_index;
+                    color_index = next_color(&mut color_index);
+                    c
+                }
             });
 
         // Build output swimlanes.
@@ -258,6 +290,17 @@ pub fn build_graph(commits: &[Commit]) -> Vec<GraphRow> {
                     continue;
                 }
                 output.push(node.clone());
+            }
+            // The commit wasn't present in any input lane (e.g. the tip, whose
+            // input is empty): its first-parent lane still continues the
+            // backbone, so add it with the circle colour rather than letting it
+            // fall through to the rotating-palette branch below.
+            if !first_parent_added {
+                output.push(Lane {
+                    id: commit.parents[0].clone(),
+                    color: circle_color,
+                });
+                first_parent_added = true;
             }
         }
         // Extra parents (merge) → new lanes with rotating colours.

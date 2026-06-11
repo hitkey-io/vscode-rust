@@ -631,7 +631,14 @@ fn commit_file_row(ui: &mut Ui, f: &crate::git::CommitFile) -> bool {
 }
 
 fn lane_color(idx: usize) -> egui::Color32 {
-    Palette::SCM_GRAPH_LANES[idx % Palette::SCM_GRAPH_LANES.len()]
+    // Sentinels ≥ 100 are reference colours (blue/purple/orange); the backbone
+    // lane carrying a branch ref uses these instead of the rotating palette.
+    match idx {
+        crate::git::history::REF_COLOR_LOCAL => Palette::SCM_REF_LOCAL,
+        crate::git::history::REF_COLOR_REMOTE => Palette::SCM_REF_REMOTE,
+        crate::git::history::REF_COLOR_BASE => Palette::SCM_REF_BASE,
+        _ => Palette::SCM_GRAPH_LANES[idx % Palette::SCM_GRAPH_LANES.len()],
+    }
 }
 
 /// Render one commit row; returns `true` when clicked (toggle file list).
@@ -650,13 +657,14 @@ fn graph_row(ui: &mut Ui, row: &GraphRow) -> bool {
     let x = |i: usize| rect.left() + LANE_W * (i as f32 + 1.0);
     let cx = x(row.circle_lane);
 
+    // Swimlane strokes are 1px in VS Code (scmHistory.ts createPath default).
     // Input lanes: top → mid (route the commit's own lane into the circle).
     for (i, lane) in row.input.iter().enumerate() {
         let col = lane_color(lane.color);
         if lane.id == row.commit.id {
-            p.line_segment([egui::pos2(x(i), top), egui::pos2(cx, mid)], Stroke::new(1.5, col));
+            p.line_segment([egui::pos2(x(i), top), egui::pos2(cx, mid)], Stroke::new(1.0, col));
         } else {
-            p.line_segment([egui::pos2(x(i), top), egui::pos2(x(i), mid)], Stroke::new(1.5, col));
+            p.line_segment([egui::pos2(x(i), top), egui::pos2(x(i), mid)], Stroke::new(1.0, col));
         }
     }
     // Output lanes: mid → bottom (new/merge lanes fan out from the circle).
@@ -664,16 +672,23 @@ fn graph_row(ui: &mut Ui, row: &GraphRow) -> bool {
         let col = lane_color(lane.color);
         let carried = row.input.iter().enumerate().any(|(i, l)| l.id == lane.id && i == j && l.id != row.commit.id);
         let from = if carried { egui::pos2(x(j), mid) } else { egui::pos2(cx, mid) };
-        p.line_segment([from, egui::pos2(x(j), bottom)], Stroke::new(1.5, col));
+        p.line_segment([from, egui::pos2(x(j), bottom)], Stroke::new(1.0, col));
     }
-    // The commit circle.
+    // The commit circle. Geometry from scmHistory.ts: CIRCLE_RADIUS = 4, each
+    // circle carries a 2px stroke in the sidebar background so it reads clear
+    // of the lanes. A plain node is a filled disc (r ≈ 5); HEAD is a ring
+    // (filled disc with the centre punched back to the sidebar colour).
     let ccol = lane_color(row.circle_color);
+    let halo = Palette::SIDEBAR_BG;
     let is_head = row.commit.refs.iter().any(|r| r.kind == RefKind::Head);
+    let center = egui::pos2(cx, mid);
     if is_head {
-        p.circle_stroke(egui::pos2(cx, mid), CIRCLE_R + 2.0, Stroke::new(2.0, ccol));
-        p.circle_filled(egui::pos2(cx, mid), CIRCLE_R - 1.0, ccol);
+        p.circle_filled(center, CIRCLE_R + 3.0, halo); // 2px sidebar ring
+        p.circle_filled(center, CIRCLE_R + 2.0, ccol); // outer colour
+        p.circle_filled(center, CIRCLE_R - 2.0, halo); // punched centre → ring
     } else {
-        p.circle_filled(egui::pos2(cx, mid), CIRCLE_R, ccol);
+        p.circle_filled(center, CIRCLE_R + 2.0, halo); // sidebar separation
+        p.circle_filled(center, CIRCLE_R + 1.0, ccol); // r ≈ 5 colour disc
     }
 
     // Right of the graph: ref badges + summary + author.
@@ -686,16 +701,19 @@ fn graph_row(ui: &mut Ui, row: &GraphRow) -> bool {
         };
         // The ref glyph must be drawn with the codicon font; a tag uses the
         // tag glyph, branches/remotes the git-branch fork.
+        // Ref label geometry from scm.css: line-height 18, border-radius 10,
+        // font-size 12, git-branch codicon 12px. (.label-container gap 4px.)
         let glyph = if rf.kind == RefKind::Tag { icons::TAG } else { icons::GIT_BRANCH };
-        let icon_font = codicon_font(11.0);
-        let name_font = FontId::proportional(11.0);
+        let icon_font = codicon_font(12.0);
+        let name_font = FontId::proportional(12.0);
         let icon_w = p.layout_no_wrap(glyph.to_string(), icon_font.clone(), col).size().x;
         let name_g = p.layout_no_wrap(rf.name.clone(), name_font.clone(), col);
-        let w = icon_w + 4.0 + name_g.size().x + 10.0;
-        let pill = egui::Rect::from_min_size(egui::pos2(tx, mid - 8.0), egui::vec2(w, 16.0));
-        p.rect_filled(pill, egui::CornerRadius::same(8), with_alpha(col, 0.18));
-        p.text(egui::pos2(tx + 5.0, mid), Align2::LEFT_CENTER, glyph.to_string(), icon_font, col);
-        p.text(egui::pos2(tx + 5.0 + icon_w + 4.0, mid), Align2::LEFT_CENTER, &rf.name, name_font, col);
+        let pill_h = 18.0;
+        let w = 6.0 + icon_w + 3.0 + name_g.size().x + 6.0;
+        let pill = egui::Rect::from_min_size(egui::pos2(tx, mid - pill_h / 2.0), egui::vec2(w, pill_h));
+        p.rect_filled(pill, egui::CornerRadius::same(9), with_alpha(col, 0.18));
+        p.text(egui::pos2(tx + 6.0, mid), Align2::LEFT_CENTER, glyph.to_string(), icon_font, col);
+        p.text(egui::pos2(tx + 6.0 + icon_w + 3.0, mid), Align2::LEFT_CENTER, &rf.name, name_font, col);
         tx += w + 4.0;
     }
     // Author, right-aligned; reserve its width so the subject can be clipped
