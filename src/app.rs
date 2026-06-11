@@ -60,7 +60,13 @@ pub struct App {
     timeline_expanded: bool,
     /// In-editor find widget (Cmd+F) state.
     find: crate::editor::find::FindState,
+    /// When the current status message was set. VS Code status messages are
+    /// transient; ours expire after a few seconds (see STATUS_TTL).
+    status_message_at: Option<std::time::Instant>,
 }
+
+/// How long a transient status-bar message stays visible.
+const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl App {
     pub fn new(cc: &CreationContext<'_>) -> Self {
@@ -105,7 +111,15 @@ impl App {
             outline_expanded: false,
             timeline_expanded: false,
             find: crate::editor::find::FindState::default(),
+            status_message_at: None,
         }
+    }
+
+    /// Set a transient status-bar message (auto-hides after STATUS_TTL,
+    /// matching VS Code's `setStatusMessage` behaviour).
+    fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = msg.into();
+        self.status_message_at = Some(std::time::Instant::now());
     }
 
     pub fn attach_menu_ids(&mut self, ids: MenuIds) {
@@ -198,7 +212,7 @@ impl App {
     fn set_workspace(&mut self, path: PathBuf) {
         self.workspace_root = Some(path.clone());
         self.file_tree = Some(FileNode::root(path.clone()));
-        self.status_message = format!("Opened folder: {}", path.display());
+        self.set_status(format!("Opened folder: {}", path.display()));
         self.git_watcher = crate::git::Watcher::new(&path);
         self.git_model = crate::git::Model::discover(&path);
         self.scm_ui = crate::workbench::source_control::ScmUiState::default();
@@ -242,7 +256,7 @@ impl App {
             .map(|m| m.trim().to_string())
             .unwrap_or_default();
         if msg.is_empty() {
-            self.status_message = "Commit message is empty".into();
+            self.set_status("Commit message is empty");
             return;
         }
         let Some(repo) = self.git_model.repo_for(repo_root) else {
@@ -250,16 +264,16 @@ impl App {
         };
         let all = repo.index.is_empty();
         if all && repo.working.is_empty() && repo.merge.is_empty() {
-            self.status_message = "Nothing to commit".into();
+            self.set_status("Nothing to commit");
             return;
         }
         match crate::git::commit_with(repo_root, &msg, all, mode) {
             Ok(()) => {
                 self.scm_ui.commit_messages.remove(repo_root);
-                self.status_message = "Committed".into();
+                self.set_status("Committed");
             }
             Err(e) => {
-                self.status_message = format!("Commit failed: {}", e.lines().next().unwrap_or(""));
+                self.set_status(format!("Commit failed: {}", e.lines().next().unwrap_or("")));
             }
         }
         self.refresh_git();
@@ -327,7 +341,7 @@ impl App {
         if self.documents.is_empty() {
             self.show_welcome = true;
         }
-        self.status_message = "Closed folder".into();
+        self.set_status("Closed folder");
     }
 
     fn open_file(&mut self, path: PathBuf) {
@@ -345,7 +359,7 @@ impl App {
             Ok(doc) => {
                 self.documents.push(doc);
                 self.active_doc = Some(self.documents.len() - 1);
-                self.status_message = format!("Opened {}", path.display());
+                self.set_status(format!("Opened {}", path.display()));
                 self.refresh_git_line_changes();
             }
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
@@ -355,7 +369,7 @@ impl App {
                     format!("Cannot show binary file: {}", path.display());
             }
             Err(e) => {
-                self.status_message = format!("Failed to open {}: {}", path.display(), e);
+                self.set_status(format!("Failed to open {}: {}", path.display(), e));
             }
         }
     }
@@ -424,7 +438,7 @@ impl App {
     fn close_all(&mut self) {
         self.documents.clear();
         self.active_doc = None;
-        self.status_message = "Closed all editors".into();
+        self.set_status("Closed all editors");
     }
 
     /// Close every editor except `keep` (pinned tabs are never closed).
@@ -473,7 +487,7 @@ impl App {
         if let Some(sel) = chosen {
             if let Some(name) = branches.get(sel) {
                 if crate::git::checkout(&root, name) {
-                    self.status_message = format!("Switched to branch '{name}'");
+                    self.set_status(format!("Switched to branch '{name}'"));
                 } else {
                     self.status_message =
                         format!("Could not switch to '{name}' (uncommitted changes?)");
@@ -654,17 +668,17 @@ impl App {
     }
 
     fn save_active(&mut self) {
+        let mut msg: Option<String> = None;
         if let Some(idx) = self.active_doc {
             if let Some(doc) = self.documents.get_mut(idx) {
-                match doc.save() {
-                    Ok(()) => {
-                        self.status_message = format!("Saved {}", doc.path.display());
-                    }
-                    Err(e) => {
-                        self.status_message = format!("Save failed: {}", e);
-                    }
-                }
+                msg = Some(match doc.save() {
+                    Ok(()) => format!("Saved {}", doc.path.display()),
+                    Err(e) => format!("Save failed: {}", e),
+                });
             }
+        }
+        if let Some(m) = msg {
+            self.set_status(m);
         }
         self.refresh_git();
     }
@@ -680,11 +694,12 @@ impl App {
                 }
             }
         }
-        self.status_message = if errs > 0 {
+        let msg = if errs > 0 {
             format!("Saved {} file(s), {} errors", saved, errs)
         } else {
             format!("Saved {} file(s)", saved)
         };
+        self.set_status(msg);
     }
 
     fn show_view(&mut self, view: ActivityView) {
@@ -708,7 +723,7 @@ impl App {
                     self.active_doc = Some(self.documents.len() - 1);
                 }
                 Err(e) => {
-                    self.status_message = format!("Failed to open {}: {}", path.display(), e);
+                    self.set_status(format!("Failed to open {}: {}", path.display(), e));
                     return;
                 }
             }
@@ -1115,10 +1130,20 @@ impl App {
                 let changes = repo.map(|r| r.total()).unwrap_or(0);
                 let ahead_behind = repo.map(|r| (r.ahead, r.behind)).unwrap_or((0, 0));
                 let has_upstream = repo.map(|r| r.has_upstream).unwrap_or(false);
+                // Status messages are transient (VS Code's setStatusMessage):
+                // hide after STATUS_TTL, and keep repainting while one shows
+                // so it disappears without further input.
+                let status_visible = self
+                    .status_message_at
+                    .is_some_and(|t| t.elapsed() < STATUS_TTL);
+                if status_visible {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                }
+                let message = if status_visible { self.status_message.as_str() } else { "" };
                 let sb = status_bar::show(
                     ui,
                     active,
-                    &self.status_message,
+                    message,
                     has_workspace,
                     branch,
                     changes,

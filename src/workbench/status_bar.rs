@@ -135,14 +135,20 @@ pub fn show(
                     out.branch_clicked = Some(resp.rect);
                 }
 
-                // Sync segment when an upstream exists (↓behind ↑ahead);
-                // otherwise a "Publish Branch" affordance.
+                // Sync segment when an upstream exists; the ↓/↑ counters only
+                // appear when there is something to sync (VS Code shows a bare
+                // sync icon at 0/0). No upstream → "Publish Branch".
                 let (ahead, behind) = git_ahead_behind;
                 let sresp = if git_has_upstream {
+                    let counters = if ahead + behind > 0 {
+                        format!("{behind}↓ {ahead}↑")
+                    } else {
+                        String::new()
+                    };
                     status_segment(
                         ui,
                         icons::SYNC,
-                        &format!("{behind}↓ {ahead}↑"),
+                        &counters,
                         "Synchronize Changes (pull, then push)",
                     )
                 } else {
