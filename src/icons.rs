@@ -36,6 +36,9 @@ pub fn register_fonts(ctx: &egui::Context) {
     // Seti file-type icon font (VS Code default file-icon theme).
     crate::file_icons::register(&mut fonts);
 
+    // UI text in the macOS system font, as VS Code does.
+    crate::ui_font::register(&mut fonts);
+
     // Load the system Menlo (Regular = face 0 of the .ttc) for the editor, so
     // code metrics match VS Code on macOS. Fall back to egui's bundled
     // monospace if Menlo is unavailable.

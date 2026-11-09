@@ -4539,6 +4539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "similar",
+ "skrifa",
  "syntect",
  "tiny-skia",
  "usvg",

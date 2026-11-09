@@ -10,3 +10,4 @@ pub mod menubar;
 pub mod search;
 pub mod theme;
 pub mod workbench;
+pub mod ui_font;
