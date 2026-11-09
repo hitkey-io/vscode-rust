@@ -70,6 +70,11 @@ pub struct App {
     /// when the active editor changes, so a file removed from "recently
     /// opened" stays out until it is activated again.
     recent_tracked: Option<PathBuf>,
+    /// Installed VS Code extensions and their Node.js host.
+    extensions: crate::extensions::ExtensionService,
+    /// Extensions were loaded but the host hasn't been started (it starts on
+    /// the first frame, once there's a context to wake).
+    extensions_pending_start: bool,
 }
 
 /// How long a transient status-bar message stays visible.
@@ -125,6 +130,8 @@ impl App {
             status_message_at: None,
             recent_files: Vec::new(),
             recent_tracked: None,
+            extensions: crate::extensions::ExtensionService::default(),
+            extensions_pending_start: false,
         }
     }
 
@@ -185,6 +192,75 @@ impl App {
     pub fn bootstrap_open_file(&mut self, path: PathBuf) {
         self.open_file(path);
         self.show_welcome = false;
+    }
+
+    /// Load the extensions installed in `dirs` (VS Code's layout: one folder
+    /// per extension with a `package.json`). Their code starts running on
+    /// the next frame.
+    pub fn bootstrap_extensions(&mut self, dirs: Vec<PathBuf>) {
+        self.extensions.load(&dirs);
+        self.extensions_pending_start = true;
+    }
+
+    /// Open the Extensions view on launch.
+    pub fn bootstrap_extensions_view(&mut self) {
+        self.show_view(ActivityView::Extensions);
+    }
+
+    /// Start the extension host (if extensions were loaded) and handle what
+    /// it sent since the last frame.
+    fn pump_extensions(&mut self, ctx: &Context) {
+        if self.extensions_pending_start {
+            self.extensions_pending_start = false;
+            let wake = ctx.clone();
+            self.extensions
+                .start(self.workspace_root.as_deref(), move || wake.request_repaint());
+        }
+        if let Some(lang) = self.active_doc.and_then(|i| self.documents.get(i)).map(|d| d.language_id()) {
+            self.extensions.fire_event(&format!("onLanguage:{lang}"));
+        }
+        for request in self.extensions.poll() {
+            match request {
+                crate::extensions::EditorRequest::Command(id) => self.run_editor_command(ctx, &id),
+                crate::extensions::EditorRequest::StatusMessage(text) => {
+                    if text.is_empty() {
+                        self.status_message_at = None;
+                    } else {
+                        self.set_status(text);
+                    }
+                }
+                crate::extensions::EditorRequest::CopyText(text) => ctx.copy_text(text),
+            }
+        }
+    }
+
+    /// Run a built-in command by its VS Code id (for extensions calling
+    /// `commands.executeCommand`).
+    fn run_editor_command(&mut self, ctx: &Context, id: &str) {
+        let cmd = match id {
+            "workbench.action.files.openFolder" => CommandId::OpenFolder,
+            "workbench.action.files.openFile" => CommandId::OpenFile,
+            "workbench.action.closeFolder" => CommandId::CloseFolder,
+            "workbench.action.files.save" => CommandId::Save,
+            "workbench.action.files.saveAll" => CommandId::SaveAll,
+            "workbench.action.closeActiveEditor" => CommandId::CloseFile,
+            "workbench.action.closeAllEditors" => CommandId::CloseAllFiles,
+            "workbench.action.toggleSidebarVisibility" => CommandId::ToggleSidebar,
+            "workbench.view.explorer" => CommandId::ShowExplorer,
+            "workbench.view.search" => CommandId::ShowSearch,
+            "workbench.action.quickOpen" => CommandId::QuickOpen,
+            "workbench.action.quit" => CommandId::Quit,
+            "workbench.action.showCommands" => {
+                self.palette.open();
+                return;
+            }
+            "workbench.view.extensions" => {
+                self.show_view(ActivityView::Extensions);
+                return;
+            }
+            _ => return,
+        };
+        self.execute_command(ctx, cmd);
     }
 
     /// Open the Source Control view on launch (used by the `--scm` CLI flag).
@@ -797,6 +873,9 @@ impl App {
             }
             PaletteAction::GoToLine(line) => self.go_to_line(line),
             PaletteAction::RemoveRecent(path) => self.recent_files.retain(|p| p != &path),
+            PaletteAction::ExtensionCommand(id) => {
+                self.extensions.execute(&id, serde_json::json!([]))
+            }
         }
     }
 
@@ -1178,6 +1257,16 @@ impl App {
         if show_explorer {
             self.show_view(ActivityView::Explorer);
         }
+
+        let show_extensions = ctx.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::X,
+            ))
+        });
+        if show_extensions {
+            self.show_view(ActivityView::Extensions);
+        }
     }
 }
 
@@ -1202,6 +1291,8 @@ impl App {
         }
         // Live (as-you-type) gutter diff for the active editor.
         self.poll_live_gutter_diff();
+
+        self.pump_extensions(ctx);
 
         self.handle_shortcuts(ctx);
 
@@ -1237,7 +1328,9 @@ impl App {
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                 }
                 let message = if status_visible { self.status_message.as_str() } else { "" };
-                let sb = status_bar::show(
+                let extension_items: Vec<_> =
+                    self.extensions.status_items.values().cloned().collect();
+                let sb = status_bar::show_with_extensions(
                     ui,
                     active,
                     message,
@@ -1246,7 +1339,11 @@ impl App {
                     changes,
                     ahead_behind,
                     has_upstream,
+                    &extension_items,
                 );
+                if let Some((command, args)) = sb.extension_command.clone() {
+                    self.extensions.execute(&command, args);
+                }
                 if let Some(rect) = sb.branch_clicked {
                     if let Some(root) = active_root.clone() {
                         self.branch_picker =
@@ -1303,6 +1400,7 @@ impl App {
                 ActivityView::Explorer => "sidebar_explorer",
                 ActivityView::Search => "sidebar_search",
                 ActivityView::SourceControl => "sidebar_scm",
+                ActivityView::Extensions => "sidebar_extensions",
             };
             let sidebar_output: SidebarOutput;
             {
@@ -1317,6 +1415,13 @@ impl App {
                             .inner_margin(Margin::ZERO),
                     )
                     .show(ctx, |ui| {
+                        if self.active_view == ActivityView::Extensions {
+                            let rect = ui.max_rect();
+                            ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
+                            sidebar::title_bar(ui, "EXTENSIONS");
+                            crate::workbench::extensions_view::show(ui, &self.extensions);
+                            return SidebarOutput::default();
+                        }
                         let graph_root = self.active_repo_root();
                         let active_file: Option<PathBuf> = self
                             .active_doc
@@ -1484,8 +1589,15 @@ impl App {
         }
 
         self.track_recent_active();
+        if self.palette.visible {
+            self.palette.set_extension_commands(self.extensions.palette_commands());
+        }
         if let Some(action) = command_palette::show(ctx, &mut self.palette) {
             self.dispatch_palette(ctx, action);
+        }
+
+        for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
+            self.extensions.close_notification(d.id, d.action);
         }
     }
 }

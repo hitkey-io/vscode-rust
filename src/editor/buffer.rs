@@ -92,6 +92,30 @@ impl Document {
             .unwrap_or_else(|| self.path.to_string_lossy().into_owned())
     }
 
+    /// VS Code's language identifier (`onLanguage:<id>` activation events).
+    pub fn language_id(&self) -> &'static str {
+        match self.language {
+            "rs" => "rust",
+            "ts" => "typescript",
+            "tsx" => "typescriptreact",
+            "js" => "javascript",
+            "jsx" => "javascriptreact",
+            "py" => "python",
+            "go" => "go",
+            "c" | "h" => "c",
+            "cpp" => "cpp",
+            "json" => "json",
+            "md" => "markdown",
+            "html" => "html",
+            "css" => "css",
+            "toml" => "toml",
+            "yaml" | "yml" => "yaml",
+            "sh" => "shellscript",
+            "vue" => "vue",
+            _ => "plaintext",
+        }
+    }
+
     pub fn language_label(&self) -> &'static str {
         match self.language {
             "rs" => "Rust",

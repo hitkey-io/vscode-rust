@@ -41,7 +41,26 @@ pub fn show(
                     icons::SOURCE_CONTROL,
                     "Source Control (⌃⇧G)",
                 ),
+                (ActivityView::Extensions, icons::EXTENSIONS, "Extensions (⇧⌘X)"),
             ] {
+                // Run & Debug sits between Source Control and Extensions
+                // (VS Code's default order). It has no view yet: clicking it
+                // opens the command palette.
+                if view == ActivityView::Extensions {
+                    let resp = icon_button(
+                        ui,
+                        &IconButtonProps::new(icons::DEBUG_ALT)
+                            .size(ITEM_HEIGHT)
+                            .icon_size(24.0)
+                            .no_hover_bg()
+                            .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
+                            .hover_color(Palette::ACTIVITY_BAR_FG),
+                    );
+                    if resp.clicked() {
+                        palette_requested = true;
+                    }
+                    resp.on_hover_text("Run and Debug (⇧⌘D)");
+                }
                 let is_selected = *current == view && *sidebar_visible;
                 let mut props = IconButtonProps::new(glyph)
                     .size(ITEM_HEIGHT)
@@ -90,28 +109,6 @@ pub fn show(
                         *sidebar_visible = true;
                     }
                 }
-            }
-
-            // Run & Debug and Extensions complete the icon column visually
-            // (VS Code's default activity bar). Clicking them opens the
-            // command palette so users can route to the relevant action.
-            for (glyph, label) in [
-                (icons::DEBUG_ALT, "Run and Debug (⇧⌘D)"),
-                (icons::EXTENSIONS, "Extensions (⇧⌘X)"),
-            ] {
-                let resp = icon_button(
-                    ui,
-                    &IconButtonProps::new(glyph)
-                        .size(ITEM_HEIGHT)
-                        .icon_size(24.0)
-                        .no_hover_bg()
-                        .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
-                        .hover_color(Palette::ACTIVITY_BAR_FG),
-                );
-                if resp.clicked() {
-                    palette_requested = true;
-                }
-                resp.on_hover_text(label);
             }
         },
     );

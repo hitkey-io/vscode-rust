@@ -222,6 +222,28 @@ impl Palette {
     pub const VSCE_KEYBINDING_LABEL_FG: Color32 = rgb(0xCC, 0xCC, 0xCC);
     /// --vscode-keybindingLabel-border (dark default `rgba(51, 51, 51, 0.6)`)
     pub const VSCE_KEYBINDING_LABEL_BORDER: Color32 = rgba(0x33, 0x33, 0x33, 0x99);
+    // --vscode-notifications* / --vscode-button-* (2026-dark.json) —
+    // extension notification toasts.
+    /// --vscode-notifications-background
+    pub const VSCE_NOTIFICATIONS_BG: Color32 = rgb(0x20, 0x21, 0x22);
+    /// --vscode-notifications-foreground
+    pub const VSCE_NOTIFICATIONS_FG: Color32 = rgb(0xBF, 0xBF, 0xBF);
+    /// --vscode-notificationToast-border
+    pub const VSCE_NOTIFICATION_TOAST_BORDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+    /// --vscode-notificationsInfoIcon-foreground
+    pub const VSCE_NOTIFICATIONS_INFO_ICON: Color32 = rgb(0x3A, 0x94, 0xBC);
+    /// --vscode-notificationsWarningIcon-foreground
+    pub const VSCE_NOTIFICATIONS_WARNING_ICON: Color32 = rgb(0xCC, 0xA7, 0x00);
+    /// --vscode-notificationsErrorIcon-foreground
+    pub const VSCE_NOTIFICATIONS_ERROR_ICON: Color32 = rgb(0xF4, 0x87, 0x71);
+    /// --vscode-button-background (2026)
+    pub const VSCE_BUTTON_2026_BG: Color32 = rgb(0x29, 0x7A, 0xA0);
+    /// --vscode-button-hoverBackground (2026)
+    pub const VSCE_BUTTON_2026_HOVER_BG: Color32 = rgb(0x2B, 0x7D, 0xA3);
+    /// --vscode-button-border (2026)
+    pub const VSCE_BUTTON_2026_BORDER: Color32 = rgb(0x33, 0x35, 0x36);
+    /// --vscode-button-secondaryHoverBackground (2026 `#FFFFFF10`)
+    pub const VSCE_BUTTON_2026_SECONDARY_HOVER_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x10);
     /// --vscode-keybindingLabel-bottomBorder (dark default `rgba(68, 68, 68, 0.6)`)
     pub const VSCE_KEYBINDING_LABEL_BOTTOM_BORDER: Color32 = rgba(0x44, 0x44, 0x44, 0x99);
     /// --vscode-descriptionForeground (2026-dark.json) — group labels.

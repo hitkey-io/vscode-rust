@@ -175,3 +175,75 @@ codepoint!(VSCODE_INSIDERS = 0xec2a);
 codepoint!(TERMINAL_ICON = 0xea85);
 codepoint!(PLAY = 0xeb2c);
 
+
+
+/// Codicon names (`$(name)` in status bar text and labels) → codepoints,
+/// from `src/vs/base/common/codiconsLibrary.ts`.
+static CODICON_NAMES: once_cell::sync::Lazy<std::collections::HashMap<&'static str, char>> =
+    once_cell::sync::Lazy::new(|| {
+        include_str!("../assets/codicon-names.txt")
+            .lines()
+            .filter_map(|l| {
+                let (name, hex) = l.split_once(' ')?;
+                Some((name, char::from_u32(u32::from_str_radix(hex, 16).ok()?)?))
+            })
+            .collect()
+    });
+
+/// The codicon called `name` (`"smiley"`, `"sync~spin"` → `sync`).
+pub fn codicon_by_name(name: &str) -> Option<char> {
+    let base = name.split('~').next().unwrap_or(name);
+    CODICON_NAMES.get(base).copied()
+}
+
+/// A piece of label text: plain text or one codicon.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LabelPart {
+    Text(String),
+    Icon(char),
+}
+
+/// Split label text with `$(name)` icon references into parts, as VS Code's
+/// `renderLabelWithIcons` does. Unknown icons are dropped; `\$(` keeps a
+/// literal `$(`.
+pub fn parse_label_with_icons(text: &str) -> Vec<LabelPart> {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut rest = text;
+    while let Some(i) = rest.find("$(") {
+        if i > 0 && rest[..i].ends_with('\\') {
+            buf.push_str(&rest[..i - 1]);
+            buf.push_str("$(");
+            rest = &rest[i + 2..];
+            continue;
+        }
+        let Some(end) = rest[i + 2..].find(')') else { break };
+        buf.push_str(&rest[..i]);
+        let name = &rest[i + 2..i + 2 + end];
+        if let Some(glyph) = codicon_by_name(name) {
+            if !buf.is_empty() {
+                parts.push(LabelPart::Text(std::mem::take(&mut buf)));
+            }
+            parts.push(LabelPart::Icon(glyph));
+        }
+        rest = &rest[i + 3 + end..];
+    }
+    buf.push_str(rest);
+    if !buf.is_empty() {
+        parts.push(LabelPart::Text(buf));
+    }
+    parts
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    #[test]
+    fn splits_icons_and_text() {
+        let parts = parse_label_with_icons("$(smiley) Hello $(nope)!");
+        assert_eq!(parts[0], LabelPart::Icon(codicon_by_name("smiley").unwrap()));
+        assert_eq!(parts[1], LabelPart::Text(" Hello !".into()));
+        assert_eq!(codicon_by_name("sync~spin"), codicon_by_name("sync"));
+    }
+}

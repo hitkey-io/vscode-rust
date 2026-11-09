@@ -1,0 +1,27 @@
+{
+  "name": "hello-world",
+  "publisher": "sample",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "helloWorld.sayHello", "title": "%command.sayHello%", "category": "Hello" },
+      { "command": "helloWorld.askChoice", "title": "Ask a Choice", "category": "Hello" },
+      { "command": "helloWorld.fail", "title": "Fail", "category": "Hello" },
+      { "command": "helloWorld.internal", "title": "Internal" }
+    ],
+    "menus": {
+      "commandPalette": [ { "command": "helloWorld.internal", "when": "false" } ]
+    },
+    "configuration": {
+      "title": "Hello World",
+      "properties": {
+        "helloWorld.greeting": { "type": "string", "default": "Hello" }
+      }
+    }
+  }
+}

@@ -10,6 +10,7 @@ use crate::vscode_widgets::primitives::{button, label, ButtonProps, LabelProps};
 
 use super::ActivityView;
 
+#[derive(Default)]
 pub struct SidebarOutput {
     pub file_to_open: Option<PathBuf>,
     pub open_folder_requested: bool,
@@ -70,6 +71,9 @@ pub fn show(
                     scm_ui,
                 );
             }
+            // Drawn by the caller with `extensions_view::show`, which needs
+            // the extension service.
+            ActivityView::Extensions => {}
         }
     });
 
@@ -81,7 +85,13 @@ fn header(ui: &mut Ui, view: ActivityView) {
         ActivityView::Explorer => "EXPLORER",
         ActivityView::Search => "SEARCH",
         ActivityView::SourceControl => "SOURCE CONTROL",
+        ActivityView::Extensions => "EXTENSIONS",
     };
+    title_bar(ui, title);
+}
+
+/// The 35px view title row ("EXPLORER", "EXTENSIONS"…).
+pub fn title_bar(ui: &mut Ui, title: &str) {
     let (header_rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 35.0), Sense::hover());
     let painter = ui.painter();

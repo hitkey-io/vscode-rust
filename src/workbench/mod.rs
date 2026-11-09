@@ -1,6 +1,8 @@
 pub mod activity_bar;
 pub mod breadcrumbs;
 pub mod command_palette;
+pub mod extensions_view;
+pub mod notifications;
 pub mod sidebar;
 pub mod source_control;
 pub mod status_bar;
@@ -11,4 +13,5 @@ pub enum ActivityView {
     Explorer,
     Search,
     SourceControl,
+    Extensions,
 }

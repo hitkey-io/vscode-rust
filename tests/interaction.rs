@@ -22,6 +22,16 @@ fn launch(
     files: Vec<PathBuf>,
     search_query: Option<String>,
 ) -> Harness<'static> {
+    launch_with_extensions(workspace, files, search_query, None)
+}
+
+/// [`launch`], also loading the extensions in `extensions_dir`.
+fn launch_with_extensions(
+    workspace: Option<PathBuf>,
+    files: Vec<PathBuf>,
+    search_query: Option<String>,
+    extensions_dir: Option<PathBuf>,
+) -> Harness<'static> {
     let mut app: Option<App> = None;
     let mut bootstrap_done = false;
 
@@ -43,6 +53,9 @@ fn launch(
             }
             if let Some(q) = search_query.clone() {
                 a.bootstrap_search(q);
+            }
+            if let Some(dir) = extensions_dir.clone() {
+                a.bootstrap_extensions(vec![dir]);
             }
             bootstrap_done = true;
         }
@@ -250,6 +263,61 @@ fn quick_open_remove_from_recently_opened() {
     // package.json (also listed in the explorer) is now the selected history
     // row, so the remove button is back on it.
     let _ = harness.get_by_label("Remove from Recently Opened");
+}
+
+/// Run frames until `label` shows up (the extension host answers from
+/// another process), or fail after a few seconds.
+fn run_until_label(harness: &mut Harness<'static>, label: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.query_by_label(label).is_none() {
+        assert!(std::time::Instant::now() < deadline, "'{label}' never appeared");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        // `step`, not `run`: toasts keep a repaint timer for auto-hide.
+        harness.step();
+    }
+}
+
+#[test]
+fn extension_runs_from_view_status_bar_and_palette() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return; // Needs Node.js to run extension code.
+    }
+    let extensions = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions");
+    let mut harness = launch_with_extensions(Some(workspace_path()), vec![], None, Some(extensions));
+    harness.run();
+    harness.run();
+
+    // The extension activates on startup and adds a status bar item.
+    run_until_label(&mut harness, "$(smiley) Hello");
+
+    // The Extensions view lists it as activated.
+    harness.get_by_label("Extensions (⇧⌘X)").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Hello World Sample, sample, Activated");
+
+    // Its contributed command runs from the command palette; the
+    // notification names the extension.
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("say hello".to_string()));
+    harness.run();
+    let _ = harness.get_by_label("Hello: Say Hello");
+    harness.key_press(Key::Enter);
+    run_until_label(&mut harness, "Hello from workspace!");
+
+    // Accessibility click: kittest reports this toast's bounds offset from
+    // where it's drawn, so a simulated pointer click misses (a real click
+    // in the app closes it).
+    harness.get_by_label("Clear Notification").click_accesskit();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Hello from workspace!").is_none());
+
+    // Clicking the status bar item runs its command too.
+    harness.get_by_label("$(smiley) Hello").click();
+    run_until_label(&mut harness, "Hello from workspace!");
 }
 
 // =============================================================================

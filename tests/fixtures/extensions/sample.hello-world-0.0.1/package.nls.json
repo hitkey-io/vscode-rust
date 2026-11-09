@@ -1,0 +1,5 @@
+{
+  "displayName": "Hello World Sample",
+  "description": "A sample extension for the extension host tests.",
+  "command.sayHello": "Say Hello"
+}

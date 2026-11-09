@@ -83,6 +83,43 @@ pub struct StatusBarOutput {
     /// feedback, remote, cursor position) was clicked — VS Code routes most of
     /// these through the command palette, so the caller opens it.
     pub palette_requested: bool,
+    /// An extension's status bar item was clicked: its command and
+    /// arguments.
+    pub extension_command: Option<(String, serde_json::Value)>,
+}
+
+/// An extension status bar item (`window.createStatusBarItem`): text with
+/// `$(icon)` references, tooltip, hover highlight when it has a command.
+fn extension_segment(ui: &mut Ui, item: &crate::extensions::StatusItem) -> egui::Response {
+    let parts = icons::parse_label_with_icons(&item.text);
+    let text_font = FontId::proportional(11.5);
+    let icon_font = codicon_font(14.0);
+    let pad = 5.0;
+    let galleys: Vec<_> = parts
+        .iter()
+        .map(|part| match part {
+            icons::LabelPart::Text(t) => ui.painter().layout_no_wrap(t.clone(), text_font.clone(), Palette::FG),
+            icons::LabelPart::Icon(g) => ui.painter().layout_no_wrap(g.to_string(), icon_font.clone(), Palette::FG),
+        })
+        .collect();
+    let w = pad * 2.0 + galleys.iter().map(|g| g.size().x).sum::<f32>();
+    let sense = if item.command.is_some() { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), sense);
+    if resp.hovered() && item.command.is_some() {
+        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG);
+    }
+    let mut x = rect.left() + pad;
+    for g in galleys {
+        let size = g.size();
+        ui.painter().galley(egui::pos2(x, rect.center().y - size.y / 2.0), g, Palette::FG);
+        x += size.x;
+    }
+    let label = item.text.clone();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    match &item.tooltip {
+        Some(t) => resp.on_hover_text(t),
+        None => resp,
+    }
 }
 
 /// VS Code-style status bar. We only render segments that map to real, working
@@ -92,12 +129,41 @@ pub fn show(
     ui: &mut Ui,
     active: Option<&Document>,
     message: &str,
-    _has_workspace: bool,
+    has_workspace: bool,
     git_branch: Option<&str>,
     git_changes: usize,
     git_ahead_behind: (usize, usize),
     git_has_upstream: bool,
 ) -> StatusBarOutput {
+    show_with_extensions(
+        ui, active, message, has_workspace, git_branch, git_changes, git_ahead_behind,
+        git_has_upstream, &[],
+    )
+}
+
+/// [`show`] plus the extensions' status bar items. Left items follow the
+/// built-in ones, highest priority first; right items sit left of the
+/// editor items, highest priority leftmost (as in VS Code).
+#[allow(clippy::too_many_arguments)]
+pub fn show_with_extensions(
+    ui: &mut Ui,
+    active: Option<&Document>,
+    message: &str,
+    _has_workspace: bool,
+    git_branch: Option<&str>,
+    git_changes: usize,
+    git_ahead_behind: (usize, usize),
+    git_has_upstream: bool,
+    extension_items: &[crate::extensions::StatusItem],
+) -> StatusBarOutput {
+    let by_priority = |right: bool| {
+        let mut v: Vec<&crate::extensions::StatusItem> =
+            extension_items.iter().filter(|i| i.right == right).collect();
+        v.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.handle.cmp(&b.handle)));
+        v
+    };
+    let left_items = by_priority(false);
+    let right_items = by_priority(true);
     let mut out = StatusBarOutput::default();
     let rect = ui.max_rect();
     let painter = ui.painter();
@@ -171,6 +237,12 @@ pub fn show(
             if status_segment(ui, icons::WARNING_ICON, "0", "No Problems").clicked() {
                 out.palette_requested = true;
             }
+            for item in &left_items {
+                if extension_segment(ui, item).clicked() {
+                    out.extension_command =
+                        item.command.clone().map(|c| (c, item.command_args.clone()));
+                }
+            }
 
             // Left: action message (Save status, Open results, etc.).
             if !message.is_empty() {
@@ -182,8 +254,9 @@ pub fn show(
             }
             // Right: document + editor state, right-to-left so the first item
             // added sits at the far right (feedback), matching VS Code order.
-            if let Some(doc) = active {
-                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+              if let Some(doc) = active {
+                {
                     ui.add_space(6.0);
                     if status_segment(ui, icons::FEEDBACK, "", "Tweet Feedback").clicked() {
                         out.palette_requested = true;
@@ -209,8 +282,17 @@ pub fn show(
                     if plain(ui, "Spaces: 2").clicked() { out.palette_requested = true; }
                     if plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col))
                         .clicked() { out.palette_requested = true; }
-                });
-            }
+                }
+              }
+              // Right-to-left: lowest priority first, so the highest ends
+              // up leftmost.
+              for item in right_items.iter().rev() {
+                  if extension_segment(ui, item).clicked() {
+                      out.extension_command =
+                          item.command.clone().map(|c| (c, item.command_args.clone()));
+                  }
+              }
+            });
         });
     });
     out

@@ -84,6 +84,8 @@ pub enum PaletteAction {
     /// The row's "Remove from Recently Opened" button: drop the file from
     /// the editor history. The popup stays open.
     RemoveRecent(PathBuf),
+    /// A command contributed by an extension (run by the extension host).
+    ExtensionCommand(String),
 }
 
 /// Upper bound on files indexed for Quick Open. Keeps the walk bounded on
@@ -112,6 +114,8 @@ pub struct CommandPaletteState {
     files: Vec<PathBuf>,
     /// Editor history, most recent first ("recently opened" group).
     recent: Vec<PathBuf>,
+    /// Commands contributed by extensions: (id, category, title).
+    extension_commands: Vec<(String, String, String)>,
 }
 
 impl CommandPaletteState {
@@ -153,6 +157,12 @@ impl CommandPaletteState {
         }
     }
 
+    /// Commands contributed by installed extensions, listed after the
+    /// built-in ones: `(id, category, title)`.
+    pub fn set_extension_commands(&mut self, commands: Vec<(String, String, String)>) {
+        self.extension_commands = commands;
+    }
+
     /// `>` prefix → command palette; anything else → Quick Open.
     pub fn is_command_mode(&self) -> bool {
         self.query.starts_with('>')
@@ -172,6 +182,8 @@ impl CommandPaletteState {
 #[derive(Clone, Debug)]
 enum ItemKind {
     Command(usize),
+    /// Index into `CommandPaletteState::extension_commands`.
+    ExtCommand(usize),
     File { path: PathBuf, line: Option<usize> },
     GoToLine(usize),
 }
@@ -189,12 +201,15 @@ struct Item {
     separator: Option<&'static str>,
     /// Editor-history entry: gets the "Remove from Recently Opened" button.
     from_history: bool,
+    /// Extension command id (for `ItemKind::ExtCommand`).
+    command_id: String,
 }
 
 impl Item {
     fn action(&self) -> PaletteAction {
         match &self.kind {
             ItemKind::Command(i) => PaletteAction::Command(COMMANDS[*i].id),
+            ItemKind::ExtCommand(_) => PaletteAction::ExtensionCommand(self.command_id.clone()),
             ItemKind::File { path, line } => PaletteAction::OpenFile {
                 path: path.clone(),
                 line: *line,
@@ -230,32 +245,49 @@ fn empty_message(state: &CommandPaletteState) -> Option<&'static str> {
 
 fn build_items(state: &CommandPaletteState) -> Vec<Item> {
     if state.is_command_mode() {
-        command_items(&state.query)
+        command_items(&state.query, &state.extension_commands)
     } else {
         file_items(state)
     }
 }
 
-fn command_items(query: &str) -> Vec<Item> {
+fn command_items(query: &str, extension_commands: &[(String, String, String)]) -> Vec<Item> {
     // Strip the leading ">" activator before fuzzy matching — it's the mode
     // marker for the command palette, not part of the search term.
     let q = query.trim_start_matches('>').trim().to_lowercase();
-    let mut scored: Vec<(i32, usize, Vec<usize>)> = COMMANDS
+    let ext_label = |(_, category, title): &(String, String, String)| {
+        if category.is_empty() { title.clone() } else { format!("{category}: {title}") }
+    };
+    // (score, order, kind, label, highlights); built-ins first, then
+    // extension commands, in declaration order when scores tie.
+    let mut scored: Vec<(i32, usize, ItemKind, String, Vec<usize>)> = Vec::new();
+    let labels = COMMANDS
         .iter()
         .enumerate()
-        .filter_map(|(i, c)| {
-            if q.is_empty() {
-                return Some((0, i, Vec::new()));
-            }
-            fuzzy_match(&c.label().to_lowercase(), &q).map(|(s, hl)| (s, i, hl))
-        })
-        .collect();
+        .map(|(i, c)| (ItemKind::Command(i), c.label()))
+        .chain(
+            extension_commands
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (ItemKind::ExtCommand(i), ext_label(c))),
+        );
+    for (order, (kind, label)) in labels.enumerate() {
+        if q.is_empty() {
+            scored.push((0, order, kind, label, Vec::new()));
+        } else if let Some((score, hl)) = fuzzy_match(&label.to_lowercase(), &q) {
+            scored.push((score, order, kind, label, hl));
+        }
+    }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored
         .into_iter()
-        .map(|(_, i, hl)| Item {
-            kind: ItemKind::Command(i),
-            label: COMMANDS[i].label(),
+        .map(|(_, _, kind, label, hl)| Item {
+            command_id: match kind {
+                ItemKind::ExtCommand(i) => extension_commands[i].0.clone(),
+                _ => String::new(),
+            },
+            kind,
+            label,
             label_hl: hl,
             description: String::new(),
             desc_hl: Vec::new(),
@@ -335,6 +367,7 @@ fn file_items(state: &CommandPaletteState) -> Vec<Item> {
                 desc_hl: Vec::new(),
                 separator: None,
                 from_history: false,
+                command_id: String::new(),
             }];
         }
         if state.query.contains(':') {
@@ -355,6 +388,7 @@ fn file_items(state: &CommandPaletteState) -> Vec<Item> {
                     desc_hl: Vec::new(),
                     separator: (i == 0).then_some("recently opened"),
                     from_history: true,
+                    command_id: String::new(),
                 }
             })
             .collect();
@@ -374,6 +408,7 @@ fn file_items(state: &CommandPaletteState) -> Vec<Item> {
                 desc_hl,
                 separator: items.is_empty().then_some("recently opened"),
                 from_history: true,
+                command_id: String::new(),
             });
         }
     }
@@ -399,6 +434,7 @@ fn file_items(state: &CommandPaletteState) -> Vec<Item> {
                     desc_hl,
                     separator: None,
                     from_history: false,
+                    command_id: String::new(),
                 },
             ));
         }
@@ -586,6 +622,14 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
             let resp = ui.add_sized(text_rect.size(), edit);
             if state.just_opened {
                 resp.request_focus();
+                // Caret after any prefilled text (the `>` of ⇧⌘P).
+                let mut edit_state =
+                    egui::text_edit::TextEditState::load(ui.ctx(), resp.id).unwrap_or_default();
+                let end = egui::text::CCursor::new(state.query.chars().count());
+                edit_state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                edit_state.store(ui.ctx(), resp.id);
                 state.just_opened = false;
                 focused = true;
             }

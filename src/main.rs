@@ -10,6 +10,9 @@ fn main() -> eframe::Result<()> {
     let mut cli_files: Vec<PathBuf> = Vec::new();
     let mut cli_no_welcome = false;
     let mut cli_scm = false;
+    // Like VS Code's `--extensions-dir`: replaces the default folders.
+    let mut cli_extensions_dir: Option<PathBuf> = None;
+    let mut cli_extensions_view = false;
     let mut i = 2usize;
     while i < args.len() {
         if args[i] == "--search" {
@@ -17,6 +20,12 @@ fn main() -> eframe::Result<()> {
             i += 2;
         } else if args[i] == "--no-welcome" {
             cli_no_welcome = true;
+            i += 1;
+        } else if args[i] == "--extensions-dir" {
+            cli_extensions_dir = args.get(i + 1).map(PathBuf::from);
+            i += 2;
+        } else if args[i] == "--extensions" {
+            cli_extensions_view = true;
             i += 1;
         } else if args[i] == "--scm" {
             cli_scm = true;
@@ -73,6 +82,14 @@ fn main() -> eframe::Result<()> {
             }
             if cli_scm {
                 a.bootstrap_scm();
+            }
+            let extension_dirs = match cli_extensions_dir.clone() {
+                Some(dir) => vec![dir],
+                None => vscode_rust::extensions::manifest::default_dirs(),
+            };
+            a.bootstrap_extensions(extension_dirs);
+            if cli_extensions_view {
+                a.bootstrap_extensions_view();
             }
             // Keep the InstalledMenu alive for the duration of the app.
             std::mem::forget(installed_menu);
