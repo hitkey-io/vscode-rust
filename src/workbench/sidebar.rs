@@ -90,8 +90,9 @@ fn header(ui: &mut Ui, view: ActivityView) {
     title_bar(ui, title);
 }
 
-/// The 35px view title row ("EXPLORER", "EXTENSIONS"…).
-pub fn title_bar(ui: &mut Ui, title: &str) {
+/// The 35px view title row ("EXPLORER", "EXTENSIONS"…); returns its rect
+/// so callers can add title actions.
+pub fn title_bar(ui: &mut Ui, title: &str) -> egui::Rect {
     let (header_rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 35.0), Sense::hover());
     let painter = ui.painter();
@@ -108,6 +109,7 @@ pub fn title_bar(ui: &mut Ui, title: &str) {
         egui::vec2(header_rect.width(), 1.0),
     );
     painter.rect_filled(bottom_border, 0.0, Palette::BORDER);
+    header_rect
 }
 
 

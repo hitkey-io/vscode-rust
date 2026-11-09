@@ -9,6 +9,7 @@
 
 pub mod host;
 pub mod manifest;
+pub mod marketplace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -97,11 +98,19 @@ pub struct ExtensionService {
     queued: Vec<Value>,
     ready: bool,
     next_request: u64,
+    /// Folders scanned by the last `load`.
+    dirs: Vec<PathBuf>,
+    /// Workspace and wake callback of the last `start`, for `reload`.
+    workspace: Option<PathBuf>,
+    wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Search, install and uninstall.
+    pub marketplace: marketplace::Marketplace,
 }
 
 impl ExtensionService {
     /// Read the extensions in `dirs`. Nothing runs yet.
     pub fn load(&mut self, dirs: &[PathBuf]) {
+        self.dirs = dirs.to_vec();
         self.extensions = manifest::scan(dirs);
         self.activation = self
             .extensions
@@ -118,6 +127,9 @@ impl ExtensionService {
         workspace: Option<&Path>,
         wake: impl Fn() + Send + Sync + 'static,
     ) {
+        let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
+        self.workspace = workspace.map(Path::to_path_buf);
+        self.wake = Some(wake.clone());
         if self.host.is_some() || !self.extensions.iter().any(|e| e.main.is_some()) {
             return;
         }
@@ -128,7 +140,7 @@ impl ExtensionService {
             self.push_log("Node.js was not found; extensions with code can't run.".into());
             return;
         };
-        let mut host = match host::Host::spawn(&node, wake) {
+        let mut host = match host::Host::spawn(&node, move || wake()) {
             Ok(h) => h,
             Err(e) => {
                 self.push_log(format!("Couldn't start the extension host: {e}"));
@@ -167,6 +179,66 @@ impl ExtensionService {
             "storageRoot": storage_root,
         }));
         self.host = Some(host);
+    }
+
+    /// Stop the host, scan the folders again and start over (after an
+    /// install or uninstall).
+    pub fn reload(&mut self) {
+        self.host = None;
+        self.ready = false;
+        self.queued.clear();
+        self.registered.clear();
+        self.status_items.clear();
+        self.fired_events.clear();
+        let dirs = self.dirs.clone();
+        self.load(&dirs);
+        let workspace = self.workspace.clone();
+        if let Some(wake) = self.wake.clone() {
+            self.start(workspace.as_deref(), move || wake());
+        }
+    }
+
+    /// Uninstall an extension this editor installed, then reload.
+    pub fn uninstall(&mut self, id: &str) {
+        let Some(ext) = self.extensions.iter().find(|e| e.id == id) else { return };
+        let path = ext.path.clone();
+        match marketplace::uninstall(&path, &self.marketplace.install_dir) {
+            Ok(()) => self.reload(),
+            Err(e) => self.notify(Severity::Error, format!("Couldn't uninstall '{id}': {e}"), Vec::new(), None, None),
+        }
+    }
+
+    /// Whether `id` can be uninstalled here (installed through this editor,
+    /// not one of VS Code's).
+    pub fn can_uninstall(&self, id: &str) -> bool {
+        let dir = &self.marketplace.install_dir;
+        self.extensions
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| e.path.parent() == Some(dir.as_path()))
+    }
+
+    /// Whether an extension with this id (any case) is installed.
+    pub fn is_installed(&self, id: &str) -> bool {
+        self.extensions.iter().any(|e| e.id.eq_ignore_ascii_case(id))
+    }
+
+    /// Marketplace housekeeping each frame: results, finished installs
+    /// (reload so they run), failures (as notifications).
+    pub fn tick_marketplace(&mut self, ctx: &egui::Context) -> bool {
+        let busy = self.marketplace.tick(ctx);
+        if !self.marketplace.just_installed.is_empty() {
+            let ids = std::mem::take(&mut self.marketplace.just_installed);
+            self.reload();
+            for id in ids {
+                let name = self.display_name(&id).unwrap_or(id);
+                self.notify(Severity::Info, format!("Installed {name}."), Vec::new(), None, None);
+            }
+        }
+        for e in std::mem::take(&mut self.marketplace.errors) {
+            self.notify(Severity::Error, e, Vec::new(), None, None);
+        }
+        busy
     }
 
     pub fn is_running(&self) -> bool {

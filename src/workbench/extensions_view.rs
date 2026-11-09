@@ -1,19 +1,24 @@
-//! The Extensions view (⇧⌘X): installed extensions with their state.
+//! The Extensions view (⇧⌘X): marketplace search, installed, popular and
+//! recommended extensions.
 //!
 //! VS Code analogues:
 //! - `src/vs/workbench/contrib/extensions/browser/extensionsViewlet.ts`
+//!   (search box "Search Extensions in Marketplace", sections)
 //! - `src/vs/workbench/contrib/extensions/browser/extensionsList.ts`
 //! - `src/vs/workbench/contrib/extensions/browser/media/extension.css`
-//!   (72px rows, 42px icon, name in 600 weight, description and publisher
-//!   lines)
+//!   (72px rows, 16px left padding, 42px icon, bold name, install count and
+//!   rating on the right of the name, description, publisher with the
+//!   verified badge, actions bottom-right)
 //!
-//! Tokens: `--vscode-sideBarSectionHeader-*`, `--vscode-descriptionForeground`,
-//! `--vscode-list-hoverBackground`, `--vscode-notificationsErrorIcon-foreground`.
+//! Tokens: `--vscode-input-*`, `--vscode-focusBorder`, `--vscode-badge-*`,
+//! `--vscode-extensionButton-prominent*`, `--vscode-extensionIcon-starForeground`,
+//! `--vscode-extensionIcon-verifiedForeground`, `--vscode-descriptionForeground`.
 
-use egui::{Align2, FontId, Sense, Ui};
+use egui::{Align2, CornerRadius, FontId, Sense, Stroke, StrokeKind, Ui};
 
-use crate::extensions::{Activation, ExtensionService};
-use crate::icons::codicon_font;
+use crate::extensions::marketplace::{format_count, GalleryExtension, Icon, List};
+use crate::extensions::{Activation, Extension, ExtensionService};
+use crate::icons::{codicon_by_name, codicon_font};
 use crate::theme::Palette;
 
 const SECTION_H: f32 = 22.0;
@@ -21,145 +26,506 @@ const ROW_H: f32 = 72.0;
 const PAD_LEFT: f32 = 16.0;
 const ICON: f32 = 42.0;
 const ICON_GAP: f32 = 14.0;
+const PAD_RIGHT: f32 = 11.0;
+const SEARCH_H: f32 = 26.0;
 
-pub fn show(ui: &mut Ui, service: &ExtensionService) {
+/// What the user asked for in the view.
+#[derive(Default)]
+pub struct ExtensionsViewOutput {
+    pub install: Option<GalleryExtension>,
+    pub uninstall: Option<String>,
+    pub refresh: bool,
+}
+
+/// Which sections are collapsed (kept across frames by egui memory).
+#[derive(Clone, Default)]
+struct Collapsed {
+    installed: bool,
+    popular: bool,
+    recommended: bool,
+}
+
+pub fn show(ui: &mut Ui, service: &mut ExtensionService) -> ExtensionsViewOutput {
+    let mut out = ExtensionsViewOutput::default();
     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
 
-    // Section header: "INSTALLED" with the count on the right.
-    let (header, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SECTION_H), Sense::hover());
-    let p = ui.painter();
-    p.text(
-        egui::pos2(header.left() + 8.0, header.center().y),
-        Align2::LEFT_CENTER,
-        crate::icons::CHEVRON_DOWN.to_string(),
-        codicon_font(16.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG,
+    // View title with the Refresh action.
+    let title = super::sidebar::title_bar(ui, "EXTENSIONS");
+    let refresh = egui::Rect::from_center_size(
+        egui::pos2(title.right() - 44.0, title.center().y),
+        egui::vec2(22.0, 22.0),
     );
-    p.text(
-        egui::pos2(header.left() + 26.0, header.center().y),
-        Align2::LEFT_CENTER,
-        "INSTALLED",
-        crate::ui_font::bold(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG,
-    );
-    let count = service.extensions.len().to_string();
-    let badge_w = ui
-        .painter()
-        .layout_no_wrap(count.clone(), FontId::proportional(11.0), Palette::FG)
-        .size()
-        .x
-        + 10.0;
-    let badge = egui::Rect::from_center_size(
-        egui::pos2(header.right() - 12.0 - badge_w / 2.0, header.center().y),
-        egui::vec2(badge_w.max(18.0), 18.0),
-    );
-    ui.painter().rect_filled(badge, 9.0, Palette::VSCE_BADGE_BG);
-    ui.painter().text(
-        badge.center(),
-        Align2::CENTER_CENTER,
-        count,
-        FontId::proportional(11.0),
-        Palette::VSCE_BADGE_FG,
-    );
-
-    if service.extensions.is_empty() {
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(PAD_LEFT);
-            ui.set_max_width(ui.available_width() - PAD_LEFT);
-            ui.label(
-                egui::RichText::new(
-                    "No extensions installed. Extensions are read from ~/.vscode/extensions \
-                     and ~/.vscode-rust/extensions.",
-                )
-                .size(13.0)
-                .color(Palette::FG_DESCRIPTION),
-            );
-        });
-        return;
+    let r = ui.interact(refresh, ui.id().with("ext_refresh"), Sense::click());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Refresh"));
+    if r.hovered() {
+        ui.painter().rect_filled(refresh, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG);
     }
+    paint_codicon(ui, refresh.center(), "refresh", 16.0, Palette::FG);
+    if r.on_hover_text("Refresh").clicked() {
+        out.refresh = true;
+    }
+    paint_codicon(ui, egui::pos2(title.right() - 18.0, title.center().y), "ellipsis", 16.0, Palette::FG);
+
+    search_box(ui, service);
+    ui.add_space(6.0);
+
+    let collapsed_id = ui.id().with("ext_sections");
+    let mut collapsed: Collapsed = ui.data(|d| d.get_temp(collapsed_id)).unwrap_or_default();
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        for ext in &service.extensions {
-            let (rect, resp) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::hover());
-            let state = service.activation.get(&ext.id).cloned().unwrap_or(Activation::Inactive);
-            let status = match &state {
-                Activation::Inactive if ext.main.is_none() => "",
-                Activation::Inactive => "Not activated",
-                Activation::Active => "Activated",
-                Activation::Failed(_) => "Activation failed",
-                Activation::NeedsNode => "Needs Node.js",
-            };
-            let a11y = format!("{}, {}, {}", ext.display_name, ext.publisher, status);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, a11y.clone()));
-            let tooltip = match &state {
-                Activation::Failed(e) => format!("{}\n{e}", ext.id),
-                _ => format!("{} v{}\n{}", ext.id, ext.version, ext.path.display()),
-            };
-            let resp = resp.on_hover_text(tooltip);
+        let query = service.marketplace.query.trim().to_string();
 
-            let p = ui.painter_at(rect);
-            if resp.hovered() {
-                p.rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        if !query.is_empty() {
+            let list = service.marketplace.current_search();
+            let state = service.marketplace.list(&list).cloned();
+            match state {
+                Some(s) if !s.loading => {
+                    if let Some(e) = &s.error {
+                        message(ui, &format!("Couldn't search the marketplace: {e}"));
+                    } else if s.items.is_empty() {
+                        message(ui, "No extensions found.");
+                    }
+                    for ext in &s.items {
+                        gallery_row(ui, service, ext, &mut out);
+                    }
+                }
+                _ if !service.marketplace.enabled => message(ui, "The marketplace is turned off."),
+                _ => message(ui, "Searching…"),
             }
-            // Icon placeholder: the generic extension glyph in a 42px box.
-            let icon = egui::Rect::from_min_size(
-                egui::pos2(rect.left() + PAD_LEFT, rect.center().y - ICON / 2.0),
-                egui::vec2(ICON, ICON),
-            );
-            p.rect_filled(icon, 4.0, Palette::INPUT_BG);
-            p.text(
-                icon.center(),
-                Align2::CENTER_CENTER,
-                crate::icons::EXTENSIONS.to_string(),
-                codicon_font(26.0),
-                Palette::FG_DESCRIPTION,
-            );
+            return;
+        }
 
-            let x = icon.right() + ICON_GAP;
-            let right = rect.right() - 12.0;
-            let name = p.layout_no_wrap(ext.display_name.clone(), crate::ui_font::bold(13.0), Palette::FG);
-            let name_w = name.size().x;
-            p.galley(egui::pos2(x, rect.top() + 10.0), name, Palette::FG);
-            p.text(
-                egui::pos2(x + name_w + 6.0, rect.top() + 10.0 + 8.0),
-                Align2::LEFT_CENTER,
-                format!("v{}", ext.version),
-                FontId::proportional(11.0),
-                Palette::FG_DESCRIPTION,
-            );
-            let desc = p.layout(
-                ext.description.clone(),
-                FontId::proportional(13.0),
-                Palette::FG_DESCRIPTION,
-                (right - x).max(40.0),
-            );
-            // One line, clipped like `text-overflow: ellipsis`.
-            let desc_rect = egui::Rect::from_min_max(
-                egui::pos2(x, rect.top() + 29.0),
-                egui::pos2(right, rect.top() + 47.0),
-            );
-            ui.painter_at(desc_rect).galley(desc_rect.min, desc, Palette::FG_DESCRIPTION);
-            p.text(
-                egui::pos2(x, rect.bottom() - 15.0),
-                Align2::LEFT_CENTER,
-                &ext.publisher,
-                FontId::proportional(12.0),
-                Palette::FG,
-            );
-            let status_color = match state {
-                Activation::Failed(_) | Activation::NeedsNode => Palette::VSCE_NOTIFICATIONS_ERROR_ICON,
-                _ => Palette::FG_DESCRIPTION,
-            };
-            p.text(
-                egui::pos2(right, rect.bottom() - 15.0),
-                Align2::RIGHT_CENTER,
-                status,
-                FontId::proportional(12.0),
-                status_color,
-            );
+        // INSTALLED
+        let count = service.extensions.len();
+        if section(ui, "INSTALLED", Some(count), &mut collapsed.installed) {
+            if count == 0 {
+                message(ui, "No extensions installed.");
+            }
+            let installed: Vec<Extension> = service.extensions.clone();
+            for ext in &installed {
+                installed_row(ui, service, ext, &mut out);
+            }
+        }
+
+        // POPULAR
+        if section(ui, "POPULAR", None, &mut collapsed.popular) {
+            list_rows(ui, service, &List::Popular, &mut out);
+        }
+
+        // RECOMMENDED (workspace recommendations)
+        if !service.marketplace.recommendations.is_empty() {
+            let n = service.marketplace.recommendations.len();
+            if section(ui, "RECOMMENDED", Some(n), &mut collapsed.recommended) {
+                list_rows(ui, service, &List::Recommended, &mut out);
+            }
         }
     });
+
+    ui.data_mut(|d| d.insert_temp(collapsed_id, collapsed));
+    out
+}
+
+fn list_rows(ui: &mut Ui, service: &mut ExtensionService, list: &List, out: &mut ExtensionsViewOutput) {
+    match service.marketplace.list(list).cloned() {
+        Some(s) if !s.loading => {
+            if let Some(e) = &s.error {
+                message(ui, &format!("Couldn't reach the marketplace: {e}"));
+            }
+            for ext in &s.items {
+                gallery_row(ui, service, ext, out);
+            }
+        }
+        _ if !service.marketplace.enabled => message(ui, "The marketplace is turned off."),
+        _ => message(ui, "Loading…"),
+    }
+}
+
+/// The "Search Extensions in Marketplace" box.
+fn search_box(ui: &mut Ui, service: &mut ExtensionService) {
+    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SEARCH_H + 8.0), Sense::hover());
+    let box_rect = egui::Rect::from_min_max(
+        egui::pos2(row.left() + 20.0, row.top() + 8.0),
+        egui::pos2(row.right() - 12.0, row.bottom()),
+    );
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let text_rect = egui::Rect::from_min_max(
+        egui::pos2(box_rect.left() + 7.0, box_rect.top() + 1.0),
+        egui::pos2(box_rect.right() - 48.0, box_rect.bottom() - 1.0),
+    );
+    let mut query = service.marketplace.query.clone();
+    let mut focused = false;
+    {
+        let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(text_rect).layout(*ui.layout()));
+        ui.visuals_mut().weak_text_color = Some(Palette::VSCE_QUICK_INPUT_PLACEHOLDER_FG);
+        ui.visuals_mut().text_cursor.stroke.color = Palette::VSCE_QUICK_INPUT_BOX_FG;
+        let resp = ui.add_sized(
+            text_rect.size(),
+            egui::TextEdit::singleline(&mut query)
+                .id_salt("extensions_search")
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .hint_text("Search Extensions in Marketplace")
+                .font(FontId::proportional(13.0))
+                .text_color(Palette::VSCE_QUICK_INPUT_BOX_FG)
+                .vertical_align(egui::Align::Center),
+        );
+        focused = resp.has_focus();
+    }
+    service.marketplace.set_query(query);
+
+    ui.painter().set(
+        slot,
+        egui::epaint::RectShape::new(
+            box_rect,
+            CornerRadius::same(6),
+            Palette::VSCE_QUICK_INPUT_BOX_BG,
+            Stroke::new(
+                1.0,
+                if focused { Palette::VSCE_QUICK_INPUT_FOCUS_BORDER } else { Palette::INPUT_BORDER },
+            ),
+            StrokeKind::Inside,
+        ),
+    );
+
+    // Clear and filter actions inside the box.
+    let clear = egui::Rect::from_center_size(
+        egui::pos2(box_rect.right() - 36.0, box_rect.center().y),
+        egui::vec2(20.0, 20.0),
+    );
+    let c = ui.interact(clear, ui.id().with("ext_clear"), Sense::click());
+    c.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Clear Extensions Search Results"));
+    if c.hovered() {
+        ui.painter().rect_filled(clear, 4.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG);
+    }
+    paint_codicon(ui, clear.center(), "clear-all", 16.0, Palette::FG);
+    if c.on_hover_text("Clear Extensions Search Results").clicked() {
+        service.marketplace.set_query(String::new());
+    }
+    paint_codicon(
+        ui,
+        egui::pos2(box_rect.right() - 13.0, box_rect.center().y),
+        "filter",
+        16.0,
+        Palette::FG,
+    );
+}
+
+/// A collapsible section header; returns whether it's expanded.
+fn section(ui: &mut Ui, title: &str, count: Option<usize>, collapsed: &mut bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), SECTION_H), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    if resp.clicked() {
+        *collapsed = !*collapsed;
+    }
+    let p = ui.painter();
+    if rect.top() > ui.min_rect().top() + 1.0 {
+        p.hline(rect.x_range(), rect.top(), Stroke::new(1.0, Palette::BORDER));
+    }
+    paint_codicon(
+        ui,
+        egui::pos2(rect.left() + 12.0, rect.center().y),
+        if *collapsed { "chevron-right" } else { "chevron-down" },
+        16.0,
+        Palette::SIDEBAR_SECTION_HEADER_FG,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 22.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        title,
+        crate::ui_font::bold(11.0),
+        Palette::SIDEBAR_SECTION_HEADER_FG,
+    );
+    if let Some(n) = count {
+        let text = n.to_string();
+        let w = ui
+            .painter()
+            .layout_no_wrap(text.clone(), FontId::proportional(11.0), Palette::FG)
+            .size()
+            .x
+            + 10.0;
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 12.0 - w.max(18.0) / 2.0, rect.center().y),
+            egui::vec2(w.max(18.0), 18.0),
+        );
+        ui.painter().rect_filled(badge, 9.0, Palette::VSCE_BADGE_2026_BG);
+        ui.painter().text(badge.center(), Align2::CENTER_CENTER, text, FontId::proportional(11.0), egui::Color32::WHITE);
+    }
+    !*collapsed
+}
+
+fn message(ui: &mut Ui, text: &str) {
+    ui.add_space(6.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), Sense::hover());
+    ui.painter().text(
+        egui::pos2(rect.left() + 20.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(13.0),
+        Palette::FG_DESCRIPTION,
+    );
+    ui.add_space(6.0);
+}
+
+/// Shared row layout: icon, name, metadata line, description, publisher.
+struct RowText<'a> {
+    name: &'a str,
+    description: &'a str,
+    publisher: &'a str,
+    verified: bool,
+    /// Right of the name: download count and rating.
+    downloads: Option<u64>,
+    rating: Option<f32>,
+    /// Right of the name instead of the stats (installed rows).
+    version: Option<&'a str>,
+}
+
+fn row_frame(ui: &mut Ui, a11y: String) -> (egui::Rect, egui::Response) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::hover());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, a11y.clone()));
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+    }
+    (rect, resp)
+}
+
+fn paint_row(ui: &mut Ui, rect: egui::Rect, icon: Option<&egui::TextureHandle>, t: &RowText) {
+    let p = ui.painter_at(rect);
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + PAD_LEFT, rect.center().y - ICON / 2.0),
+        egui::vec2(ICON, ICON),
+    );
+    match icon {
+        Some(tex) => {
+            p.image(tex.id(), icon_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        None => {
+            p.text(
+                icon_rect.center(),
+                Align2::CENTER_CENTER,
+                crate::icons::EXTENSIONS.to_string(),
+                codicon_font(34.0),
+                Palette::FG_DESCRIPTION,
+            );
+        }
+    }
+
+    let x = icon_rect.right() + ICON_GAP;
+    let right = rect.right() - PAD_RIGHT;
+    let line1 = rect.top() + 14.0;
+
+    // Right of the name: stats or version, laid out right to left.
+    let mut stats_left = right;
+    let small = FontId::proportional(11.0);
+    if let Some(v) = t.version {
+        let g = p.layout_no_wrap(format!("v{v}"), small.clone(), Palette::FG_DESCRIPTION);
+        stats_left -= g.size().x;
+        p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG_DESCRIPTION);
+    } else {
+        if let Some(r) = t.rating.filter(|r| *r > 0.0) {
+            let text = format!("{}", (r * 10.0).round() / 10.0);
+            let g = p.layout_no_wrap(text, small.clone(), Palette::FG);
+            stats_left -= g.size().x;
+            p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG);
+            stats_left -= 16.0;
+            paint_codicon(ui, egui::pos2(stats_left + 7.0, line1), "star-full", 14.0, Palette::VSCE_EXTENSION_STAR_FG);
+            stats_left -= 6.0;
+        }
+        if let Some(d) = t.downloads {
+            let g = p.layout_no_wrap(format_count(d), small.clone(), Palette::FG);
+            stats_left -= g.size().x;
+            p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG);
+            stats_left -= 18.0;
+            paint_codicon(ui, egui::pos2(stats_left + 8.0, line1), "cloud-download", 14.0, Palette::FG);
+        }
+    }
+
+    // Name (bold), clipped before the stats.
+    let name_clip = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(stats_left - 6.0, rect.bottom()));
+    let name = p.layout_no_wrap(t.name.to_string(), crate::ui_font::bold(13.0), Palette::FG);
+    let name_h = name.size().y;
+    ui.painter_at(name_clip).galley(egui::pos2(x, line1 - name_h / 2.0), name, Palette::FG);
+
+    // Description, one line.
+    let desc_rect = egui::Rect::from_min_max(egui::pos2(x, rect.top() + 26.0), egui::pos2(right, rect.top() + 46.0));
+    let desc = p.layout_no_wrap(t.description.to_string(), FontId::proportional(13.0), Palette::FG);
+    ui.painter_at(desc_rect).galley(desc_rect.min, desc, Palette::FG);
+
+    // Publisher, with the verified badge.
+    let line3 = rect.bottom() - 15.0;
+    let mut px = x;
+    if t.verified {
+        paint_codicon(ui, egui::pos2(px + 7.0, line3), "verified-filled", 14.0, Palette::VSCE_EXTENSION_VERIFIED_FG);
+        px += 17.0;
+    }
+    ui.painter_at(rect).text(
+        egui::pos2(px, line3),
+        Align2::LEFT_CENTER,
+        t.publisher,
+        crate::ui_font::bold(12.0),
+        Palette::FG_DESCRIPTION,
+    );
+}
+
+/// A prominent action button at the row's bottom-right ("Install").
+fn row_button(ui: &mut Ui, rect: egui::Rect, label: &str, id: egui::Id, enabled: bool, prominent: bool) -> bool {
+    let font = FontId::proportional(12.0);
+    let w = ui.painter().layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE).size().x + 14.0;
+    let r = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - PAD_RIGHT - w, rect.bottom() - 15.0 - 9.0),
+        egui::vec2(w, 18.0),
+    );
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let resp = ui.interact(r, id, sense);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    let fill = match (prominent, resp.hovered() && enabled) {
+        (true, false) => Palette::VSCE_EXTENSION_BUTTON_PROMINENT_BG,
+        (true, true) => Palette::VSCE_EXTENSION_BUTTON_PROMINENT_HOVER_BG,
+        (false, true) => Palette::VSCE_BUTTON_2026_SECONDARY_HOVER_BG,
+        (false, false) => egui::Color32::TRANSPARENT,
+    };
+    ui.painter().rect(
+        r,
+        CornerRadius::same(2),
+        fill,
+        Stroke::new(1.0, if prominent { egui::Color32::TRANSPARENT } else { Palette::VSCE_BUTTON_2026_BORDER }),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(
+        r.center(),
+        Align2::CENTER_CENTER,
+        label,
+        font,
+        if prominent { egui::Color32::WHITE } else { Palette::FG },
+    );
+    enabled && resp.clicked()
+}
+
+fn gallery_row(ui: &mut Ui, service: &mut ExtensionService, ext: &GalleryExtension, out: &mut ExtensionsViewOutput) {
+    let id = ext.id();
+    let (rect, resp) = row_frame(ui, format!("{}, {}", ext.display_name, ext.namespace));
+    let tooltip = format!("{id}\n{}", ext.description);
+    resp.on_hover_text(tooltip);
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let icon = match &ext.icon_url {
+        Some(url) => {
+            service.marketplace.request_icon(url);
+            match service.marketplace.icons.get(url) {
+                Some(Icon::Ready(t)) => Some(t.clone()),
+                _ => None,
+            }
+        }
+        None => None,
+    };
+    paint_row(
+        ui,
+        rect,
+        icon.as_ref(),
+        &RowText {
+            name: &ext.display_name,
+            description: &ext.description,
+            publisher: &ext.namespace,
+            verified: ext.verified,
+            downloads: Some(ext.downloads),
+            rating: ext.rating,
+            version: None,
+        },
+    );
+    let installing = service.marketplace.installing.contains(&id);
+    let installed = service.is_installed(&id);
+    let button_id = ui.id().with(("ext_install", &id));
+    if installed {
+        row_button(ui, rect, "Installed", button_id, false, false);
+    } else if installing {
+        row_button(ui, rect, "Installing", button_id, false, true);
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    } else if row_button(ui, rect, "Install", button_id, true, true) {
+        out.install = Some(ext.clone());
+    }
+}
+
+fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, out: &mut ExtensionsViewOutput) {
+    let state = service.activation.get(&ext.id).cloned().unwrap_or(Activation::Inactive);
+    let status = match &state {
+        Activation::Inactive if ext.main.is_none() => "",
+        Activation::Inactive => "Not activated",
+        Activation::Active => "Activated",
+        Activation::Failed(_) => "Activation failed",
+        Activation::NeedsNode => "Needs Node.js",
+    };
+    let (rect, resp) = row_frame(ui, format!("{}, {}, {}", ext.display_name, ext.publisher, status));
+    let hovered = resp.hovered();
+    let tooltip = match &state {
+        Activation::Failed(e) => format!("{}\n{e}", ext.id),
+        _ => format!("{} v{}\n{}", ext.id, ext.version, ext.path.display()),
+    };
+    resp.on_hover_text(tooltip);
+    // Installed extensions show their own icon from disk.
+    let icon_url = ext
+        .manifest
+        .get("icon")
+        .and_then(|v| v.as_str())
+        .map(|rel| format!("file://{}", ext.path.join(rel).display()));
+    let icon = icon_url.as_deref().and_then(|url| local_icon(ui.ctx(), service, url));
+    paint_row(
+        ui,
+        rect,
+        icon.as_ref(),
+        &RowText {
+            name: &ext.display_name,
+            description: &ext.description,
+            publisher: &ext.publisher,
+            verified: false,
+            downloads: None,
+            rating: None,
+            version: Some(&ext.version),
+        },
+    );
+    if hovered && service.can_uninstall(&ext.id) {
+        if row_button(ui, rect, "Uninstall", ui.id().with(("ext_uninstall", &ext.id)), true, false) {
+            out.uninstall = Some(ext.id.clone());
+        }
+    } else {
+        let color = match state {
+            Activation::Failed(_) | Activation::NeedsNode => Palette::VSCE_NOTIFICATIONS_ERROR_ICON,
+            _ => Palette::FG_DESCRIPTION,
+        };
+        ui.painter_at(rect).text(
+            egui::pos2(rect.right() - PAD_RIGHT, rect.bottom() - 15.0),
+            Align2::RIGHT_CENTER,
+            status,
+            FontId::proportional(12.0),
+            color,
+        );
+    }
+}
+
+/// An installed extension's icon, read from its folder once.
+fn local_icon(ctx: &egui::Context, service: &mut ExtensionService, url: &str) -> Option<egui::TextureHandle> {
+    let icons = &mut service.marketplace.icons;
+    if !icons.contains_key(url) {
+        let path = url.trim_start_matches("file://");
+        let icon = std::fs::read(path)
+            .ok()
+            .and_then(|b| image::load_from_memory(&b).ok())
+            .map(|img| {
+                let img = img.resize(128, 128, image::imageops::FilterType::Triangle).to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                Icon::Ready(ctx.load_texture(url, egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()), egui::TextureOptions::LINEAR))
+            })
+            .unwrap_or(Icon::Missing);
+        icons.insert(url.to_string(), icon);
+    }
+    match icons.get(url) {
+        Some(Icon::Ready(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+fn paint_codicon(ui: &Ui, center: egui::Pos2, name: &str, size: f32, color: egui::Color32) {
+    if let Some(glyph) = codicon_by_name(name) {
+        ui.painter().text(center, Align2::CENTER_CENTER, glyph.to_string(), codicon_font(size), color);
+    }
 }

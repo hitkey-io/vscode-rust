@@ -236,6 +236,16 @@ impl Palette {
     pub const VSCE_NOTIFICATIONS_WARNING_ICON: Color32 = rgb(0xCC, 0xA7, 0x00);
     /// --vscode-notificationsErrorIcon-foreground
     pub const VSCE_NOTIFICATIONS_ERROR_ICON: Color32 = rgb(0xF4, 0x87, 0x71);
+    /// --vscode-badge-background (2026-dark.json `#3994BCF0`)
+    pub const VSCE_BADGE_2026_BG: Color32 = rgba(0x39, 0x94, 0xBC, 0xF0);
+    /// --vscode-extensionButton-prominentBackground (2026)
+    pub const VSCE_EXTENSION_BUTTON_PROMINENT_BG: Color32 = rgb(0x29, 0x7A, 0xA0);
+    /// --vscode-extensionButton-prominentHoverBackground (2026)
+    pub const VSCE_EXTENSION_BUTTON_PROMINENT_HOVER_BG: Color32 = rgb(0x2B, 0x7D, 0xA3);
+    /// --vscode-extensionIcon-starForeground (extensionsWidgets.ts dark default)
+    pub const VSCE_EXTENSION_STAR_FG: Color32 = rgb(0xFF, 0x8E, 0x00);
+    /// --vscode-extensionIcon-verifiedForeground (= textLink.foreground, 2026)
+    pub const VSCE_EXTENSION_VERIFIED_FG: Color32 = rgb(0x48, 0xA0, 0xC7);
     /// --vscode-button-background (2026)
     pub const VSCE_BUTTON_2026_BG: Color32 = rgb(0x29, 0x7A, 0xA0);
     /// --vscode-button-hoverBackground (2026)

@@ -88,6 +88,7 @@ fn main() -> eframe::Result<()> {
                 None => vscode_rust::extensions::manifest::default_dirs(),
             };
             a.bootstrap_extensions(extension_dirs);
+            a.bootstrap_marketplace();
             if cli_extensions_view {
                 a.bootstrap_extensions_view();
             }

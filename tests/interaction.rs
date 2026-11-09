@@ -295,6 +295,10 @@ fn extension_runs_from_view_status_bar_and_palette() {
     harness.run();
     harness.run();
     let _ = harness.get_by_label("Hello World Sample, sample, Activated");
+    // Marketplace sections are there; tests never reach the network.
+    let _ = harness.get_by_label("INSTALLED");
+    let _ = harness.get_by_label("POPULAR");
+    let _ = harness.get_by_label("Refresh");
 
     // Its contributed command runs from the command palette; the
     // notification names the extension.

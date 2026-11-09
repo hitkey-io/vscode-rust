@@ -75,6 +75,9 @@ pub struct App {
     /// Extensions were loaded but the host hasn't been started (it starts on
     /// the first frame, once there's a context to wake).
     extensions_pending_start: bool,
+    /// The marketplace may be contacted (set by the real app, not tests);
+    /// it connects the first time the Extensions view opens.
+    marketplace_allowed: bool,
 }
 
 /// How long a transient status-bar message stays visible.
@@ -132,6 +135,7 @@ impl App {
             recent_tracked: None,
             extensions: crate::extensions::ExtensionService::default(),
             extensions_pending_start: false,
+            marketplace_allowed: false,
         }
     }
 
@@ -198,8 +202,18 @@ impl App {
     /// per extension with a `package.json`). Their code starts running on
     /// the next frame.
     pub fn bootstrap_extensions(&mut self, dirs: Vec<PathBuf>) {
+        // Installs go to the last folder (`~/.vscode-rust/extensions`, or
+        // the one `--extensions-dir` names).
+        if let Some(dir) = dirs.last() {
+            self.extensions.marketplace.install_dir = dir.clone();
+        }
         self.extensions.load(&dirs);
         self.extensions_pending_start = true;
+    }
+
+    /// Let the Extensions view reach the marketplace (off in tests).
+    pub fn bootstrap_marketplace(&mut self) {
+        self.marketplace_allowed = true;
     }
 
     /// Open the Extensions view on launch.
@@ -215,6 +229,15 @@ impl App {
             let wake = ctx.clone();
             self.extensions
                 .start(self.workspace_root.as_deref(), move || wake.request_repaint());
+            self.extensions.marketplace.load_recommendations(self.workspace_root.as_deref());
+        }
+        let view_open = self.sidebar_visible && self.active_view == ActivityView::Extensions;
+        if view_open && self.marketplace_allowed && !self.extensions.marketplace.enabled {
+            let wake = ctx.clone();
+            self.extensions.marketplace.enable(move || wake.request_repaint());
+        }
+        if self.extensions.tick_marketplace(ctx) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         if let Some(lang) = self.active_doc.and_then(|i| self.documents.get(i)).map(|d| d.language_id()) {
             self.extensions.fire_event(&format!("onLanguage:{lang}"));
@@ -1418,8 +1441,16 @@ impl App {
                         if self.active_view == ActivityView::Extensions {
                             let rect = ui.max_rect();
                             ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
-                            sidebar::title_bar(ui, "EXTENSIONS");
-                            crate::workbench::extensions_view::show(ui, &self.extensions);
+                            let view = crate::workbench::extensions_view::show(ui, &mut self.extensions);
+                            if let Some(ext) = view.install {
+                                self.extensions.marketplace.install(&ext);
+                            }
+                            if let Some(id) = view.uninstall {
+                                self.extensions.uninstall(&id);
+                            }
+                            if view.refresh {
+                                self.extensions.marketplace.lists.clear();
+                            }
                             return SidebarOutput::default();
                         }
                         let graph_root = self.active_repo_root();
