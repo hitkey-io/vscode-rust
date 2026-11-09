@@ -416,7 +416,7 @@ fn full_app_with_doc_and_palette() {
 
     let mut palette = CommandPaletteState::default();
     palette.open();
-    palette.query = "open".to_string();
+    palette.query = ">open".to_string();
 
     let app = with_setup(move |ctx| {
         use egui::{Frame, Margin, SidePanel, TopBottomPanel};
@@ -494,7 +494,7 @@ fn full_app_with_doc_and_palette() {
 fn command_palette_filtered() {
     let mut state = CommandPaletteState::default();
     state.open();
-    state.query = "save".to_string();
+    state.query = ">save".to_string();
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()

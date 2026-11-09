@@ -8,7 +8,7 @@ use crate::fs::FileNode;
 use crate::menubar::MenuIds;
 use crate::search::SearchState;
 use crate::theme::{self, Palette};
-use crate::workbench::command_palette::{self, CommandId, CommandPaletteState};
+use crate::workbench::command_palette::{self, CommandId, CommandPaletteState, PaletteAction};
 use crate::workbench::{
     activity_bar,
     sidebar::{self, SidebarOutput},
@@ -63,15 +63,26 @@ pub struct App {
     /// When the current status message was set. VS Code status messages are
     /// transient; ours expire after a few seconds (see STATUS_TTL).
     status_message_at: Option<std::time::Instant>,
+    /// Editor history, most recently active first. Feeds Quick Open's
+    /// "recently opened" group.
+    recent_files: Vec<PathBuf>,
+    /// Active editor last recorded in `recent_files`; history only changes
+    /// when the active editor changes, so a file removed from "recently
+    /// opened" stays out until it is activated again.
+    recent_tracked: Option<PathBuf>,
 }
 
 /// How long a transient status-bar message stays visible.
 const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// How many entries the editor history keeps.
+const RECENT_FILES_MAX: usize = 50;
+
 impl App {
     pub fn new(cc: &CreationContext<'_>) -> Self {
         crate::icons::register_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
+        crate::menubar::repaint_on_event(&cc.egui_ctx);
         Self::fresh()
     }
 
@@ -112,6 +123,8 @@ impl App {
             timeline_expanded: false,
             find: crate::editor::find::FindState::default(),
             status_message_at: None,
+            recent_files: Vec::new(),
+            recent_tracked: None,
         }
     }
 
@@ -144,6 +157,9 @@ impl App {
             Some(CommandId::CloseAllFiles)
         } else if id == &ids.palette {
             self.palette.open();
+            None
+        } else if id == &ids.go_to_file {
+            self.quick_open_shortcut();
             None
         } else if id == &ids.toggle_sidebar {
             Some(CommandId::ToggleSidebar)
@@ -353,6 +369,7 @@ impl App {
         if let Some(idx) = self.documents.iter().position(|d| d.path == path) {
             self.active_doc = Some(idx);
             self.refresh_git_line_changes();
+            self.track_recent_active();
             return;
         }
         match Document::open(path.clone()) {
@@ -361,6 +378,7 @@ impl App {
                 self.active_doc = Some(self.documents.len() - 1);
                 self.set_status(format!("Opened {}", path.display()));
                 self.refresh_git_line_changes();
+                self.track_recent_active();
             }
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 // Binary file — silently refuse, like VS Code's untrusted/binary
@@ -736,6 +754,62 @@ impl App {
         self.refresh_git_line_changes();
     }
 
+    /// Open Quick Open (⌘P) over the current workspace.
+    fn open_quick_open(&mut self) {
+        let root = self.workspace_root.clone();
+        self.palette.open_quick_open(root.as_deref(), &self.recent_files);
+    }
+
+    /// ⌘P: open Quick Open, or step the selection down when it is already
+    /// showing file results (VS Code's quick-navigate behaviour).
+    fn quick_open_shortcut(&mut self) {
+        if self.palette.visible && !self.palette.is_command_mode() {
+            self.palette.select_next();
+        } else {
+            self.open_quick_open();
+        }
+    }
+
+    /// Move the active document to the front of the editor history.
+    fn track_recent_active(&mut self) {
+        let Some(path) = self.active_doc.and_then(|i| self.documents.get(i)).map(|d| d.path.clone())
+        else {
+            return;
+        };
+        if self.recent_tracked.as_ref() == Some(&path) {
+            return;
+        }
+        self.recent_tracked = Some(path.clone());
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(RECENT_FILES_MAX);
+    }
+
+    fn dispatch_palette(&mut self, ctx: &Context, action: PaletteAction) {
+        match action {
+            PaletteAction::Command(cmd) => self.execute_command(ctx, cmd),
+            PaletteAction::OpenFile { path, line } => {
+                self.show_welcome = false;
+                self.open_file(path.clone());
+                if let Some(line) = line {
+                    self.go_to_line(line);
+                }
+            }
+            PaletteAction::GoToLine(line) => self.go_to_line(line),
+            PaletteAction::RemoveRecent(path) => self.recent_files.retain(|p| p != &path),
+        }
+    }
+
+    /// Put the cursor at the start of 1-based `line` in the active editor,
+    /// clamped to the document length.
+    fn go_to_line(&mut self, line: usize) {
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get_mut(i)) else {
+            return;
+        };
+        let last = doc.text.split('\n').count().max(1);
+        doc.pending_nav = Some((line.clamp(1, last), 0));
+    }
+
     fn execute_command(&mut self, ctx: &Context, cmd: CommandId) {
         match cmd {
             CommandId::OpenFolder => self.open_folder_dialog(),
@@ -748,6 +822,7 @@ impl App {
             CommandId::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             CommandId::ShowExplorer => self.show_view(ActivityView::Explorer),
             CommandId::ShowSearch => self.show_view(ActivityView::Search),
+            CommandId::QuickOpen => self.open_quick_open(),
             CommandId::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         }
     }
@@ -844,10 +919,11 @@ impl App {
                     egui::FontId::proportional(12.5),
                     Palette::COMMAND_CENTER_FG,
                 );
+                // VS Code's command center opens Quick Open (file search).
                 if pill_resp.clicked() {
-                    self.palette.open();
+                    self.open_quick_open();
                 }
-                pill_resp.on_hover_text("Show All Commands (⇧⌘P)");
+                pill_resp.on_hover_text(format!("Search {workspace_name} (⌘P)"));
 
                 // Right: layout-control cluster. The leftmost icon
                 // (`layout-sidebar-left`) toggles the primary sidebar; the
@@ -907,6 +983,7 @@ impl App {
                             self.menu_file(ui, ctx);
                             self.menu_edit(ui);
                             self.menu_view(ui);
+                            self.menu_go(ui);
                             self.menu_help(ui);
                         });
                     },
@@ -995,6 +1072,16 @@ impl App {
         });
     }
 
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn menu_go(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button(menu_label("Go"), |ui| {
+            if ui.button("Go to File…       ⌘P").clicked() {
+                self.open_quick_open();
+                ui.close_menu();
+            }
+        });
+    }
+
     fn menu_help(&mut self, ui: &mut egui::Ui) {
         ui.menu_button(menu_label("Help"), |ui| {
             ui.label("Welcome");
@@ -1014,6 +1101,16 @@ impl App {
         });
         if toggle_palette {
             self.palette.toggle();
+            return;
+        }
+
+        // Cmd+P — Quick Open. Checked after Cmd+Shift+P so the Shift chord
+        // wins; also active while the popup is open (quick navigate).
+        let quick_open = ctx.input_mut(|i| {
+            i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::P))
+        });
+        if quick_open {
+            self.quick_open_shortcut();
             return;
         }
 
@@ -1386,8 +1483,9 @@ impl App {
             }
         }
 
-        if let Some(cmd) = command_palette::show(ctx, &mut self.palette) {
-            self.execute_command(ctx, cmd);
+        self.track_recent_active();
+        if let Some(action) = command_palette::show(ctx, &mut self.palette) {
+            self.dispatch_palette(ctx, action);
         }
     }
 }

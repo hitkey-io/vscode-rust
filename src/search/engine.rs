@@ -262,6 +262,44 @@ fn walk(root: &Path, matcher: &Matcher, outcome: &mut SearchOutcome) {
     }
 }
 
+/// Every file under `root` that Quick Open (Cmd+P) can offer, in walk order.
+/// Uses the same folder exclusions as text search (`search.exclude` /
+/// `files.exclude` analogue) and stops after `limit` entries so huge trees
+/// don't stall the UI thread.
+pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_entry(|e| accept_quick_open_entry(e))
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        out.push(entry.into_path());
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// Quick Open keeps dotfiles (`.gitignore`, `.env`, `.vscode/*`) visible —
+/// only VCS metadata, OS noise and the heavy build/dependency folders are
+/// skipped.
+fn accept_quick_open_entry(e: &walkdir::DirEntry) -> bool {
+    let name = e.file_name().to_string_lossy();
+    if name == ".DS_Store" || name == "Thumbs.db" {
+        return false;
+    }
+    if e.depth() > 0 && e.file_type().is_dir() {
+        return name == ".vscode" || !IGNORED_DIRS.iter().any(|d| *d == name.as_ref());
+    }
+    true
+}
+
 fn accept_entry(e: &walkdir::DirEntry) -> bool {
     let name_os = e.file_name();
     let name = name_os.to_string_lossy();

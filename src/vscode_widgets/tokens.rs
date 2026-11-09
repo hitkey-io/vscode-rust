@@ -51,6 +51,7 @@ pub const SURFACE_PANEL: Color32 = Palette::PANEL_BG;
 pub const LIST_HOVER_BG: Color32 = Palette::VSCE_LIST_HOVER_BG;
 pub const LIST_ACTIVE_SELECTION_BG: Color32 = Palette::VSCE_LIST_ACTIVE_SELECTION_BG;
 pub const LIST_ACTIVE_SELECTION_FG: Color32 = Palette::VSCE_LIST_ACTIVE_SELECTION_FG;
+pub const LIST_HIGHLIGHT_FG: Color32 = Palette::VSCE_LIST_HIGHLIGHT_FG;
 
 // Dropdown / context menu -------------------------------------------------
 pub const DROPDOWN_BG: Color32 = Palette::VSCE_DROPDOWN_BG;

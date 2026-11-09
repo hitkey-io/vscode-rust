@@ -169,10 +169,95 @@ fn toggle_sidebar_via_shortcut() {
     harness.snapshot("interaction_sidebar_visible");
 }
 
+#[test]
+fn quick_open_finds_and_opens_file() {
+    let ws = workspace_path();
+    let mut harness = launch(Some(ws.clone()), vec![ws.join("tsconfig.json")], None);
+    harness.run();
+    harness.run();
+    harness.run();
+
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
+    harness.run();
+    harness.run();
+
+    // The input has focus, so typed text lands in the query. Results are
+    // labelled "<name>, <folder>".
+    harness.event(egui::Event::Text("site".to_string()));
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("SiteHeader.vue, components");
+    harness.snapshot("interaction_quick_open");
+
+    harness.key_press(Key::Enter);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("tab:SiteHeader.vue");
+}
+
+#[test]
+fn quick_open_empty_lists_recent_editors() {
+    let ws = workspace_path();
+    let files = vec![ws.join("package.json"), ws.join("pages/index.vue")];
+    let mut harness = launch(Some(ws), files, None);
+    harness.run();
+    harness.run();
+    harness.run();
+
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
+    harness.run();
+    harness.run();
+    // The active editor heads the "recently opened" group.
+    let _ = harness.get_by_label("index.vue, pages");
+    harness.snapshot("interaction_quick_open_recent");
+}
+
+#[test]
+fn quick_open_remove_from_recently_opened() {
+    let ws = workspace_path();
+    let files = vec![ws.join("package.json"), ws.join("pages/index.vue")];
+    let mut harness = launch(Some(ws), files, None);
+    harness.run();
+    harness.run();
+    harness.run();
+
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("index.vue, pages");
+
+    // The selected history row carries the remove button; the popup stays
+    // open and the entry is gone.
+    harness.get_by_label("Remove from Recently Opened").click();
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("index.vue, pages").is_none());
+    // package.json (also listed in the explorer) is now the selected history
+    // row, so the remove button is back on it.
+    let _ = harness.get_by_label("Remove from Recently Opened");
+
+    // Still gone after reopening: history only changes when the active
+    // editor changes.
+    harness.key_press(Key::Escape);
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("index.vue, pages").is_none());
+    // package.json (also listed in the explorer) is now the selected history
+    // row, so the remove button is back on it.
+    let _ = harness.get_by_label("Remove from Recently Opened");
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
 
+/// Self-contained sample workspace checked in next to the tests, so every
+/// run sees the same tree regardless of what exists on the host machine.
 fn workspace_path() -> PathBuf {
-    PathBuf::from("/Users/avenikolay/Projects/HITMESSAGE/hitmessage-site")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace")
 }

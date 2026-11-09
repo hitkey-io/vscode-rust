@@ -183,6 +183,52 @@ impl Palette {
     pub const VSCE_LIST_HOVER_BG: Color32 = rgb(0x2A, 0x2D, 0x2E);
     pub const VSCE_LIST_ACTIVE_SELECTION_BG: Color32 = rgb(0x04, 0x39, 0x5E);
     pub const VSCE_LIST_ACTIVE_SELECTION_FG: Color32 = rgb(0xFF, 0xFF, 0xFF);
+    /// --vscode-list-highlightForeground — matched characters in Quick Open,
+    /// the command palette and filtered trees (2026-dark.json).
+    pub const VSCE_LIST_HIGHLIGHT_FG: Color32 = rgb(0x48, 0xA0, 0xC7);
+
+    // --vscode-quickInput-* / --vscode-quickInputList-* / --vscode-pickerGroup-*
+    // (Quick Access popup; values from the command-palette parity audit)
+    /// --vscode-quickInput-background
+    pub const VSCE_QUICK_INPUT_BG: Color32 = rgb(0x20, 0x21, 0x22);
+    /// --vscode-quickInputList-focusBackground (selected row)
+    pub const VSCE_QUICK_INPUT_LIST_FOCUS_BG: Color32 = rgb(0x29, 0x7A, 0xA0);
+    /// --vscode-quickInputList-focusForeground (selected row text)
+    pub const VSCE_QUICK_INPUT_LIST_FOCUS_FG: Color32 = rgb(0xFF, 0xFF, 0xFF);
+    /// --vscode-quickInputList-focusHighlightForeground (matches on the
+    /// selected row)
+    pub const VSCE_QUICK_INPUT_LIST_FOCUS_HIGHLIGHT_FG: Color32 = rgb(0xFF, 0xFF, 0xFF);
+    /// --vscode-quickInputList-hoverBackground (2026-dark.json)
+    pub const VSCE_QUICK_INPUT_LIST_HOVER_BG: Color32 = rgb(0x26, 0x27, 0x28);
+    /// --vscode-pickerGroup-foreground ("recently opened" / "file results")
+    pub const VSCE_PICKER_GROUP_FG: Color32 = rgb(0xBF, 0xBF, 0xBF);
+    /// --vscode-pickerGroup-border (hairline between result groups)
+    pub const VSCE_PICKER_GROUP_BORDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+    /// --vscode-widget-border (Quick Access popup outline, 2026-dark.json)
+    pub const VSCE_WIDGET_BORDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+    /// --vscode-focusBorder (2026-dark.json `#3994BCB3`) — focused Quick
+    /// Access input outline.
+    pub const VSCE_QUICK_INPUT_FOCUS_BORDER: Color32 = rgba(0x39, 0x94, 0xBC, 0xB3);
+    /// --vscode-input-background (2026-dark.json) — Quick Access input box.
+    pub const VSCE_QUICK_INPUT_BOX_BG: Color32 = rgb(0x19, 0x1A, 0x1B);
+    /// --vscode-input-foreground (2026-dark.json)
+    pub const VSCE_QUICK_INPUT_BOX_FG: Color32 = rgb(0xBF, 0xBF, 0xBF);
+    /// --vscode-input-placeholderForeground (2026-dark.json)
+    pub const VSCE_QUICK_INPUT_PLACEHOLDER_FG: Color32 = rgb(0x55, 0x55, 0x55);
+    /// --vscode-keybindingLabel-background (colorRegistry dark default
+    /// `rgba(128, 128, 128, 0.17)`) — shortcut chips in the command palette.
+    pub const VSCE_KEYBINDING_LABEL_BG: Color32 = rgba(0x80, 0x80, 0x80, 0x2B);
+    /// --vscode-keybindingLabel-foreground (dark default)
+    pub const VSCE_KEYBINDING_LABEL_FG: Color32 = rgb(0xCC, 0xCC, 0xCC);
+    /// --vscode-keybindingLabel-border (dark default `rgba(51, 51, 51, 0.6)`)
+    pub const VSCE_KEYBINDING_LABEL_BORDER: Color32 = rgba(0x33, 0x33, 0x33, 0x99);
+    /// --vscode-keybindingLabel-bottomBorder (dark default `rgba(68, 68, 68, 0.6)`)
+    pub const VSCE_KEYBINDING_LABEL_BOTTOM_BORDER: Color32 = rgba(0x44, 0x44, 0x44, 0x99);
+    /// --vscode-descriptionForeground (2026-dark.json) — group labels.
+    pub const VSCE_QUICK_INPUT_SEPARATOR_FG: Color32 = rgb(0x8C, 0x8C, 0x8C);
+    /// --vscode-toolbar-hoverBackground (2026-dark.json `#FFFFFF18`) behind a
+    /// hovered row action button.
+    pub const VSCE_QUICK_INPUT_ACTION_HOVER_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x18);
 
     // --vscode-dropdown-* (from dark_modern.json:dropdown.*)
     pub const VSCE_DROPDOWN_BG: Color32 = rgb(0x31, 0x31, 0x31);
