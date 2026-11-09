@@ -12,6 +12,8 @@
       { "command": "helloWorld.sayHello", "title": "%command.sayHello%", "category": "Hello" },
       { "command": "helloWorld.askChoice", "title": "Ask a Choice", "category": "Hello" },
       { "command": "helloWorld.fail", "title": "Fail", "category": "Hello" },
+      { "command": "helloWorld.upperFirstLine", "title": "Upper-case First Line", "category": "Hello" },
+      { "command": "helloWorld.pick", "title": "Pick a Fruit", "category": "Hello" },
       { "command": "helloWorld.internal", "title": "Internal" }
     ],
     "menus": {

@@ -86,6 +86,38 @@ pub enum PaletteAction {
     RemoveRecent(PathBuf),
     /// A command contributed by an extension (run by the extension host).
     ExtensionCommand(String),
+    /// An extension's `showQuickPick` finished: the picked index, or `None`
+    /// when dismissed.
+    Picked { request_id: u64, index: Option<usize> },
+    /// An extension's `showInputBox` finished: the text, or `None` when
+    /// dismissed.
+    Input { request_id: u64, value: Option<String> },
+}
+
+/// An extension's own use of the Quick Input (quickInput.ts): a list to pick
+/// from, or a free text box.
+#[derive(Clone, Debug)]
+pub enum CustomInput {
+    Pick {
+        request_id: u64,
+        /// (label, description, detail, is_separator)
+        items: Vec<(String, Option<String>, Option<String>, bool)>,
+        placeholder: Option<String>,
+    },
+    Text {
+        request_id: u64,
+        prompt: Option<String>,
+        placeholder: Option<String>,
+        password: bool,
+    },
+}
+
+impl CustomInput {
+    fn request_id(&self) -> u64 {
+        match self {
+            CustomInput::Pick { request_id, .. } | CustomInput::Text { request_id, .. } => *request_id,
+        }
+    }
 }
 
 /// Upper bound on files indexed for Quick Open. Keeps the walk bounded on
@@ -116,11 +148,61 @@ pub struct CommandPaletteState {
     recent: Vec<PathBuf>,
     /// Commands contributed by extensions: (id, category, title).
     extension_commands: Vec<(String, String, String)>,
+    /// An extension's pick list or input box, when one is showing.
+    custom: Option<CustomInput>,
+    /// Requests whose popup was replaced before an answer (answer `None`).
+    abandoned: Vec<u64>,
 }
 
 impl CommandPaletteState {
+    /// Show an extension's pick list (`window.showQuickPick`).
+    pub fn open_pick(
+        &mut self,
+        request_id: u64,
+        items: Vec<(String, Option<String>, Option<String>, bool)>,
+        placeholder: Option<String>,
+    ) {
+        self.abandon_custom();
+        self.custom = Some(CustomInput::Pick { request_id, items, placeholder });
+        self.visible = true;
+        self.query.clear();
+        self.selected = 0;
+        self.scroll_top = 0;
+        self.just_opened = true;
+    }
+
+    /// Show an extension's input box (`window.showInputBox`).
+    pub fn open_input(
+        &mut self,
+        request_id: u64,
+        prompt: Option<String>,
+        placeholder: Option<String>,
+        value: String,
+        password: bool,
+    ) {
+        self.abandon_custom();
+        self.custom = Some(CustomInput::Text { request_id, prompt, placeholder, password });
+        self.visible = true;
+        self.query = value;
+        self.selected = 0;
+        self.scroll_top = 0;
+        self.just_opened = true;
+    }
+
+    /// Requests whose pick list or input box went away without an answer.
+    pub fn take_abandoned(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.abandoned)
+    }
+
+    fn abandon_custom(&mut self) {
+        if let Some(c) = self.custom.take() {
+            self.abandoned.push(c.request_id());
+        }
+    }
+
     /// Open in command mode (⇧⌘P).
     pub fn open(&mut self) {
+        self.abandon_custom();
         self.visible = true;
         // Pre-fill with ">" so the activator is visible in the input the way
         // VS Code does it when you press Cmd+Shift+P.
@@ -133,6 +215,7 @@ impl CommandPaletteState {
     /// Open in Quick Open file mode (⌘P). `recent` is the editor history,
     /// most recent first.
     pub fn open_quick_open(&mut self, root: Option<&Path>, recent: &[PathBuf]) {
+        self.abandon_custom();
         self.visible = true;
         self.query.clear();
         self.selected = 0;
@@ -165,7 +248,7 @@ impl CommandPaletteState {
 
     /// `>` prefix → command palette; anything else → Quick Open.
     pub fn is_command_mode(&self) -> bool {
-        self.query.starts_with('>')
+        self.custom.is_none() && self.query.starts_with('>')
     }
 
     /// Repeated ⌘P while Quick Open is showing moves the selection down
@@ -184,6 +267,8 @@ enum ItemKind {
     Command(usize),
     /// Index into `CommandPaletteState::extension_commands`.
     ExtCommand(usize),
+    /// An entry of an extension's pick list: (request, index).
+    Pick(u64, usize),
     File { path: PathBuf, line: Option<usize> },
     GoToLine(usize),
 }
@@ -215,6 +300,7 @@ impl Item {
                 line: *line,
             },
             ItemKind::GoToLine(n) => PaletteAction::GoToLine(*n),
+            ItemKind::Pick(request_id, i) => PaletteAction::Picked { request_id: *request_id, index: Some(*i) },
         }
     }
 
@@ -229,6 +315,16 @@ impl Item {
 
 /// What to show when there are no items.
 fn empty_message(state: &CommandPaletteState) -> Option<&'static str> {
+    match &state.custom {
+        Some(CustomInput::Text { prompt, .. }) => {
+            return Some(match prompt {
+                Some(p) => leak_label(&format!("{p} (Press 'Enter' to confirm or 'Escape' to cancel)")),
+                None => "Press 'Enter' to confirm your input or 'Escape' to cancel",
+            });
+        }
+        Some(CustomInput::Pick { .. }) => return Some("No matching results"),
+        None => {}
+    }
     if state.is_command_mode() {
         return Some("No matching commands");
     }
@@ -244,11 +340,77 @@ fn empty_message(state: &CommandPaletteState) -> Option<&'static str> {
 }
 
 fn build_items(state: &CommandPaletteState) -> Vec<Item> {
+    match &state.custom {
+        Some(CustomInput::Pick { request_id, items, .. }) => return pick_items(*request_id, items, &state.query),
+        Some(CustomInput::Text { .. }) => return Vec::new(),
+        None => {}
+    }
     if state.is_command_mode() {
         command_items(&state.query, &state.extension_commands)
     } else {
         file_items(state)
     }
+}
+
+/// An extension's pick list filtered by the query; separators label the
+/// group of entries after them.
+fn pick_items(
+    request_id: u64,
+    items: &[(String, Option<String>, Option<String>, bool)],
+    query: &str,
+) -> Vec<Item> {
+    let q = query.trim().to_lowercase();
+    let mut out = Vec::new();
+    let mut group: Option<&'static str> = None;
+    let mut group_label = String::new();
+    for (i, (label, description, detail, separator)) in items.iter().enumerate() {
+        if *separator {
+            group_label = label.clone();
+            group = Some("");
+            continue;
+        }
+        let hl = if q.is_empty() {
+            Vec::new()
+        } else {
+            match fuzzy_match(&label.to_lowercase(), &q) {
+                Some((_, hl)) => hl,
+                None => continue,
+            }
+        };
+        let mut description = description.clone().unwrap_or_default();
+        if let Some(d) = detail {
+            if !description.is_empty() {
+                description.push_str(" — ");
+            }
+            description.push_str(d);
+        }
+        let separator = group.take().map(|_| leak_label(&group_label));
+        out.push(Item {
+            kind: ItemKind::Pick(request_id, i),
+            label: label.clone(),
+            label_hl: hl,
+            description,
+            desc_hl: Vec::new(),
+            separator,
+            from_history: false,
+            command_id: String::new(),
+        });
+    }
+    out
+}
+
+/// Group labels are drawn from `&'static str`; extension labels are few and
+/// long-lived, so they're interned once.
+fn leak_label(s: &str) -> &'static str {
+    use std::sync::Mutex;
+    static LABELS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut labels = LABELS.lock().unwrap();
+    if let Some(l) = labels.iter().find(|l| **l == s) {
+        return l;
+    }
+    let l: &'static str = Box::leak(s.to_string().into_boxed_str());
+    labels.push(l);
+    l
 }
 
 fn command_items(query: &str, extension_commands: &[(String, String, String)]) -> Vec<Item> {
@@ -471,6 +633,12 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
         if i.consume_key(Modifiers::NONE, Key::Escape) {
             state.visible = false;
         }
+        if let Some(CustomInput::Text { request_id, .. }) = &state.custom {
+            if i.consume_key(Modifiers::NONE, Key::Enter) {
+                chosen = Some(PaletteAction::Input { request_id: *request_id, value: Some(state.query.clone()) });
+                state.visible = false;
+            }
+        }
         if i.consume_key(Modifiers::NONE, Key::ArrowDown) && !items.is_empty() {
             state.selected = (state.selected + 1).min(items.len() - 1);
         }
@@ -486,7 +654,7 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
     });
 
     if !state.visible {
-        return chosen;
+        return finish_custom(state, chosen);
     }
 
     // Keep the selected row inside the visible window.
@@ -539,7 +707,20 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
         state.visible = false;
     }
 
-    chosen
+    if state.visible { chosen } else { finish_custom(state, chosen) }
+}
+
+/// The popup closed: an extension's pick list or input box gets its answer
+/// (what was chosen, or nothing when dismissed).
+fn finish_custom(state: &mut CommandPaletteState, chosen: Option<PaletteAction>) -> Option<PaletteAction> {
+    let Some(custom) = state.custom.take() else { return chosen };
+    match chosen {
+        Some(a @ (PaletteAction::Picked { .. } | PaletteAction::Input { .. })) => Some(a),
+        _ => Some(match custom {
+            CustomInput::Pick { request_id, .. } => PaletteAction::Picked { request_id, index: None },
+            CustomInput::Text { request_id, .. } => PaletteAction::Input { request_id, value: None },
+        }),
+    }
 }
 
 /// Popup top edge, measured from the top of the window.
@@ -591,10 +772,17 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
     // The text sits 6px inside the 1px border (`.input { padding: 4px 6px }`).
     let text_rect = box_rect.shrink2(egui::vec2(7.0, 1.0));
 
-    let placeholder = if state.is_command_mode() {
-        PLACEHOLDER_COMMANDS
-    } else {
-        PLACEHOLDER_FILES
+    let custom_placeholder = match &state.custom {
+        Some(CustomInput::Pick { placeholder, .. }) | Some(CustomInput::Text { placeholder, .. }) => {
+            Some(placeholder.clone().unwrap_or_default())
+        }
+        None => None,
+    };
+    let password = matches!(state.custom, Some(CustomInput::Text { password: true, .. }));
+    let placeholder: &str = match &custom_placeholder {
+        Some(p) => p.as_str(),
+        None if state.is_command_mode() => PLACEHOLDER_COMMANDS,
+        None => PLACEHOLDER_FILES,
     };
     let query_before = state.query.clone();
     let mut focused = false;
@@ -616,6 +804,7 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
                 .margin(Margin::ZERO)
                 .desired_width(text_rect.width())
                 .hint_text(placeholder)
+                .password(password)
                 .font(FontId::proportional(13.0))
                 .text_color(Palette::VSCE_QUICK_INPUT_BOX_FG)
                 .vertical_align(egui::Align::Center);

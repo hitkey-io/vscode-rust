@@ -46,6 +46,19 @@ pub struct FindHighlight {
     pub ranges: Vec<(usize, usize)>,
     /// Index into `ranges` of the current match.
     pub current: usize,
+    /// Extension decorations (`TextEditor.setDecorations`), any order.
+    pub decorations: Vec<DecorationSpan>,
+}
+
+/// A decorated byte range: background and/or text colour. Find matches
+/// paint over decoration backgrounds, like VS Code's layering.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecorationSpan {
+    pub start: usize,
+    pub end: usize,
+    pub background: Option<Color32>,
+    pub color: Option<Color32>,
+    pub underline: Option<Color32>,
 }
 
 pub fn build_layout_job(
@@ -189,44 +202,65 @@ impl JobWriter<'_> {
         let end = start + text.len();
         self.pos = end;
 
-        // Fast path: no find decoration, or no range touches this run.
-        let overlapping: &[(usize, usize)] = match self.find {
-            Some(f) if !f.ranges.is_empty() => &f.ranges,
-            _ => &[],
+        let Some(f) = self.find else {
+            self.append(text, font, color, None, None);
+            return;
         };
-        let mut cuts: Vec<(usize, usize, bool)> = Vec::new(); // (s, e, is_current)
-        if let Some(f) = self.find {
-            for (i, &(s, e)) in overlapping.iter().enumerate() {
-                if e > start && s < end {
-                    cuts.push((s.max(start), e.min(end), i == f.current));
-                }
+        // Cut points from every find match and decoration touching this run.
+        let mut cuts: Vec<usize> = vec![start, end];
+        for &(s, e) in &f.ranges {
+            if e > start && s < end {
+                cuts.extend([s.max(start), e.min(end)]);
             }
         }
-        if cuts.is_empty() {
-            self.append(text, font, color, None);
+        for d in &f.decorations {
+            if d.end > start && d.start < end {
+                cuts.extend([d.start.max(start), d.end.min(end)]);
+            }
+        }
+        if cuts.len() == 2 {
+            self.append(text, font, color, None, None);
             return;
         }
-
-        // Emit alternating plain / highlighted segments.
-        let mut at = start;
-        for (s, e, is_current) in cuts {
-            if s > at {
-                self.append(&text[at - start..s - start], font, color, None);
+        cuts.sort_unstable();
+        cuts.dedup();
+        for w in cuts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            // Stay on character boundaries (ranges come from other code).
+            if a >= b || !text.is_char_boundary(a - start) || !text.is_char_boundary(b - start) {
+                continue;
             }
-            let bg = if is_current {
-                crate::theme::Palette::FIND_MATCH_BG
-            } else {
-                crate::theme::Palette::FIND_MATCH_HL_BG
-            };
-            self.append(&text[s - start..e - start], font, color, Some(bg));
-            at = e;
-        }
-        if at < end {
-            self.append(&text[at - start..], font, color, None);
+            let mut bg = None;
+            let mut fg = color;
+            let mut underline = None;
+            for d in &f.decorations {
+                if d.start <= a && b <= d.end {
+                    bg = d.background.or(bg);
+                    fg = d.color.unwrap_or(fg);
+                    underline = d.underline.or(underline);
+                }
+            }
+            for (i, &(s, e)) in f.ranges.iter().enumerate() {
+                if s <= a && b <= e {
+                    bg = Some(if i == f.current {
+                        crate::theme::Palette::FIND_MATCH_BG
+                    } else {
+                        crate::theme::Palette::FIND_MATCH_HL_BG
+                    });
+                }
+            }
+            self.append(&text[a - start..b - start], font, fg, bg, underline);
         }
     }
 
-    fn append(&mut self, text: &str, font: &FontId, color: Color32, bg: Option<Color32>) {
+    fn append(
+        &mut self,
+        text: &str,
+        font: &FontId,
+        color: Color32,
+        bg: Option<Color32>,
+        underline: Option<Color32>,
+    ) {
         if text.is_empty() {
             return;
         }
@@ -237,6 +271,7 @@ impl JobWriter<'_> {
                 font_id: font.clone(),
                 color,
                 background: bg.unwrap_or(Color32::TRANSPARENT),
+                underline: underline.map(|c| egui::Stroke::new(1.0, c)).unwrap_or_default(),
                 line_height: Some(EDITOR_LINE_HEIGHT),
                 ..Default::default()
             },

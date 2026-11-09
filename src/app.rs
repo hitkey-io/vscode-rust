@@ -242,8 +242,54 @@ impl App {
         if let Some(lang) = self.active_doc.and_then(|i| self.documents.get(i)).map(|d| d.language_id()) {
             self.extensions.fire_event(&format!("onLanguage:{lang}"));
         }
+        self.sync_extension_documents();
+        for id in self.palette.take_abandoned() {
+            self.extensions.answer(id, serde_json::Value::Null);
+        }
         for request in self.extensions.poll() {
             match request {
+                crate::extensions::EditorRequest::ApplyEdits { request_id, path, edits } => {
+                    let ok = self.apply_extension_edits(&path, &edits);
+                    self.extensions.answer(request_id, serde_json::json!(ok));
+                }
+                crate::extensions::EditorRequest::OpenEditor { request_id, path } => {
+                    self.show_welcome = false;
+                    self.open_file(path);
+                    self.sync_extension_documents();
+                    self.extensions.answer(request_id, serde_json::json!(true));
+                }
+                crate::extensions::EditorRequest::SaveDocument { request_id, path } => {
+                    let ok = match self.documents.iter_mut().find(|d| d.path == path) {
+                        Some(doc) => doc.save().is_ok(),
+                        None => false,
+                    };
+                    if ok {
+                        self.extensions.document_saved(&path);
+                    }
+                    self.extensions.answer(request_id, serde_json::json!(ok));
+                }
+                crate::extensions::EditorRequest::Reveal { path, line } => {
+                    if self.active_doc.and_then(|i| self.documents.get(i)).is_some_and(|d| d.path == path) {
+                        self.go_to_line(line + 1);
+                    }
+                }
+                crate::extensions::EditorRequest::SetSelection { path, line, character } => {
+                    if let Some(doc) = self.documents.iter_mut().find(|d| d.path == path) {
+                        let byte = crate::extensions::text::utf16_to_byte(&doc.text, line, character);
+                        let line_start = doc.text[..byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                        doc.pending_nav = Some((line + 1, byte - line_start));
+                    }
+                }
+                crate::extensions::EditorRequest::QuickPick { request_id, items, placeholder, .. } => {
+                    let items = items
+                        .into_iter()
+                        .map(|i| (i.label, i.description, i.detail, i.separator))
+                        .collect();
+                    self.palette.open_pick(request_id, items, placeholder);
+                }
+                crate::extensions::EditorRequest::InputBox { request_id, prompt, placeholder, value, password } => {
+                    self.palette.open_input(request_id, prompt, placeholder, value, password);
+                }
                 crate::extensions::EditorRequest::Command(id) => self.run_editor_command(ctx, &id),
                 crate::extensions::EditorRequest::StatusMessage(text) => {
                     if text.is_empty() {
@@ -255,6 +301,62 @@ impl App {
                 crate::extensions::EditorRequest::CopyText(text) => ctx.copy_text(text),
             }
         }
+    }
+
+    /// Byte spans to paint for the extensions' decorations of `doc`.
+    fn extension_decoration_spans(
+        &self,
+        doc: &crate::editor::Document,
+    ) -> Vec<crate::editor::highlight::DecorationSpan> {
+        let Some(per_type) = self.extensions.decorations.get(&doc.path) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (key, ranges) in per_type {
+            let Some(style) = self.extensions.decoration_types.get(key) else { continue };
+            if style.background.is_none() && style.color.is_none() && style.border.is_none() {
+                continue;
+            }
+            for (start, end) in crate::extensions::text::decoration_spans(&doc.text, ranges, style.whole_line) {
+                out.push(crate::editor::highlight::DecorationSpan {
+                    start,
+                    end,
+                    background: style.background,
+                    color: style.color,
+                    underline: style.border,
+                });
+            }
+        }
+        out
+    }
+
+    /// Send the open documents and the active editor's selection to the
+    /// extension host (only what changed).
+    fn sync_extension_documents(&mut self) {
+        let docs: Vec<(PathBuf, &'static str, &str, bool)> = self
+            .documents
+            .iter()
+            .filter(|d| d.diff_base.is_none())
+            .map(|d| (d.path.clone(), d.language_id(), d.text.as_str(), d.dirty))
+            .collect();
+        let active = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.diff_base.is_none()).map(|d| {
+            let line = d.cursor_line.saturating_sub(1);
+            let ch = crate::extensions::text::char_col_to_utf16(&d.text, line, d.cursor_col.saturating_sub(1));
+            (d.path.clone(), [line, ch, line, ch])
+        });
+        self.extensions.sync_documents(&docs, active);
+    }
+
+    /// Apply an extension's edits to a file, opening it first if needed.
+    fn apply_extension_edits(&mut self, path: &std::path::Path, edits: &[crate::extensions::WireEdit]) -> bool {
+        if !self.documents.iter().any(|d| d.path == path) {
+            match crate::editor::Document::open(path.to_path_buf()) {
+                Ok(doc) => self.documents.push(doc),
+                Err(_) => return false,
+            }
+        }
+        let Some(doc) = self.documents.iter_mut().find(|d| d.path == path) else { return false };
+        crate::extensions::text::apply_edits(&mut doc.text, edits);
+        doc.check_dirty();
+        true
     }
 
     /// Run a built-in command by its VS Code id (for extensions calling
@@ -786,10 +888,14 @@ impl App {
 
     fn save_active(&mut self) {
         let mut msg: Option<String> = None;
+        let mut saved_path: Option<PathBuf> = None;
         if let Some(idx) = self.active_doc {
             if let Some(doc) = self.documents.get_mut(idx) {
                 msg = Some(match doc.save() {
-                    Ok(()) => format!("Saved {}", doc.path.display()),
+                    Ok(()) => {
+                        saved_path = Some(doc.path.clone());
+                        format!("Saved {}", doc.path.display())
+                    }
                     Err(e) => format!("Save failed: {}", e),
                 });
             }
@@ -797,19 +903,29 @@ impl App {
         if let Some(m) = msg {
             self.set_status(m);
         }
+        if let Some(p) = saved_path {
+            self.extensions.document_saved(&p);
+        }
         self.refresh_git();
     }
 
     fn save_all(&mut self) {
         let mut saved = 0usize;
         let mut errs = 0usize;
+        let mut saved_paths = Vec::new();
         for d in self.documents.iter_mut() {
             if d.dirty {
                 match d.save() {
-                    Ok(()) => saved += 1,
+                    Ok(()) => {
+                        saved += 1;
+                        saved_paths.push(d.path.clone());
+                    }
                     Err(_) => errs += 1,
                 }
             }
+        }
+        for p in &saved_paths {
+            self.extensions.document_saved(p);
         }
         let msg = if errs > 0 {
             format!("Saved {} file(s), {} errors", saved, errs)
@@ -898,6 +1014,14 @@ impl App {
             PaletteAction::RemoveRecent(path) => self.recent_files.retain(|p| p != &path),
             PaletteAction::ExtensionCommand(id) => {
                 self.extensions.execute(&id, serde_json::json!([]))
+            }
+            PaletteAction::Picked { request_id, index } => {
+                let value = index.map(|i| serde_json::json!(i)).unwrap_or(serde_json::Value::Null);
+                self.extensions.answer(request_id, value);
+            }
+            PaletteAction::Input { request_id, value } => {
+                let value = value.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null);
+                self.extensions.answer(request_id, value);
             }
         }
     }
@@ -1570,8 +1694,20 @@ impl App {
                         } else {
                             Vec::new()
                         };
-                        let find_hl =
+                        let mut find_hl =
                             crate::editor::find::highlight_for(&self.find, &find_matches);
+                        if let Some(doc) = self.documents.get(idx) {
+                            let spans = self.extension_decoration_spans(doc);
+                            if !spans.is_empty() {
+                                find_hl
+                                    .get_or_insert_with(|| crate::editor::highlight::FindHighlight {
+                                        ranges: Vec::new(),
+                                        current: 0,
+                                        decorations: Vec::new(),
+                                    })
+                                    .decorations = spans;
+                            }
+                        }
                         if let Some(doc) = self.documents.get_mut(idx) {
                             crate::editor::view::show(
                                 ui,

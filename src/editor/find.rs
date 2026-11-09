@@ -234,5 +234,6 @@ pub fn highlight_for(state: &FindState, matches: &[(usize, usize)]) -> Option<Fi
     Some(FindHighlight {
         ranges: matches.to_vec(),
         current: state.current.min(matches.len() - 1),
+        decorations: Vec::new(),
     })
 }

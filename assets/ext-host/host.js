@@ -344,6 +344,330 @@ function createOutputChannel(name, options) {
 
 const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 };
 
+// ---------------------------------------------------------------------------
+// Documents and editors (extHostDocuments.ts, extHostTextEditor.ts)
+// ---------------------------------------------------------------------------
+
+/** A `vscode.TextEdit`: replace `range` with `newText`. */
+class TextEdit {
+	static replace(range, newText) { return new TextEdit(range, newText); }
+	static insert(position, newText) { return new TextEdit(new Range(position, position), newText); }
+	static delete(range) { return new TextEdit(range, ''); }
+	static setEndOfLine() { return new TextEdit(new Range(0, 0, 0, 0), ''); }
+	constructor(range, newText) { this.range = range; this.newText = newText; }
+}
+
+/** A `vscode.WorkspaceEdit`: text edits per file, plus file operations. */
+class WorkspaceEdit {
+	constructor() { this._edits = new Map(); this._fileOps = []; }
+	_list(uri) {
+		const key = uri.fsPath;
+		if (!this._edits.has(key)) { this._edits.set(key, { uri, edits: [] }); }
+		return this._edits.get(key).edits;
+	}
+	replace(uri, range, newText) { this._list(uri).push(new TextEdit(range, newText)); }
+	insert(uri, position, newText) { this._list(uri).push(TextEdit.insert(position, newText)); }
+	delete(uri, range) { this._list(uri).push(TextEdit.delete(range)); }
+	set(uri, edits) {
+		const list = this._list(uri);
+		list.length = 0;
+		for (const e of edits || []) { list.push(Array.isArray(e) ? e[0] : e); }
+	}
+	has(uri) { return this._edits.has(uri.fsPath); }
+	get(uri) { return this.has(uri) ? [...this._edits.get(uri.fsPath).edits] : []; }
+	entries() { return [...this._edits.values()].map(v => [v.uri, [...v.edits]]); }
+	get size() { return this._edits.size + this._fileOps.length; }
+	createFile(uri, options) { this._fileOps.push({ kind: 'create', uri, options: options || {} }); }
+	deleteFile(uri, options) { this._fileOps.push({ kind: 'delete', uri, options: options || {} }); }
+	renameFile(oldUri, newUri, options) { this._fileOps.push({ kind: 'rename', oldUri, newUri, options: options || {} }); }
+}
+
+const EndOfLine = { LF: 1, CRLF: 2 };
+const DEFAULT_WORD = /(-?\d*\.\d\w*)|([^\`\~\!\@\#\$\%\^\&\*\(\)\-\=\+\[\{\]\}\\\|\;\:\'\"\,\.\<\>\/\?\s]+)/g;
+
+class TextLine {
+	constructor(lineNumber, text, isLast) {
+		this.lineNumber = lineNumber;
+		this.text = text;
+		this.range = new Range(lineNumber, 0, lineNumber, text.length);
+		this.rangeIncludingLineBreak = isLast ? this.range : new Range(lineNumber, 0, lineNumber + 1, 0);
+		this.firstNonWhitespaceCharacterIndex = /^(\s*)/.exec(text)[1].length;
+		this.isEmptyOrWhitespace = this.firstNonWhitespaceCharacterIndex === text.length;
+	}
+}
+
+class TextDocument {
+	constructor(fsPath, languageId, version, text, untitled) {
+		this.uri = untitled ? new Uri('untitled', '', fsPath) : Uri.file(fsPath);
+		this.fileName = fsPath;
+		this.isUntitled = !!untitled;
+		this.languageId = languageId || 'plaintext';
+		this.version = version || 1;
+		this.isDirty = false;
+		this.isClosed = false;
+		this.encoding = 'utf8';
+		this._setText(text || '');
+	}
+	_setText(text) {
+		this._text = text;
+		this._lines = text.split(/\r\n|\r|\n/);
+		this.eol = text.includes('\r\n') ? EndOfLine.CRLF : EndOfLine.LF;
+	}
+	get lineCount() { return this._lines.length; }
+	getText(range) {
+		if (!range) { return this._text; }
+		const r = this.validateRange(range);
+		return this._text.slice(this.offsetAt(r.start), this.offsetAt(r.end));
+	}
+	lineAt(lineOrPosition) {
+		const line = typeof lineOrPosition === 'number' ? lineOrPosition : lineOrPosition.line;
+		if (line < 0 || line >= this._lines.length) { throw new Error('Illegal value for `line`'); }
+		return new TextLine(line, this._lines[line], line === this._lines.length - 1);
+	}
+	offsetAt(position) {
+		const p = this.validatePosition(position);
+		const eolLen = this.eol === EndOfLine.CRLF ? 2 : 1;
+		let offset = 0;
+		for (let i = 0; i < p.line; i++) { offset += this._lines[i].length + eolLen; }
+		return offset + p.character;
+	}
+	positionAt(offset) {
+		offset = Math.max(0, Math.min(Math.floor(offset), this._text.length));
+		const eolLen = this.eol === EndOfLine.CRLF ? 2 : 1;
+		let line = 0;
+		while (line < this._lines.length - 1 && offset > this._lines[line].length) {
+			offset -= this._lines[line].length + eolLen;
+			line++;
+		}
+		return new Position(line, Math.min(offset, this._lines[line].length));
+	}
+	validatePosition(p) {
+		let line = Math.max(0, Math.min(p.line, this._lines.length - 1));
+		let character = p.line < 0 ? 0 : p.line >= this._lines.length ? this._lines[line].length : p.character;
+		character = Math.max(0, Math.min(character, this._lines[line].length));
+		return new Position(line, character);
+	}
+	validateRange(r) { return new Range(this.validatePosition(r.start), this.validatePosition(r.end)); }
+	getWordRangeAtPosition(position, regex) {
+		const p = this.validatePosition(position);
+		const text = this._lines[p.line];
+		const re = new RegExp((regex || DEFAULT_WORD).source, 'g');
+		let m;
+		while ((m = re.exec(text))) {
+			if (m.index <= p.character && p.character <= m.index + m[0].length && m[0].length) {
+				return new Range(p.line, m.index, p.line, m.index + m[0].length);
+			}
+			if (!m[0].length) { re.lastIndex++; }
+		}
+		return undefined;
+	}
+	async save() { return !!(await request({ type: 'saveDocument', path: this.fileName })); }
+}
+
+const docs = new Map();             // fsPath -> TextDocument
+const editors = new Map();          // fsPath -> TextEditor
+let activeEditor;
+const docOpened = new EventEmitter();
+const docChanged = new EventEmitter();
+const docClosed = new EventEmitter();
+const docSaved = new EventEmitter();
+const activeEditorChanged = new EventEmitter();
+const visibleEditorsChanged = new EventEmitter();
+const selectionChanged = new EventEmitter();
+const visibleRangesChanged = new EventEmitter();
+
+function toWire(range) {
+	const s = range.start || range, e = range.end || range;
+	return [s.line, s.character, e.line, e.character];
+}
+function fromWireSelection(a) { return new Selection(a[0], a[1], a[2], a[3]); }
+
+/** Strip snippet syntax to its default text: `${1:name}` → `name`, `$0` → ``. */
+function snippetText(value) {
+	let prev;
+	do {
+		prev = value;
+		value = value.replace(/\$\{\d+:([^{}$]*)\}/g, '$1').replace(/\$\{\d+\|([^,|]*)[^}]*\|\}/g, '$1');
+	} while (value !== prev);
+	return value.replace(/\$\{\d+\}|\$\d+/g, '').replace(/\\([$}\\])/g, '$1');
+}
+
+async function applyEditsTo(fsPath, edits) {
+	const list = edits.map(e => ({ range: toWire(e.range), text: e.newText }));
+	if (!list.length) { return true; }
+	return !!(await request({ type: 'applyEdits', path: fsPath, edits: list }));
+}
+
+let nextDecorationType = 1;
+function createTextEditorDecorationType(options) {
+	const key = `TextEditorDecorationType${nextDecorationType++}`;
+	// The editor is dark: `dark` overrides win over the base options.
+	const merged = { ...(options || {}), ...((options && options.dark) || {}) };
+	const plain = {};
+	for (const [k, v] of Object.entries(merged)) {
+		if (k === 'light' || k === 'dark') { continue; }
+		plain[k] = v instanceof ThemeColor ? { themeColor: v.id } : (v && typeof v === 'object' && !Array.isArray(v) ? safeJson(v) : v);
+	}
+	send({ type: 'decorationType', key, options: plain });
+	return { key, dispose() { send({ type: 'decorationTypeDisposed', key }); } };
+}
+
+class TextEditor {
+	constructor(document) {
+		this.document = document;
+		this.selections = [new Selection(0, 0, 0, 0)];
+		this.visibleRanges = [new Range(0, 0, Math.max(0, document.lineCount - 1), 0)];
+		this.options = { tabSize: 2, indentSize: 2, insertSpaces: true, cursorStyle: 1, lineNumbers: 1 };
+		this.viewColumn = 1;
+	}
+	get selection() { return this.selections[0]; }
+	set selection(s) { this.selections = [s]; send({ type: 'setSelection', path: this.document.fileName, selection: [s.anchor ? s.anchor.line : s.start.line, s.anchor ? s.anchor.character : s.start.character, s.active ? s.active.line : s.end.line, s.active ? s.active.character : s.end.character] }); }
+	setDecorations(decorationType, rangesOrOptions) {
+		const ranges = (rangesOrOptions || []).map(r => {
+			const range = r.range || r;
+			const hover = r.hoverMessage instanceof MarkdownString ? r.hoverMessage.value : (typeof r.hoverMessage === 'string' ? r.hoverMessage : null);
+			const after = r.renderOptions && r.renderOptions.after && r.renderOptions.after.contentText;
+			const before = r.renderOptions && r.renderOptions.before && r.renderOptions.before.contentText;
+			return { range: toWire(range), hover, after: after || null, before: before || null };
+		});
+		send({ type: 'setDecorations', path: this.document.fileName, key: decorationType.key, ranges });
+	}
+	async edit(callback) {
+		const edits = [];
+		const builder = {
+			replace(location, value) { const r = location.start ? location : new Range(location, location); edits.push(new TextEdit(r, value)); },
+			insert(position, value) { edits.push(TextEdit.insert(position, value)); },
+			delete(location) { edits.push(TextEdit.delete(location)); },
+			setEndOfLine() { },
+		};
+		callback(builder);
+		return applyEditsTo(this.document.fileName, edits);
+	}
+	async insertSnippet(snippet, location) {
+		const text = snippetText(typeof snippet === 'string' ? snippet : snippet.value);
+		const targets = location ? (Array.isArray(location) ? location : [location]) : this.selections;
+		const edits = targets.map(t => new TextEdit(t.start ? new Range(t.start, t.end) : new Range(t, t), text));
+		return applyEditsTo(this.document.fileName, edits);
+	}
+	revealRange(range) { send({ type: 'reveal', path: this.document.fileName, line: (range.start || range).line }); }
+	show() { } hide() { }
+}
+
+function editorFor(doc) {
+	if (!editors.has(doc.fileName)) { editors.set(doc.fileName, new TextEditor(doc)); }
+	return editors.get(doc.fileName);
+}
+
+async function openTextDocument(arg) {
+	if (arg && typeof arg === 'object' && !(arg instanceof Uri) && !arg.scheme) {
+		const d = new TextDocument(`Untitled-${docs.size + 1}`, arg.language || 'plaintext', 1, arg.content || '', true);
+		return d;
+	}
+	const fsPath = typeof arg === 'string' ? path.resolve(arg) : arg.fsPath;
+	if (docs.has(fsPath)) { return docs.get(fsPath); }
+	const text = await fs.promises.readFile(fsPath, 'utf8');
+	return new TextDocument(fsPath, languageIdFor(fsPath), 1, text);
+}
+
+function languageIdFor(fsPath) {
+	const ext = path.extname(fsPath).slice(1).toLowerCase();
+	const map = { ts: 'typescript', tsx: 'typescriptreact', js: 'javascript', jsx: 'javascriptreact', mjs: 'javascript', cjs: 'javascript', json: 'json', md: 'markdown', py: 'python', rs: 'rust', go: 'go', html: 'html', css: 'css', scss: 'scss', less: 'less', vue: 'vue', yaml: 'yaml', yml: 'yaml', toml: 'toml', sh: 'shellscript', c: 'c', h: 'c', cpp: 'cpp', java: 'java', rb: 'ruby', php: 'php', xml: 'xml', sql: 'sql' };
+	return map[ext] || 'plaintext';
+}
+
+async function showTextDocument(arg, options) {
+	const doc = arg instanceof TextDocument ? arg : await openTextDocument(arg);
+	await request({ type: 'openEditor', path: doc.fileName, preserveFocus: !!(options && options.preserveFocus) });
+	const open = docs.get(doc.fileName) || doc;
+	return editorFor(open);
+}
+
+async function applyWorkspaceEdit(edit) {
+	let ok = true;
+	for (const op of edit._fileOps || []) {
+		try {
+			if (op.kind === 'create') {
+				if (!(op.options.ignoreIfExists && fs.existsSync(op.uri.fsPath))) {
+					await fs.promises.mkdir(path.dirname(op.uri.fsPath), { recursive: true });
+					await fs.promises.writeFile(op.uri.fsPath, op.options.contents || '', { flag: op.options.overwrite ? 'w' : 'wx' });
+				}
+			} else if (op.kind === 'delete') {
+				await fs.promises.rm(op.uri.fsPath, { recursive: !!op.options.recursive, force: !!op.options.ignoreIfNotExists });
+			} else if (op.kind === 'rename') {
+				await fs.promises.rename(op.oldUri.fsPath, op.newUri.fsPath);
+			}
+		} catch (err) { console.error(err); ok = false; }
+	}
+	for (const [uri, edits] of edit.entries()) {
+		ok = (await applyEditsTo(uri.fsPath, edits)) && ok;
+	}
+	return ok;
+}
+
+/** Messages from the editor about its documents and editors. */
+function handleDocumentMessage(msg) {
+	switch (msg.type) {
+		case 'documentOpened': {
+			const doc = new TextDocument(msg.path, msg.languageId, msg.version, msg.text);
+			docs.set(msg.path, doc);
+			docOpened.fire(doc);
+			return true;
+		}
+		case 'documentChanged': {
+			const doc = docs.get(msg.path);
+			if (!doc) { return true; }
+			const oldRange = new Range(new Position(0, 0), doc.positionAt(doc._text.length));
+			const oldLength = doc._text.length;
+			doc._setText(msg.text);
+			doc.version = msg.version;
+			doc.isDirty = !!msg.dirty;
+			docChanged.fire({
+				document: doc,
+				contentChanges: [{ range: oldRange, rangeOffset: 0, rangeLength: oldLength, text: msg.text }],
+				reason: undefined,
+			});
+			return true;
+		}
+		case 'documentSaved': {
+			const doc = docs.get(msg.path);
+			if (doc) { doc.isDirty = false; docSaved.fire(doc); }
+			return true;
+		}
+		case 'documentClosed': {
+			const doc = docs.get(msg.path);
+			if (doc) {
+				docs.delete(msg.path);
+				editors.delete(msg.path);
+				doc.isClosed = true;
+				docClosed.fire(doc);
+			}
+			return true;
+		}
+		case 'activeEditor': {
+			const doc = msg.path && docs.get(msg.path);
+			const editor = doc ? editorFor(doc) : undefined;
+			if (editor && msg.selections) { editor.selections = msg.selections.map(fromWireSelection); }
+			if (editor && msg.visibleRange) { editor.visibleRanges = [new Range(msg.visibleRange[0], 0, msg.visibleRange[1], 0)]; }
+			if (editor !== activeEditor) {
+				activeEditor = editor;
+				activeEditorChanged.fire(editor);
+				visibleEditorsChanged.fire(editor ? [editor] : []);
+			}
+			return true;
+		}
+		case 'selectionChanged': {
+			const doc = docs.get(msg.path);
+			if (doc) {
+				const editor = editorFor(doc);
+				editor.selections = msg.selections.map(fromWireSelection);
+				selectionChanged.fire({ textEditor: editor, selections: editor.selections, kind: 1 });
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
 const window = {
 	showInformationMessage: showMessage('info'),
 	showWarningMessage: showMessage('warning'),
@@ -355,15 +679,25 @@ const window = {
 	},
 	createOutputChannel,
 	async showQuickPick(items, options) {
-		const list = await items;
-		const labels = (list || []).map(i => typeof i === 'string' ? i : i.label);
-		const index = await request({ type: 'showQuickPick', items: labels, placeholder: options && options.placeHolder || null });
-		return typeof index === 'number' && index >= 0 ? list[index] : undefined;
+		const list = (await items) || [];
+		const wire = list.map(i => typeof i === 'string'
+			? { label: i, description: null, detail: null, separator: false }
+			: { label: i.label, description: i.description || null, detail: i.detail || null, separator: i.kind === -1 });
+		const picked = await request({
+			type: 'showQuickPick', items: wire,
+			placeholder: options && (options.placeHolder || options.title) || null,
+			canPickMany: !!(options && options.canPickMany),
+		});
+		if (options && options.canPickMany) {
+			return Array.isArray(picked) ? picked.map(i => list[i]) : undefined;
+		}
+		return typeof picked === 'number' && picked >= 0 ? list[picked] : undefined;
 	},
 	async showInputBox(options) {
 		const value = await request({
 			type: 'showInputBox', prompt: options && options.prompt || null,
 			placeholder: options && options.placeHolder || null, value: options && options.value || '',
+			password: !!(options && options.password),
 		});
 		return typeof value === 'string' ? value : undefined;
 	},
@@ -376,8 +710,9 @@ const window = {
 			if (title) { send({ type: 'statusMessage', text: '' }); }
 		}
 	},
-	activeTextEditor: undefined,
-	visibleTextEditors: [],
+	get activeTextEditor() { return activeEditor; },
+	get visibleTextEditors() { return activeEditor ? [activeEditor] : []; },
+	showTextDocument,
 	tabGroups: {
 		all: [],
 		activeTabGroup: { tabs: [], activeTab: undefined, isActive: true, viewColumn: 1 },
@@ -387,13 +722,14 @@ const window = {
 	},
 	terminals: [],
 	state: { focused: true, active: true },
-	onDidChangeActiveTextEditor: silentEvent,
-	onDidChangeVisibleTextEditors: silentEvent,
-	onDidChangeTextEditorSelection: silentEvent,
+	onDidChangeActiveTextEditor: activeEditorChanged.event,
+	onDidChangeVisibleTextEditors: visibleEditorsChanged.event,
+	onDidChangeTextEditorSelection: selectionChanged.event,
+	onDidChangeTextEditorVisibleRanges: visibleRangesChanged.event,
 	onDidChangeWindowState: silentEvent,
 	onDidOpenTerminal: silentEvent,
 	onDidCloseTerminal: silentEvent,
-	createTextEditorDecorationType() { return { key: 'decoration', dispose() { } }; },
+	createTextEditorDecorationType,
 	registerTreeDataProvider() { return new Disposable(() => { }); },
 	createTreeView() {
 		return { onDidChangeSelection: silentEvent, onDidChangeVisibility: silentEvent, onDidExpandElement: silentEvent, onDidCollapseElement: silentEvent, reveal: async () => { }, dispose() { } };
@@ -472,16 +808,18 @@ const workspace = {
 	},
 	getConfiguration,
 	onDidChangeConfiguration: configurationEmitter.event,
-	onDidOpenTextDocument: silentEvent,
-	onDidCloseTextDocument: silentEvent,
-	onDidChangeTextDocument: silentEvent,
-	onDidSaveTextDocument: silentEvent,
+	onDidOpenTextDocument: docOpened.event,
+	onDidCloseTextDocument: docClosed.event,
+	onDidChangeTextDocument: docChanged.event,
+	onDidSaveTextDocument: docSaved.event,
 	onWillSaveTextDocument: silentEvent,
 	onDidChangeWorkspaceFolders: silentEvent,
 	onDidCreateFiles: silentEvent,
 	onDidDeleteFiles: silentEvent,
 	onDidRenameFiles: silentEvent,
-	textDocuments: [],
+	get textDocuments() { return [...docs.values()]; },
+	openTextDocument,
+	applyEdit: applyWorkspaceEdit,
 	fs: workspaceFs,
 	isTrusted: true,
 	onDidGrantWorkspaceTrust: silentEvent,
@@ -597,7 +935,6 @@ const vscodeApi = {
 	ExtensionKind: { UI: 1, Workspace: 2 },
 	TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
 	DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
-	EndOfLine: { LF: 1, CRLF: 2 },
 	UIKind: { Desktop: 1, Web: 2 },
 	LogLevel: { Off: 0, Trace: 1, Debug: 2, Info: 3, Warning: 4, Error: 5 },
 	CompletionItemKind: new Proxy({}, { get: (_t, p) => typeof p === 'string' ? 0 : undefined }),
@@ -607,8 +944,14 @@ const vscodeApi = {
 	CompletionList: plainClass('CompletionList'),
 	Hover: plainClass('Hover'),
 	Location: plainClass('Location'),
-	TextEdit: plainClass('TextEdit'),
-	WorkspaceEdit: plainClass('WorkspaceEdit'),
+	TextEdit, WorkspaceEdit, TextDocument, TextLine, EndOfLine,
+	SnippetString: class SnippetString {
+		constructor(value = '') { this.value = value; this._tab = 1; }
+		appendText(t) { this.value += t.replace(/[$}\\]/g, '\\$&'); return this; }
+		appendTabstop(n = this._tab++) { this.value += '$' + n; return this; }
+		appendPlaceholder(v, n = this._tab++) { this.value += '${' + n + ':' + (typeof v === 'string' ? v : '') + '}'; return this; }
+		appendVariable(name, def) { this.value += '${' + name + (def ? ':' + def : '') + '}'; return this; }
+	},
 	CodeAction: plainClass('CodeAction'),
 	CodeActionKind: hierarchicalKind('CodeActionKind', {
 		Empty: '', QuickFix: 'quickfix', Refactor: 'refactor', RefactorExtract: 'refactor.extract',
@@ -618,7 +961,6 @@ const vscodeApi = {
 	}),
 	DocumentDropOrPasteEditKind: hierarchicalKind('DocumentDropOrPasteEditKind', { Empty: '', Text: 'text', TextUpdateImports: 'text.updateImports' }),
 	CodeLens: plainClass('CodeLens'),
-	SnippetString: plainClass('SnippetString'),
 	RelativePattern: plainClass('RelativePattern'),
 	FileSystemError: class FileSystemError extends Error { },
 };
@@ -886,6 +1228,7 @@ async function activateByEvent(event) {
 // ---------------------------------------------------------------------------
 
 async function handle(msg) {
+	if (handleDocumentMessage(msg)) { return; }
 	switch (msg.type) {
 		case 'init': {
 			state.extensions = msg.extensions || [];

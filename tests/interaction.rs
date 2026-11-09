@@ -324,6 +324,40 @@ fn extension_runs_from_view_status_bar_and_palette() {
     run_until_label(&mut harness, "Hello from workspace!");
 }
 
+#[test]
+fn extension_quick_pick_and_input_box_use_the_quick_access_popup() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return;
+    }
+    let extensions = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions");
+    let mut harness = launch_with_extensions(Some(workspace_path()), vec![], None, Some(extensions));
+    harness.run();
+    harness.run();
+    run_until_label(&mut harness, "$(smiley) Hello");
+
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+    harness.run();
+    harness.event(egui::Event::Text("pick a fruit".to_string()));
+    harness.run();
+    harness.key_press(Key::Enter);
+
+    // The extension's list shows in the popup; pick the second entry.
+    run_until_label(&mut harness, "Banana");
+    harness.key_press(Key::ArrowDown);
+    harness.step();
+    harness.key_press(Key::Enter);
+    harness.step();
+
+    // Then its input box, prefilled with "Ada"; Enter accepts it.
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    harness.key_press(Key::Enter);
+    run_until_label(&mut harness, "Picked Banana for Ada");
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================

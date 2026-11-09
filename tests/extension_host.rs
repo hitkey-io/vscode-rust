@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use vscode_rust::extensions::{host, Activation, ExtensionService, Severity};
+use vscode_rust::extensions::{host, Activation, EditorRequest, ExtensionService, Severity};
 
 const ID: &str = "sample.hello-world";
 const WAIT: Duration = Duration::from_secs(10);
@@ -71,4 +71,89 @@ fn failing_command_reports_an_error() {
         .notifications
         .iter()
         .any(|n| n.severity == Severity::Error && n.text.contains("boom"))));
+}
+
+fn active_doc() -> (PathBuf, String) {
+    let path = fixtures().join("workspace/README.md");
+    (path, "# Sample TODO site\nTODO: write docs\n".to_string())
+}
+
+#[test]
+fn decorations_follow_the_active_editor() {
+    let Some(mut svc) = started() else { return };
+    let (path, text) = active_doc();
+    svc.sync_documents(&[(path.clone(), "markdown", &text, false)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(
+        svc.wait_until(WAIT, |s| s.decorations.get(&path).is_some_and(|d| d.values().any(|r| r.len() == 2))),
+        "log: {:#?}",
+        svc.log
+    );
+    let ranges = svc.decorations[&path].values().next().unwrap().clone();
+    assert_eq!(ranges[0].range, [0, 9, 0, 13]);
+    assert_eq!(ranges[1].range, [1, 0, 1, 4]);
+    let style = svc.decoration_types.values().next().unwrap();
+    assert_eq!(style.background, Some(egui::Color32::from_rgb(0xff, 0xbd, 0x2a)));
+
+    // Editing the document re-runs the extension's decorator.
+    let edited = format!("{text}TODO again\n");
+    svc.sync_documents(&[(path.clone(), "markdown", &edited, true)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(svc.wait_until(WAIT, |s| s.decorations[&path].values().any(|r| r.len() == 3)));
+}
+
+#[test]
+fn extension_edits_come_back_as_editor_requests() {
+    let Some(mut svc) = started() else { return };
+    let (path, text) = active_doc();
+    svc.sync_documents(&[(path.clone(), "markdown", &text, false)], Some((path.clone(), [0, 0, 0, 0])));
+    svc.execute("helloWorld.upperFirstLine", serde_json::json!([]));
+    let mut edit = None;
+    for _ in 0..200 {
+        for r in svc.take_requests() {
+            if let EditorRequest::ApplyEdits { request_id, path: p, edits } = r {
+                edit = Some((request_id, p, edits));
+            }
+        }
+        if edit.is_some() {
+            break;
+        }
+        svc.wait_until(Duration::from_millis(50), |_| false);
+    }
+    let (request_id, p, edits) = edit.expect("an edit request");
+    assert_eq!(p, path);
+    let mut new_text = text.clone();
+    vscode_rust::extensions::text::apply_edits(&mut new_text, &edits);
+    assert!(new_text.starts_with("# SAMPLE TODO SITE\n"));
+    svc.answer(request_id, serde_json::json!(true));
+}
+
+#[test]
+fn quick_pick_and_input_box_answers_reach_the_extension() {
+    let Some(mut svc) = started() else { return };
+    svc.execute("helloWorld.pick", serde_json::json!([]));
+    let mut answered = 0;
+    for _ in 0..200 {
+        for r in svc.take_requests() {
+            match r {
+                EditorRequest::QuickPick { request_id, items, placeholder, .. } => {
+                    assert_eq!(items.len(), 3);
+                    assert_eq!(placeholder.as_deref(), Some("Pick a fruit"));
+                    svc.answer(request_id, serde_json::json!(1));
+                    answered += 1;
+                }
+                EditorRequest::InputBox { request_id, value, prompt, .. } => {
+                    assert_eq!(value, "Ada");
+                    assert_eq!(prompt.as_deref(), Some("Your name"));
+                    svc.answer(request_id, serde_json::json!("Grace"));
+                    answered += 1;
+                }
+                _ => {}
+            }
+        }
+        if svc.notifications.iter().any(|n| n.text == "Picked Banana for Grace") {
+            break;
+        }
+        svc.wait_until(Duration::from_millis(50), |_| false);
+    }
+    assert_eq!(answered, 2);
+    assert!(svc.notifications.iter().any(|n| n.text == "Picked Banana for Grace"), "log: {:#?}", svc.log);
 }

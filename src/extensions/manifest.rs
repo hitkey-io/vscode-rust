@@ -108,9 +108,11 @@ impl Extension {
             for section in sections {
                 if let Some(props) = section.get("properties").and_then(Value::as_object) {
                     for (key, schema) in props {
-                        if let Some(default) = schema.get("default") {
-                            config_defaults.insert(key.clone(), default.clone());
-                        }
+                        let default = schema
+                            .get("default")
+                            .cloned()
+                            .unwrap_or_else(|| default_for_type(schema.get("type")));
+                        config_defaults.insert(key.clone(), default);
                     }
                 }
             }
@@ -188,6 +190,25 @@ pub fn default_dirs() -> Vec<PathBuf> {
         return Vec::new();
     };
     vec![home.join(".vscode/extensions"), home.join(".vscode-rust/extensions")]
+}
+
+/// The value a setting without a `default` gets, from its `type` (VS Code's
+/// `getDefaultValue` in configurationRegistry.ts; with several types, the
+/// first one counts).
+fn default_for_type(ty: Option<&Value>) -> Value {
+    let ty = match ty {
+        Some(Value::Array(types)) => types.first().and_then(Value::as_str),
+        Some(Value::String(t)) => Some(t.as_str()),
+        _ => None,
+    };
+    match ty {
+        Some("boolean") => Value::Bool(false),
+        Some("integer") | Some("number") => Value::from(0),
+        Some("string") => Value::String(String::new()),
+        Some("array") => Value::Array(Vec::new()),
+        Some("object") => Value::Object(Default::default()),
+        _ => Value::Null,
+    }
 }
 
 fn version_key(v: &str) -> Vec<u64> {

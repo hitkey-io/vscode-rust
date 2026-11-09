@@ -24,6 +24,40 @@ function activate(context) {
 	}));
 
 	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.internal', () => 42));
+
+	// Highlight every TODO in the active editor, like TODO-highlighting extensions.
+	const todo = vscode.window.createTextEditorDecorationType({ backgroundColor: '#ffbd2a', color: '#fff' });
+	const decorate = editor => {
+		if (!editor) { return; }
+		const text = editor.document.getText();
+		const ranges = [];
+		const re = /TODO/g;
+		let m;
+		while ((m = re.exec(text))) {
+			ranges.push(new vscode.Range(editor.document.positionAt(m.index), editor.document.positionAt(m.index + m[0].length)));
+		}
+		editor.setDecorations(todo, ranges);
+	};
+	decorate(vscode.window.activeTextEditor);
+	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(decorate));
+	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
+		if (vscode.window.activeTextEditor && e.document === vscode.window.activeTextEditor.document) {
+			decorate(vscode.window.activeTextEditor);
+		}
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.upperFirstLine', async () => {
+		const editor = vscode.window.activeTextEditor;
+		if (!editor) { return; }
+		const line = editor.document.lineAt(0);
+		await editor.edit(b => b.replace(line.range, line.text.toUpperCase()));
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.pick', async () => {
+		const picked = await vscode.window.showQuickPick(['Apple', 'Banana', 'Cherry'], { placeHolder: 'Pick a fruit' });
+		const name = await vscode.window.showInputBox({ prompt: 'Your name', value: 'Ada' });
+		vscode.window.showInformationMessage(`Picked ${picked || 'nothing'} for ${name || 'nobody'}`);
+	}));
 	console.log('hello-world activated');
 }
 

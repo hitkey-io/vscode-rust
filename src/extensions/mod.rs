@@ -10,6 +10,7 @@
 pub mod host;
 pub mod manifest;
 pub mod marketplace;
+pub mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -65,9 +66,61 @@ pub struct StatusItem {
     pub command_args: Value,
 }
 
+/// A text edit from an extension: replace `range` (start line, start
+/// character, end line, end character; characters in UTF-16 code units, as
+/// in VS Code) with `text`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WireEdit {
+    pub range: [usize; 4],
+    pub text: String,
+}
+
+/// One entry of `window.showQuickPick`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickItem {
+    pub label: String,
+    pub description: Option<String>,
+    pub detail: Option<String>,
+    /// `QuickPickItemKind.Separator`: a group label, not pickable.
+    pub separator: bool,
+}
+
+/// How an extension decorates text (`createTextEditorDecorationType`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DecorationStyle {
+    pub background: Option<egui::Color32>,
+    pub color: Option<egui::Color32>,
+    pub border: Option<egui::Color32>,
+    pub bold: bool,
+    pub whole_line: bool,
+}
+
+/// One decorated range in a document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecoratedRange {
+    pub range: [usize; 4],
+    pub hover: Option<String>,
+    /// `renderOptions.after.contentText` (inline hints after the range).
+    pub after: Option<String>,
+}
+
 /// Something the editor itself has to do for an extension.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorRequest {
+    /// Apply edits to a file (open it if needed), then `respond(id, true)`.
+    ApplyEdits { request_id: u64, path: PathBuf, edits: Vec<WireEdit> },
+    /// `window.showTextDocument`: open (or focus) the file, then respond.
+    OpenEditor { request_id: u64, path: PathBuf },
+    /// `TextDocument.save()`.
+    SaveDocument { request_id: u64, path: PathBuf },
+    /// `TextEditor.revealRange`: scroll to a 0-based line.
+    Reveal { path: PathBuf, line: usize },
+    /// `TextEditor.selection = …`: move the caret (0-based line, UTF-16 column).
+    SetSelection { path: PathBuf, line: usize, character: usize },
+    /// `window.showQuickPick`: answer with the index (or indices), or null.
+    QuickPick { request_id: u64, items: Vec<PickItem>, placeholder: Option<String>, can_pick_many: bool },
+    /// `window.showInputBox`: answer with the text, or null.
+    InputBox { request_id: u64, prompt: Option<String>, placeholder: Option<String>, value: String, password: bool },
     /// Run a built-in command (`commands.executeCommand` on an id no
     /// extension registered).
     Command(String),
@@ -105,6 +158,17 @@ pub struct ExtensionService {
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// Search, install and uninstall.
     pub marketplace: marketplace::Marketplace,
+    /// Documents the host knows about: path → (version, text sent).
+    synced: BTreeMap<PathBuf, (u64, String)>,
+    /// Last active editor sent: (path, selection).
+    synced_active: Option<(Option<PathBuf>, [usize; 4])>,
+    /// Decoration types by key.
+    pub decoration_types: BTreeMap<String, DecorationStyle>,
+    /// Decorations per document: path → type key → ranges.
+    pub decorations: BTreeMap<PathBuf, BTreeMap<String, Vec<DecoratedRange>>>,
+    /// Editor requests that arrived during `wait_until` (tests take them
+    /// with `take_requests`).
+    waited_requests: Vec<EditorRequest>,
 }
 
 impl ExtensionService {
@@ -190,6 +254,10 @@ impl ExtensionService {
         self.registered.clear();
         self.status_items.clear();
         self.fired_events.clear();
+        self.synced.clear();
+        self.synced_active = None;
+        self.decoration_types.clear();
+        self.decorations.clear();
         let dirs = self.dirs.clone();
         self.load(&dirs);
         let workspace = self.workspace.clone();
@@ -274,6 +342,82 @@ impl ExtensionService {
         }
     }
 
+    /// Tell the host about the open documents and the active editor: newly
+    /// opened, changed (full text), closed. `active` is the active file and
+    /// its selection (anchor line, anchor character, active line, active
+    /// character; UTF-16 characters).
+    pub fn sync_documents(
+        &mut self,
+        documents: &[(PathBuf, &'static str, &str, bool)],
+        active: Option<(PathBuf, [usize; 4])>,
+    ) {
+        if !self.ready {
+            return;
+        }
+        let mut msgs = Vec::new();
+        let open: BTreeSet<&PathBuf> = documents.iter().map(|d| &d.0).collect();
+        let closed: Vec<PathBuf> = self.synced.keys().filter(|p| !open.contains(p)).cloned().collect();
+        for path in closed {
+            self.synced.remove(&path);
+            self.decorations.remove(&path);
+            msgs.push(json!({ "type": "documentClosed", "path": path }));
+        }
+        for (path, language, text, dirty) in documents {
+            match self.synced.get_mut(path) {
+                None => {
+                    msgs.push(json!({ "type": "documentOpened", "path": path, "languageId": language, "version": 1, "text": text }));
+                    self.synced.insert(path.clone(), (1, text.to_string()));
+                }
+                Some((version, sent)) if sent.as_str() != *text => {
+                    *version += 1;
+                    *sent = text.to_string();
+                    msgs.push(json!({ "type": "documentChanged", "path": path, "version": *version, "text": text, "dirty": dirty }));
+                }
+                Some(_) => {}
+            }
+        }
+        let active_key = active.as_ref().map(|(p, s)| (Some(p.clone()), *s)).unwrap_or((None, [0; 4]));
+        if self.synced_active.as_ref() != Some(&active_key) {
+            let same_file = self.synced_active.as_ref().is_some_and(|(p, _)| *p == active_key.0);
+            let sel = active_key.1;
+            if same_file {
+                if let Some(path) = &active_key.0 {
+                    msgs.push(json!({ "type": "selectionChanged", "path": path, "selections": [sel] }));
+                }
+            } else {
+                msgs.push(json!({ "type": "activeEditor", "path": active_key.0, "selections": [sel] }));
+            }
+            self.synced_active = Some(active_key);
+        }
+        if let Some(h) = self.host.as_mut() {
+            for m in &msgs {
+                h.send(m);
+            }
+        }
+    }
+
+    /// A file was saved.
+    pub fn document_saved(&mut self, path: &Path) {
+        if let Some(h) = self.host.as_mut() {
+            h.send(&json!({ "type": "documentSaved", "path": path }));
+        }
+    }
+
+    /// Editor requests collected while waiting (for tests).
+    pub fn take_requests(&mut self) -> Vec<EditorRequest> {
+        std::mem::take(&mut self.waited_requests)
+    }
+
+    /// Whether the host has started and answered `init`.
+    pub fn is_ready(&self) -> bool {
+        self.ready
+    }
+
+    /// Answer a host request (quick pick, input box, edits, open editor).
+    pub fn answer(&mut self, request_id: u64, value: Value) {
+        self.respond(request_id, value);
+    }
+
     /// Whether `id` belongs to an extension (contributed or registered).
     pub fn owns_command(&self, id: &str) -> bool {
         self.registered.contains(id)
@@ -343,7 +487,8 @@ impl ExtensionService {
     ) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            self.poll();
+            let polled = self.poll();
+            self.waited_requests.extend(polled);
             if until(self) {
                 return true;
             }
@@ -356,8 +501,9 @@ impl ExtensionService {
             if let Some(ev) = host.wait_event(wait) {
                 match ev {
                     host::HostEvent::Message(m) => {
-                        let mut ignored = Vec::new();
-                        self.handle(m, &mut ignored);
+                        let mut requests = Vec::new();
+                        self.handle(m, &mut requests);
+                        self.waited_requests.extend(requests);
                     }
                     host::HostEvent::Stderr(l) => self.push_log(l),
                     host::HostEvent::Exited => {
@@ -457,11 +603,115 @@ impl ExtensionService {
                     self.respond(r, Value::Null);
                 }
             }
-            "showQuickPick" | "showInputBox" => {
-                // Not built yet: answer "cancelled" so the extension goes on.
-                self.push_log(format!("{kind} isn't supported yet; answered as cancelled."));
-                if let Some(r) = request_id {
-                    self.respond(r, Value::Null);
+            "showQuickPick" => {
+                let items = msg
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .map(|i| PickItem {
+                                label: i.get("label").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                description: i.get("description").and_then(Value::as_str).map(str::to_string),
+                                detail: i.get("detail").and_then(Value::as_str).map(str::to_string),
+                                separator: i.get("separator").and_then(Value::as_bool).unwrap_or(false),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(request_id) = request_id {
+                    out.push(EditorRequest::QuickPick {
+                        request_id,
+                        items,
+                        placeholder: msg.get("placeholder").and_then(Value::as_str).map(str::to_string),
+                        can_pick_many: msg.get("canPickMany").and_then(Value::as_bool).unwrap_or(false),
+                    });
+                }
+            }
+            "showInputBox" => {
+                if let Some(request_id) = request_id {
+                    out.push(EditorRequest::InputBox {
+                        request_id,
+                        prompt: msg.get("prompt").and_then(Value::as_str).map(str::to_string),
+                        placeholder: msg.get("placeholder").and_then(Value::as_str).map(str::to_string),
+                        value: s("value"),
+                        password: msg.get("password").and_then(Value::as_bool).unwrap_or(false),
+                    });
+                }
+            }
+            "applyEdits" => {
+                let edits = msg
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| {
+                                let r = e.get("range")?.as_array()?;
+                                let n = |i: usize| r.get(i).and_then(Value::as_u64).unwrap_or(0) as usize;
+                                Some(WireEdit {
+                                    range: [n(0), n(1), n(2), n(3)],
+                                    text: e.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(request_id) = request_id {
+                    out.push(EditorRequest::ApplyEdits { request_id, path: PathBuf::from(s("path")), edits });
+                }
+            }
+            "openEditor" => {
+                if let Some(request_id) = request_id {
+                    out.push(EditorRequest::OpenEditor { request_id, path: PathBuf::from(s("path")) });
+                }
+            }
+            "saveDocument" => {
+                if let Some(request_id) = request_id {
+                    out.push(EditorRequest::SaveDocument { request_id, path: PathBuf::from(s("path")) });
+                }
+            }
+            "reveal" => {
+                let line = msg.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
+                out.push(EditorRequest::Reveal { path: PathBuf::from(s("path")), line });
+            }
+            "setSelection" => {
+                let sel = msg.get("selection").and_then(Value::as_array);
+                let n = |i: usize| sel.and_then(|a| a.get(i)).and_then(Value::as_u64).unwrap_or(0) as usize;
+                out.push(EditorRequest::SetSelection { path: PathBuf::from(s("path")), line: n(2), character: n(3) });
+            }
+            "decorationType" => {
+                let style = msg.get("options").map(decoration_style).unwrap_or_default();
+                self.decoration_types.insert(s("key"), style);
+            }
+            "decorationTypeDisposed" => {
+                let key = s("key");
+                self.decoration_types.remove(&key);
+                for per_doc in self.decorations.values_mut() {
+                    per_doc.remove(&key);
+                }
+            }
+            "setDecorations" => {
+                let ranges = msg
+                    .get("ranges")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|d| {
+                                let r = d.get("range")?.as_array()?;
+                                let n = |i: usize| r.get(i).and_then(Value::as_u64).unwrap_or(0) as usize;
+                                Some(DecoratedRange {
+                                    range: [n(0), n(1), n(2), n(3)],
+                                    hover: d.get("hover").and_then(Value::as_str).map(str::to_string),
+                                    after: d.get("after").and_then(Value::as_str).map(str::to_string),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let per_doc = self.decorations.entry(PathBuf::from(s("path"))).or_default();
+                if ranges.is_empty() {
+                    per_doc.remove(&s("key"));
+                } else {
+                    per_doc.insert(s("key"), ranges);
                 }
             }
             "clipboardRead" => {
@@ -532,4 +782,98 @@ impl ExtensionService {
             self.log.drain(..extra);
         }
     }
+}
+
+/// Turn `DecorationRenderOptions` into what the editor can draw.
+fn decoration_style(options: &Value) -> DecorationStyle {
+    let color = |k: &str| options.get(k).and_then(css_color);
+    let border = options
+        .get("borderColor")
+        .and_then(css_color)
+        .or_else(|| options.get("border").and_then(Value::as_str).and_then(border_color));
+    DecorationStyle {
+        background: color("backgroundColor"),
+        color: color("color"),
+        border,
+        bold: options
+            .get("fontWeight")
+            .and_then(Value::as_str)
+            .is_some_and(|w| w == "bold" || w.parse::<u32>().is_ok_and(|n| n >= 600)),
+        whole_line: options.get("isWholeLine").and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+/// The colour in a CSS `border` shorthand (`"1px solid red"`).
+fn border_color(border: &str) -> Option<egui::Color32> {
+    border.split_whitespace().find_map(|part| css_color(&Value::String(part.to_string())))
+}
+
+/// A CSS colour (`#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, a few
+/// names) or a theme colour reference.
+pub fn css_color(v: &Value) -> Option<egui::Color32> {
+    if let Some(id) = v.get("themeColor").and_then(Value::as_str) {
+        return theme_color(id);
+    }
+    let s = v.as_str()?.trim().to_lowercase();
+    if let Some(hex) = s.strip_prefix('#') {
+        let h = |i: usize, len: usize| u8::from_str_radix(&hex[i..i + len], 16).ok();
+        let dup = |x: u8| x * 17;
+        return match hex.len() {
+            3 => Some(egui::Color32::from_rgb(dup(h(0, 1)?), dup(h(1, 1)?), dup(h(2, 1)?))),
+            4 => Some(egui::Color32::from_rgba_unmultiplied(dup(h(0, 1)?), dup(h(1, 1)?), dup(h(2, 1)?), dup(h(3, 1)?))),
+            6 => Some(egui::Color32::from_rgb(h(0, 2)?, h(2, 2)?, h(4, 2)?)),
+            8 => Some(egui::Color32::from_rgba_unmultiplied(h(0, 2)?, h(2, 2)?, h(4, 2)?, h(6, 2)?)),
+            _ => None,
+        };
+    }
+    if let Some(args) = s.strip_prefix("rgba(").or_else(|| s.strip_prefix("rgb(")) {
+        let parts: Vec<f32> = args
+            .trim_end_matches(')')
+            .split(',')
+            .filter_map(|p| p.trim().trim_end_matches('%').parse().ok())
+            .collect();
+        if parts.len() >= 3 {
+            let a = parts.get(3).map(|a| if *a <= 1.0 { a * 255.0 } else { *a }).unwrap_or(255.0);
+            return Some(egui::Color32::from_rgba_unmultiplied(
+                parts[0] as u8,
+                parts[1] as u8,
+                parts[2] as u8,
+                a.clamp(0.0, 255.0) as u8,
+            ));
+        }
+        return None;
+    }
+    let named = match s.as_str() {
+        "red" => (255, 0, 0),
+        "green" => (0, 128, 0),
+        "blue" => (0, 0, 255),
+        "yellow" => (255, 255, 0),
+        "orange" => (255, 165, 0),
+        "white" => (255, 255, 255),
+        "black" => (0, 0, 0),
+        "gray" | "grey" => (128, 128, 128),
+        "purple" => (128, 0, 128),
+        "pink" => (255, 192, 203),
+        "cyan" => (0, 255, 255),
+        "magenta" => (255, 0, 255),
+        "transparent" => return Some(egui::Color32::TRANSPARENT),
+        _ => return None,
+    };
+    Some(egui::Color32::from_rgb(named.0, named.1, named.2))
+}
+
+/// Theme colours extensions commonly decorate with (2026-dark.json values).
+fn theme_color(id: &str) -> Option<egui::Color32> {
+    use crate::theme::Palette;
+    Some(match id {
+        "editor.findMatchHighlightBackground" => Palette::FIND_MATCH_HL_BG,
+        "editor.findMatchBackground" => Palette::FIND_MATCH_BG,
+        "editorError.foreground" | "errorForeground" => Palette::VSCE_NOTIFICATIONS_ERROR_ICON,
+        "editorWarning.foreground" => Palette::VSCE_NOTIFICATIONS_WARNING_ICON,
+        "editorInfo.foreground" => Palette::VSCE_NOTIFICATIONS_INFO_ICON,
+        "descriptionForeground" | "editorCodeLens.foreground" | "editorInlayHint.foreground" => Palette::FG_DESCRIPTION,
+        "foreground" | "editor.foreground" => Palette::FG,
+        "textLink.foreground" => Palette::VSCE_EXTENSION_VERIFIED_FG,
+        _ => return None,
+    })
 }
