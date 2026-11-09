@@ -23,6 +23,7 @@ pub struct MenuIds {
     pub toggle_sidebar: MenuId,
     pub show_explorer: MenuId,
     pub show_search: MenuId,
+    pub go_to_file: MenuId,
     pub welcome: MenuId,
 }
 
@@ -146,12 +147,21 @@ pub fn install() -> InstalledMenu {
         &show_search,
     ]);
 
+    // Go menu
+    let go_m = Submenu::new("Go", true);
+    let go_to_file = MenuItem::new(
+        "Go to File…",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
+    );
+    let _ = go_m.append_items(&[&go_to_file]);
+
     // Help menu
     let help_m = Submenu::new("Help", true);
     let welcome = MenuItem::new("Welcome", true, None);
     let _ = help_m.append_items(&[&welcome]);
 
-    let _ = menu.append_items(&[&file_m, &edit_m, &view_m, &help_m]);
+    let _ = menu.append_items(&[&file_m, &edit_m, &view_m, &go_m, &help_m]);
 
     #[cfg(target_os = "macos")]
     {
@@ -174,12 +184,36 @@ pub fn install() -> InstalledMenu {
         toggle_sidebar: toggle_sidebar.id().clone(),
         show_explorer: show_explorer.id().clone(),
         show_search: show_search.id().clone(),
+        go_to_file: go_to_file.id().clone(),
         welcome: welcome.id().clone(),
     };
 
     InstalledMenu { ids, menu }
 }
 
+/// Menu events forwarded by [`repaint_on_event`].
+static FORWARDED: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Receiver<MenuEvent>>> =
+    std::sync::OnceLock::new();
+
+/// Wake the UI when a menu item fires. A native menu click (or its key
+/// equivalent, e.g. ⌘P) produces no window event, so without this egui would
+/// not run another frame and the result would only show on the next mouse
+/// move.
+pub fn repaint_on_event(ctx: &egui::Context) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    if FORWARDED.set(std::sync::Mutex::new(rx)).is_err() {
+        return;
+    }
+    let ctx = ctx.clone();
+    MenuEvent::set_event_handler(Some(move |ev| {
+        let _ = tx.send(ev);
+        ctx.request_repaint();
+    }));
+}
+
 pub fn poll_event() -> Option<MenuEvent> {
-    MenuEvent::receiver().try_recv().ok()
+    match FORWARDED.get() {
+        Some(rx) => rx.lock().ok()?.try_recv().ok(),
+        None => MenuEvent::receiver().try_recv().ok(),
+    }
 }
