@@ -78,6 +78,25 @@ pub struct App {
     /// The marketplace may be contacted (set by the real app, not tests);
     /// it connects the first time the Extensions view opens.
     marketplace_allowed: bool,
+    /// Extension language features in the editor.
+    lang: LanguageState,
+}
+
+/// Completion, hover and go-to-definition requests and what they show.
+#[derive(Default)]
+struct LanguageState {
+    suggest: Option<crate::workbench::language_ui::Suggest>,
+    /// Completion request in flight: (request, path, word start byte).
+    pending_completion: Option<(u64, PathBuf, usize)>,
+    pending_definition: Option<u64>,
+    /// Hover: the character under the pointer and since when.
+    hover_track: Option<(usize, std::time::Instant, egui::Pos2)>,
+    /// Hover request in flight: (request, char, pointer).
+    pending_hover: Option<(u64, usize, egui::Pos2)>,
+    /// Hover card on screen: (byte range it covers, pointer, markdown blocks).
+    hover: Option<((usize, usize), egui::Pos2, Vec<String>)>,
+    caret: Option<egui::Rect>,
+    caret_char: Option<usize>,
 }
 
 /// How long a transient status-bar message stays visible.
@@ -136,6 +155,7 @@ impl App {
             extensions: crate::extensions::ExtensionService::default(),
             extensions_pending_start: false,
             marketplace_allowed: false,
+            lang: LanguageState::default(),
         }
     }
 
@@ -326,6 +346,345 @@ impl App {
             }
         }
         out
+    }
+
+    /// Squiggles for the problems extensions reported in `doc`.
+    fn problem_squiggles(&self, doc: &crate::editor::Document) -> Vec<crate::editor::view::Squiggle> {
+        use crate::extensions::text::utf16_to_byte;
+        self.extensions
+            .diagnostics_for(&doc.path)
+            .into_iter()
+            .filter(|d| d.severity <= 2)
+            .map(|d| crate::editor::view::Squiggle {
+                start: utf16_to_byte(&doc.text, d.range[0], d.range[1]),
+                end: utf16_to_byte(&doc.text, d.range[2], d.range[3]),
+                color: match d.severity {
+                    0 => Palette::VSCE_EDITOR_ERROR_FG,
+                    1 => Palette::VSCE_EDITOR_WARNING_FG,
+                    _ => Palette::VSCE_EDITOR_INFO_FG,
+                },
+            })
+            .collect()
+    }
+
+    /// The active document and the caret's byte offset in it.
+    fn caret_byte(&self) -> Option<(usize, usize)> {
+        let idx = self.active_doc?;
+        let doc = self.documents.get(idx)?;
+        let ch = self.lang.caret_char?;
+        Some((idx, crate::extensions::text::char_to_byte(&doc.text, ch)))
+    }
+
+    /// Keys for the suggest list (before the editor sees them), Ctrl+Space
+    /// to ask for completions, F12 for go to definition.
+    fn language_shortcuts(&mut self, ctx: &Context) {
+        let mut accept = false;
+        if self.lang.suggest.is_some() {
+            ctx.input_mut(|i| {
+                let s = self.lang.suggest.as_mut().unwrap();
+                if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+                    s.selected = (s.selected + 1) % s.shown.len().max(1);
+                }
+                if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+                    s.selected = (s.selected + s.shown.len().max(1) - 1) % s.shown.len().max(1);
+                }
+                if i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::Tab) {
+                    accept = true;
+                }
+                if i.consume_key(Modifiers::NONE, Key::Escape) {
+                    self.lang.suggest = None;
+                }
+            });
+        }
+        if accept {
+            self.accept_suggestion();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Space)) {
+            self.request_completion(None);
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F12)) {
+            if let Some(ch) = self.lang.caret_char {
+                self.request_definition(ch);
+            }
+        }
+    }
+
+    /// Ask for completions at the caret; `trigger` is the typed trigger
+    /// character, if any.
+    fn request_completion(&mut self, trigger: Option<&str>) {
+        let Some((idx, caret)) = self.caret_byte() else { return };
+        let doc = &self.documents[idx];
+        let start = if trigger.is_some() {
+            caret
+        } else {
+            doc.text[..caret]
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '$')
+                .last()
+                .map(|(b, _)| b)
+                .unwrap_or(caret)
+        };
+        let (line, ch) = crate::extensions::text::byte_to_position(&doc.text, caret);
+        let path = doc.path.clone();
+        self.sync_extension_documents();
+        if let Some(id) = self.extensions.request_language_feature(
+            crate::extensions::LanguageFeature::Completion,
+            &path,
+            line,
+            ch,
+            trigger,
+        ) {
+            self.lang.pending_completion = Some((id, path, start));
+        }
+    }
+
+    fn request_definition(&mut self, char_index: usize) {
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        let byte = crate::extensions::text::char_to_byte(&doc.text, char_index);
+        let (line, ch) = crate::extensions::text::byte_to_position(&doc.text, byte);
+        let path = doc.path.clone();
+        self.sync_extension_documents();
+        self.lang.pending_definition = self.extensions.request_language_feature(
+            crate::extensions::LanguageFeature::Definition,
+            &path,
+            line,
+            ch,
+            None,
+        );
+    }
+
+    /// Replace the typed word with the selected suggestion.
+    fn accept_suggestion(&mut self) {
+        let Some(s) = self.lang.suggest.take() else { return };
+        let Some(item) = s.current().cloned() else { return };
+        let Some((idx, caret)) = self.caret_byte() else { return };
+        let doc = &mut self.documents[idx];
+        if doc.path != s.path {
+            return;
+        }
+        let item_start = crate::extensions::text::utf16_to_byte(&doc.text, item.range[0], item.range[1]);
+        // The provider's range start when it's before the caret, else the
+        // start of the typed word.
+        let start = if item_start <= caret { item_start } else { s.start.min(caret) };
+        doc.text.replace_range(start..caret, &item.insert_text);
+        doc.check_dirty();
+        let end = start + item.insert_text.len();
+        let line_start = doc.text[..end].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let line = doc.text[..end].matches('\n').count() + 1;
+        doc.pending_nav = Some((line, end - line_start));
+    }
+
+    /// After the editor drew: remember the caret, follow typing (open,
+    /// filter or close completions), track the pointer for hovers, ⌘-click.
+    fn after_editor(&mut self, ctx: &Context, out: crate::editor::view::EditorOutput) {
+        self.lang.caret = out.caret;
+        self.lang.caret_char = out.caret_char;
+        if out.changed {
+            self.lang.hover = None;
+            self.on_text_changed();
+        }
+        if let Some(ch) = out.command_clicked {
+            self.request_definition(ch);
+        }
+        match out.hovered {
+            Some((ch, pos)) => {
+                let same = self.lang.hover_track.is_some_and(|(c, _, _)| c == ch);
+                if !same {
+                    self.lang.hover_track = Some((ch, std::time::Instant::now(), pos));
+                    if let Some(((a, b), _, _)) = self.lang.hover {
+                        let byte = self
+                            .active_doc
+                            .and_then(|i| self.documents.get(i))
+                            .map(|d| crate::extensions::text::char_to_byte(&d.text, ch))
+                            .unwrap_or(0);
+                        if byte < a || byte > b {
+                            self.lang.hover = None;
+                        }
+                    }
+                }
+                let (c, since, p) = self.lang.hover_track.unwrap();
+                let waited = since.elapsed() >= std::time::Duration::from_millis(500);
+                if waited && self.lang.pending_hover.is_none() && self.lang.hover.is_none() {
+                    self.start_hover(c, p);
+                } else if !waited {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(520) - since.elapsed().min(std::time::Duration::from_millis(500)));
+                }
+            }
+            None => {
+                self.lang.hover_track = None;
+                self.lang.hover = None;
+            }
+        }
+    }
+
+    fn start_hover(&mut self, char_index: usize, pointer: egui::Pos2) {
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        let byte = crate::extensions::text::char_to_byte(&doc.text, char_index);
+        let (line, ch) = crate::extensions::text::byte_to_position(&doc.text, byte);
+        let path = doc.path.clone();
+        // Problems under the pointer show even without a hover provider.
+        let has_problem = self.problems_at(&path, line, ch).next().is_some();
+        match self.extensions.request_language_feature(
+            crate::extensions::LanguageFeature::Hover,
+            &path,
+            line,
+            ch,
+            None,
+        ) {
+            Some(id) => self.lang.pending_hover = Some((id, char_index, pointer)),
+            None if has_problem => {
+                let word = word_bytes(&doc.text, byte);
+                self.lang.hover = Some((word, pointer, Vec::new()));
+            }
+            None => {}
+        }
+    }
+
+    fn problems_at<'a>(
+        &'a self,
+        path: &'a std::path::Path,
+        line: usize,
+        ch: usize,
+    ) -> impl Iterator<Item = &'a crate::extensions::Diagnostic> + 'a {
+        self.extensions.diagnostics_for(path).into_iter().filter(move |d| {
+            let after_start = (line, ch) >= (d.range[0], d.range[1]);
+            let before_end = (line, ch) <= (d.range[2], d.range[3]);
+            after_start && before_end
+        })
+    }
+
+    /// Typing: refilter or close the suggest list, or open it after a word
+    /// character or a trigger character.
+    fn on_text_changed(&mut self) {
+        let Some((idx, caret)) = self.caret_byte() else { return };
+        let text = &self.documents[idx].text;
+        let prev = text[..caret].chars().next_back();
+        let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+        if let Some(s) = self.lang.suggest.as_mut() {
+            if caret < s.start || text[s.start..caret].chars().any(|c| !is_word(c)) {
+                self.lang.suggest = None;
+            } else {
+                let word = text[s.start..caret].to_string();
+                s.refilter(&word);
+                if s.shown.is_empty() {
+                    self.lang.suggest = None;
+                }
+                return;
+            }
+        }
+        match prev {
+            Some(c) if self.extensions.completion_triggers.contains(&c.to_string()) => {
+                self.request_completion(Some(&c.to_string()));
+            }
+            Some(c) if is_word(c) && self.lang.pending_completion.is_none() => self.request_completion(None),
+            _ => {}
+        }
+    }
+
+    /// Pick up language feature answers and draw the suggest list and the
+    /// hover card.
+    fn language_widgets(&mut self, ctx: &Context) {
+        use crate::extensions::ProviderResult;
+        if let Some((id, path, start)) = self.lang.pending_completion.clone() {
+            if let Some(ProviderResult::Completion { items, .. }) = self.extensions.take_result(id) {
+                self.lang.pending_completion = None;
+                if !items.is_empty() {
+                    let mut s = crate::workbench::language_ui::Suggest {
+                        items,
+                        start,
+                        shown: Vec::new(),
+                        selected: 0,
+                        path,
+                    };
+                    let word = self
+                        .caret_byte()
+                        .map(|(i, c)| self.documents[i].text.get(start..c).unwrap_or("").to_string())
+                        .unwrap_or_default();
+                    s.refilter(&word);
+                    self.lang.suggest = (!s.shown.is_empty()).then_some(s);
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            }
+        }
+        if let Some(id) = self.lang.pending_definition {
+            if let Some(ProviderResult::Definition(locs)) = self.extensions.take_result(id) {
+                self.lang.pending_definition = None;
+                match locs.first() {
+                    Some(loc) => {
+                        let text = self
+                            .documents
+                            .iter()
+                            .find(|d| d.path == loc.path)
+                            .map(|d| d.text.clone())
+                            .or_else(|| std::fs::read_to_string(&loc.path).ok())
+                            .unwrap_or_default();
+                        let byte = crate::extensions::text::utf16_to_byte(&text, loc.range[0], loc.range[1]);
+                        let line_start = text[..byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                        self.navigate_to(loc.path.clone(), loc.range[0] + 1, byte - line_start);
+                    }
+                    None => self.set_status("No definition found"),
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            }
+        }
+        if let Some((id, ch, pointer)) = self.lang.pending_hover {
+            if let Some(ProviderResult::Hover { contents, range }) = self.extensions.take_result(id) {
+                self.lang.pending_hover = None;
+                if let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) {
+                    let byte = crate::extensions::text::char_to_byte(&doc.text, ch);
+                    let (line, col) = crate::extensions::text::byte_to_position(&doc.text, byte);
+                    let has_problem = self.problems_at(&doc.path, line, col).next().is_some();
+                    let span = match range {
+                        Some(r) => (
+                            crate::extensions::text::utf16_to_byte(&doc.text, r[0], r[1]),
+                            crate::extensions::text::utf16_to_byte(&doc.text, r[2], r[3]),
+                        ),
+                        None => word_bytes(&doc.text, byte),
+                    };
+                    if !contents.is_empty() || has_problem {
+                        self.lang.hover = Some((span, pointer, contents));
+                    }
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            }
+        }
+
+        if let (Some(caret), Some(s)) = (self.lang.caret, self.lang.suggest.as_mut()) {
+            let word_len = self
+                .active_doc
+                .and_then(|i| self.documents.get(i))
+                .zip(self.lang.caret_char)
+                .map(|(d, c)| {
+                    let caret_b = crate::extensions::text::char_to_byte(&d.text, c);
+                    d.text.get(s.start..caret_b).map(|w| w.chars().count()).unwrap_or(0)
+                })
+                .unwrap_or(0);
+            if let Some(crate::workbench::language_ui::SuggestEvent::Accept) =
+                crate::workbench::language_ui::suggest_widget(ctx, s, caret, word_len)
+            {
+                self.accept_suggestion();
+            }
+        }
+        if let Some(((a, _), pointer, blocks)) = self.lang.hover.clone() {
+            if let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) {
+                let (line, col) = crate::extensions::text::byte_to_position(&doc.text, a);
+                let problems: Vec<&crate::extensions::Diagnostic> = self.problems_at(&doc.path, line, col).collect();
+                crate::workbench::language_ui::card(
+                    ctx,
+                    "hover_card",
+                    // Above the hovered line, as VS Code places hovers.
+                    pointer - egui::vec2(0.0, 12.0),
+                    true,
+                    &problems,
+                    &blocks,
+                    500.0,
+                );
+            }
+        }
     }
 
     /// Send the open documents and the active editor's selection to the
@@ -1318,6 +1677,7 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        self.language_shortcuts(ctx);
         // Cmd+Shift+P always toggles palette, even when it's open
         let toggle_palette = ctx.input_mut(|i| {
             i.consume_shortcut(&egui::KeyboardShortcut::new(
@@ -1487,6 +1847,7 @@ impl App {
                     ahead_behind,
                     has_upstream,
                     &extension_items,
+                    self.extensions.problem_counts(),
                 );
                 if let Some((command, args)) = sb.extension_command.clone() {
                     self.extensions.execute(&command, args);
@@ -1614,6 +1975,7 @@ impl App {
             self.dispatch_scm(sidebar_output.scm);
         }
 
+        let mut editor_output: Option<crate::editor::view::EditorOutput> = None;
         let mut welcome_pending_folder = false;
         let mut find_matches_for_widget: Vec<(usize, usize)> = Vec::new();
         let mut welcome_pending_file = false;
@@ -1708,13 +2070,20 @@ impl App {
                                     .decorations = spans;
                             }
                         }
+                        let squiggles = self
+                            .documents
+                            .get(idx)
+                            .map(|d| self.problem_squiggles(d))
+                            .unwrap_or_default();
                         if let Some(doc) = self.documents.get_mut(idx) {
-                            crate::editor::view::show(
+                            let out = crate::editor::view::show_with_squiggles(
                                 ui,
                                 doc,
                                 &self.git_line_changes,
                                 find_hl.as_ref(),
+                                &squiggles,
                             );
+                            editor_output = Some(out);
                         }
                         find_matches_for_widget = find_matches;
                     } else if self.show_welcome {
@@ -1762,6 +2131,11 @@ impl App {
         if let Some(action) = command_palette::show(ctx, &mut self.palette) {
             self.dispatch_palette(ctx, action);
         }
+
+        if let Some(out) = editor_output {
+            self.after_editor(ctx, out);
+        }
+        self.language_widgets(ctx);
 
         for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
             self.extensions.close_notification(d.id, d.action);
@@ -2068,4 +2442,19 @@ fn welcome_link_icon(ui: &mut egui::Ui, icon: Option<char>, text: &str) -> egui:
         );
     }
     resp
+}
+
+/// Byte range of the word around `byte` (for hover cards without a range).
+fn word_bytes(text: &str, byte: usize) -> (usize, usize) {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let byte = byte.min(text.len());
+    let start = text[..byte]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(b, _)| b)
+        .unwrap_or(byte);
+    let end = text[byte..].find(|c: char| !is_word(c)).map(|e| byte + e).unwrap_or(text.len());
+    (start, end)
 }

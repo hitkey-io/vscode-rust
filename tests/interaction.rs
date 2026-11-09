@@ -265,6 +265,24 @@ fn quick_open_remove_from_recently_opened() {
     let _ = harness.get_by_label("Remove from Recently Opened");
 }
 
+/// A folder holding only the checked-in sample extension, so whatever else
+/// lands in `tests/fixtures/extensions` (an install made while trying the
+/// app) never runs in tests.
+fn sample_extensions_dir() -> PathBuf {
+    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/extensions/sample.hello-world-0.0.1");
+    let dir = std::env::temp_dir().join(format!("vscode-rust-sample-ext-{}", std::process::id()));
+    let link = dir.join("sample.hello-world-0.0.1");
+    if !link.exists() {
+        std::fs::create_dir_all(&dir).unwrap();
+        // Tests run in parallel: another one may have just made it.
+        if let Err(e) = std::os::unix::fs::symlink(&sample, &link) {
+            assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
+        }
+    }
+    dir
+}
+
 /// Run frames until `label` shows up (the extension host answers from
 /// another process), or fail after a few seconds.
 fn run_until_label(harness: &mut Harness<'static>, label: &str) {
@@ -282,7 +300,7 @@ fn extension_runs_from_view_status_bar_and_palette() {
     if vscode_rust::extensions::host::find_node().is_none() {
         return; // Needs Node.js to run extension code.
     }
-    let extensions = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions");
+    let extensions = sample_extensions_dir();
     let mut harness = launch_with_extensions(Some(workspace_path()), vec![], None, Some(extensions));
     harness.run();
     harness.run();
@@ -329,7 +347,7 @@ fn extension_quick_pick_and_input_box_use_the_quick_access_popup() {
     if vscode_rust::extensions::host::find_node().is_none() {
         return;
     }
-    let extensions = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions");
+    let extensions = sample_extensions_dir();
     let mut harness = launch_with_extensions(Some(workspace_path()), vec![], None, Some(extensions));
     harness.run();
     harness.run();
@@ -356,6 +374,40 @@ fn extension_quick_pick_and_input_box_use_the_quick_access_popup() {
     }
     harness.key_press(Key::Enter);
     run_until_label(&mut harness, "Picked Banana for Ada");
+}
+
+#[test]
+fn extension_completions_open_while_typing_and_insert_on_enter() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return;
+    }
+    let ws = workspace_path();
+    let extensions = sample_extensions_dir();
+    let mut harness =
+        launch_with_extensions(Some(ws.clone()), vec![ws.join("README.md")], None, Some(extensions));
+    harness.run();
+    harness.run();
+    run_until_label(&mut harness, "$(smiley) Hello");
+
+    // Focus the code view and type a word: the extension's suggestions show.
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.step();
+    harness.event(egui::Event::Text(" hel".to_string()));
+    run_until_label(&mut harness, "helloWorld");
+
+    // Enter accepts the highlighted suggestion (snippet placeholders become
+    // their default text).
+    use egui::Key;
+    harness.key_press(Key::Enter);
+    for _ in 0..5 {
+        harness.step();
+    }
+    let text = harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .value()
+        .unwrap_or_default();
+    assert!(text.contains("helloWorld(name)"), "editor text: {text:?}");
+    assert!(harness.query_by_label("heading").is_none(), "the list closes after accepting");
 }
 
 // =============================================================================

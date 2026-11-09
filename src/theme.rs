@@ -246,6 +246,18 @@ impl Palette {
     pub const VSCE_EXTENSION_STAR_FG: Color32 = rgb(0xFF, 0x8E, 0x00);
     /// --vscode-extensionIcon-verifiedForeground (= textLink.foreground, 2026)
     pub const VSCE_EXTENSION_VERIFIED_FG: Color32 = rgb(0x48, 0xA0, 0xC7);
+    /// --vscode-editorError-foreground (editorColors.ts dark default)
+    pub const VSCE_EDITOR_ERROR_FG: Color32 = rgb(0xF1, 0x4C, 0x4C);
+    /// --vscode-editorWarning-foreground (editorColors.ts dark default)
+    pub const VSCE_EDITOR_WARNING_FG: Color32 = rgb(0xCC, 0xA7, 0x00);
+    /// --vscode-editorInfo-foreground (editorColors.ts dark default)
+    pub const VSCE_EDITOR_INFO_FG: Color32 = rgb(0x37, 0x94, 0xFF);
+    /// --vscode-editorSuggestWidget-background / editorHoverWidget-background (2026)
+    pub const VSCE_EDITOR_WIDGET_BG: Color32 = rgb(0x20, 0x21, 0x22);
+    /// --vscode-editorSuggestWidget-border / editorHoverWidget-border (2026)
+    pub const VSCE_EDITOR_WIDGET_BORDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+    /// --vscode-editorSuggestWidget-selectedBackground (2026 `#3994BC26`)
+    pub const VSCE_SUGGEST_SELECTED_BG: Color32 = rgba(0x39, 0x94, 0xBC, 0x26);
     /// --vscode-button-background (2026)
     pub const VSCE_BUTTON_2026_BG: Color32 = rgb(0x29, 0x7A, 0xA0);
     /// --vscode-button-hoverBackground (2026)

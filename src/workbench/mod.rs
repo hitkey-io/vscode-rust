@@ -2,6 +2,7 @@ pub mod activity_bar;
 pub mod breadcrumbs;
 pub mod command_palette;
 pub mod extensions_view;
+pub mod language_ui;
 pub mod notifications;
 pub mod sidebar;
 pub mod source_control;

@@ -32,6 +32,20 @@ pub fn char_col_to_utf16(text: &str, line: usize, char_col: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Byte offset of the `char_index`-th character.
+pub fn char_to_byte(text: &str, char_index: usize) -> usize {
+    text.char_indices().nth(char_index).map(|(b, _)| b).unwrap_or(text.len())
+}
+
+/// `(line, UTF-16 character)` of a byte offset (0-based).
+pub fn byte_to_position(text: &str, byte: usize) -> (usize, usize) {
+    let byte = byte.min(text.len());
+    let before = &text[..byte];
+    let line = before.matches('\n').count();
+    let line_start = before.rfind('\n').map(|p| p + 1).unwrap_or(0);
+    (line, text[line_start..byte].chars().map(char::len_utf16).sum())
+}
+
 /// Apply edits (ranges in the document as it was before any of them).
 pub fn apply_edits(text: &mut String, edits: &[WireEdit]) {
     let mut spans: Vec<(usize, usize, &str)> = edits

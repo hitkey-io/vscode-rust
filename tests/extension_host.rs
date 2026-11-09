@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use vscode_rust::extensions::{host, Activation, EditorRequest, ExtensionService, Severity};
+use vscode_rust::extensions::{host, Activation, EditorRequest, ExtensionService, LanguageFeature, ProviderResult, Severity};
 
 const ID: &str = "sample.hello-world";
 const WAIT: Duration = Duration::from_secs(10);
@@ -13,10 +13,28 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+/// A folder holding only the checked-in sample extension, so whatever else
+/// lands in `tests/fixtures/extensions` (an install made while trying the
+/// app) never runs in tests.
+fn sample_extensions_dir() -> PathBuf {
+    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/extensions/sample.hello-world-0.0.1");
+    let dir = std::env::temp_dir().join(format!("vscode-rust-sample-ext-{}", std::process::id()));
+    let link = dir.join("sample.hello-world-0.0.1");
+    if !link.exists() {
+        std::fs::create_dir_all(&dir).unwrap();
+        // Tests run in parallel: another one may have just made it.
+        if let Err(e) = std::os::unix::fs::symlink(&sample, &link) {
+            assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{e}");
+        }
+    }
+    dir
+}
+
 fn started() -> Option<ExtensionService> {
     host::find_node()?;
     let mut svc = ExtensionService::default();
-    svc.load(&[fixtures().join("extensions")]);
+    svc.load(&[sample_extensions_dir()]);
     svc.start(Some(&fixtures().join("workspace")), || {});
     assert!(
         svc.wait_until(WAIT, |s| s.activation.get(ID) == Some(&Activation::Active)),
@@ -187,4 +205,62 @@ fn api_coverage_report() {
             "core API regressed in {core}"
         );
     }
+}
+
+fn ask(svc: &mut ExtensionService, kind: LanguageFeature, path: &std::path::Path, line: usize, ch: usize) -> ProviderResult {
+    let id = svc.request_language_feature(kind, path, line, ch, None).expect("a provider");
+    let mut result = None;
+    for _ in 0..200 {
+        if let Some(r) = svc.take_result(id) {
+            result = Some(r);
+            break;
+        }
+        svc.wait_until(Duration::from_millis(30), |_| false);
+    }
+    result.expect("an answer")
+}
+
+#[test]
+fn language_features_answer_through_the_host() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    let text = "TODO: see package\nFIXME later\nBUG here\n";
+    svc.sync_documents(&[(path.clone(), "markdown", text, false)], Some((path.clone(), [0, 0, 0, 0])));
+
+    // Diagnostics arrive on open: one warning, one error.
+    assert!(svc.wait_until(WAIT, |s| s.diagnostics_for(&path).len() == 2), "log: {:#?}", svc.log);
+    assert_eq!(svc.problem_counts(), (1, 1));
+    let warn = svc.diagnostics_for(&path).into_iter().find(|d| d.severity == 1).unwrap().clone();
+    assert_eq!(warn.range, [1, 0, 1, 5]);
+    assert_eq!(warn.message, "FIXME found");
+
+    match ask(&mut svc, LanguageFeature::Completion, &path, 2, 3) {
+        ProviderResult::Completion { items, .. } => {
+            let f = items.iter().find(|i| i.label == "helloWorld").expect("helloWorld");
+            assert_eq!(f.kind, "Function");
+            assert_eq!(f.insert_text, "helloWorld(name)");
+            assert_eq!(f.range, [2, 0, 2, 3]); // the word "BUG" up to the caret
+            assert_eq!(f.documentation.as_deref(), Some("Inserts a **greeting**."));
+        }
+        other => panic!("{other:?}"),
+    }
+    match ask(&mut svc, LanguageFeature::Hover, &path, 0, 1) {
+        ProviderResult::Hover { contents, range } => {
+            assert_eq!(contents, vec!["**TODO** marks unfinished work".to_string()]);
+            assert_eq!(range, Some([0, 0, 0, 4]));
+        }
+        other => panic!("{other:?}"),
+    }
+    match ask(&mut svc, LanguageFeature::Definition, &path, 0, 12) {
+        ProviderResult::Definition(locs) => {
+            assert_eq!(locs.len(), 1);
+            assert!(locs[0].path.ends_with("package.json"));
+            assert_eq!(locs[0].range, [1, 2, 1, 2]);
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // Fixing the text clears the problems.
+    svc.sync_documents(&[(path.clone(), "markdown", "all good\n", true)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(svc.wait_until(WAIT, |s| s.diagnostics_for(&path).is_empty()));
 }

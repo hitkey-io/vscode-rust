@@ -58,6 +58,54 @@ function activate(context) {
 		const name = await vscode.window.showInputBox({ prompt: 'Your name', value: 'Ada' });
 		vscode.window.showInformationMessage(`Picked ${picked || 'nothing'} for ${name || 'nobody'}`);
 	}));
+	// Language features for Markdown files.
+	const selector = { language: 'markdown' };
+	context.subscriptions.push(vscode.languages.registerCompletionItemProvider(selector, {
+		provideCompletionItems(document, position) {
+			const fn = new vscode.CompletionItem('helloWorld', vscode.CompletionItemKind.Function);
+			fn.detail = 'Say hello';
+			fn.documentation = new vscode.MarkdownString('Inserts a **greeting**.');
+			fn.insertText = new vscode.SnippetString('helloWorld(${1:name})');
+			const kw = new vscode.CompletionItem('heading', vscode.CompletionItemKind.Keyword);
+			return [fn, kw];
+		},
+	}, '.'));
+	context.subscriptions.push(vscode.languages.registerHoverProvider(selector, {
+		provideHover(document, position) {
+			const range = document.getWordRangeAtPosition(position);
+			if (!range || document.getText(range) !== 'TODO') { return undefined; }
+			return new vscode.Hover(new vscode.MarkdownString('**TODO** marks unfinished work'), range);
+		},
+	}));
+	context.subscriptions.push(vscode.languages.registerDefinitionProvider(selector, {
+		provideDefinition(document, position) {
+			const range = document.getWordRangeAtPosition(position);
+			if (!range || document.getText(range) !== 'package') { return undefined; }
+			const target = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'package.json');
+			return new vscode.Location(target, new vscode.Position(1, 2));
+		},
+	}));
+	const problems = vscode.languages.createDiagnosticCollection('hello');
+	context.subscriptions.push(problems);
+	const lint = document => {
+		if (document.languageId !== 'markdown') { return; }
+		const out = [];
+		document.getText().split('\n').forEach((line, i) => {
+			for (const [word, severity] of [['FIXME', vscode.DiagnosticSeverity.Warning], ['BUG', vscode.DiagnosticSeverity.Error]]) {
+				const at = line.indexOf(word);
+				if (at >= 0) {
+					const d = new vscode.Diagnostic(new vscode.Range(i, at, i, at + word.length), `${word} found`, severity);
+					d.source = 'hello';
+					out.push(d);
+				}
+			}
+		});
+		problems.set(document.uri, out);
+	};
+	vscode.workspace.textDocuments.forEach(lint);
+	context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(lint));
+	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => lint(e.document)));
+
 	console.log('hello-world activated');
 }
 

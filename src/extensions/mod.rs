@@ -104,6 +104,49 @@ pub struct DecoratedRange {
     pub after: Option<String>,
 }
 
+/// A problem an extension reported (`DiagnosticCollection.set`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diagnostic {
+    pub range: [usize; 4],
+    pub message: String,
+    /// `DiagnosticSeverity`: 0 error, 1 warning, 2 information, 3 hint.
+    pub severity: u8,
+    pub source: Option<String>,
+    pub code: Option<String>,
+}
+
+/// One completion suggestion.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompletionEntry {
+    pub label: String,
+    /// `CompletionItemKind` name ("Function", "Variable"…).
+    pub kind: String,
+    pub detail: Option<String>,
+    pub documentation: Option<String>,
+    pub insert_text: String,
+    /// What accepting it replaces.
+    pub range: [usize; 4],
+    pub sort_text: String,
+    pub filter_text: String,
+    pub preselect: bool,
+}
+
+/// A place in a file (`Location`, `LocationLink`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceLocation {
+    pub path: PathBuf,
+    pub range: [usize; 4],
+}
+
+/// The answer to a language feature request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProviderResult {
+    Completion { items: Vec<CompletionEntry>, incomplete: bool },
+    /// Markdown blocks, and the range they describe.
+    Hover { contents: Vec<String>, range: Option<[usize; 4]> },
+    Definition(Vec<SourceLocation>),
+}
+
 /// Something the editor itself has to do for an extension.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorRequest {
@@ -171,6 +214,14 @@ pub struct ExtensionService {
     waited_requests: Vec<EditorRequest>,
     /// Last `apiCoverage` answer from the host.
     pub api_coverage: Option<Value>,
+    /// Problems per file and per reporting collection.
+    pub diagnostics: BTreeMap<PathBuf, BTreeMap<String, Vec<Diagnostic>>>,
+    /// Answers to language feature requests, by request id.
+    provider_results: BTreeMap<u64, ProviderResult>,
+    /// Kinds of language providers registered ("completion", "hover"…).
+    pub provider_kinds: BTreeSet<String>,
+    /// Characters that open completions (`registerCompletionItemProvider`).
+    pub completion_triggers: BTreeSet<String>,
 }
 
 impl ExtensionService {
@@ -260,6 +311,10 @@ impl ExtensionService {
         self.synced_active = None;
         self.decoration_types.clear();
         self.decorations.clear();
+        self.diagnostics.clear();
+        self.provider_results.clear();
+        self.provider_kinds.clear();
+        self.completion_triggers.clear();
         let dirs = self.dirs.clone();
         self.load(&dirs);
         let workspace = self.workspace.clone();
@@ -408,6 +463,59 @@ impl ExtensionService {
     /// Editor requests collected while waiting (for tests).
     pub fn take_requests(&mut self) -> Vec<EditorRequest> {
         std::mem::take(&mut self.waited_requests)
+    }
+
+    /// Ask the extensions for completions / hover / definitions at a
+    /// position (0-based line, UTF-16 character). `None` when no extension
+    /// provides that feature. The answer arrives via `take_result`.
+    pub fn request_language_feature(
+        &mut self,
+        kind: LanguageFeature,
+        path: &Path,
+        line: usize,
+        character: usize,
+        trigger: Option<&str>,
+    ) -> Option<u64> {
+        let (msg_type, provider) = match kind {
+            LanguageFeature::Completion => ("provideCompletion", "completion"),
+            LanguageFeature::Hover => ("provideHover", "hover"),
+            LanguageFeature::Definition => ("provideDefinition", "definition"),
+        };
+        let available = self.provider_kinds.contains(provider)
+            || (kind == LanguageFeature::Definition && self.provider_kinds.contains("declaration"));
+        if !self.ready || !available {
+            return None;
+        }
+        let id = self.request_id();
+        let host = self.host.as_mut()?;
+        host.send(&json!({
+            "type": msg_type, "requestId": id, "path": path,
+            "position": [line, character], "trigger": trigger,
+        }));
+        Some(id)
+    }
+
+    /// The answer to a language feature request, once it has arrived.
+    pub fn take_result(&mut self, request_id: u64) -> Option<ProviderResult> {
+        self.provider_results.remove(&request_id)
+    }
+
+    /// Problems in a file, all collections together.
+    pub fn diagnostics_for(&self, path: &Path) -> Vec<&Diagnostic> {
+        self.diagnostics.get(path).map(|m| m.values().flatten().collect()).unwrap_or_default()
+    }
+
+    /// (errors, warnings) across every file.
+    pub fn problem_counts(&self) -> (usize, usize) {
+        let mut counts = (0, 0);
+        for d in self.diagnostics.values().flat_map(|m| m.values()).flatten() {
+            match d.severity {
+                0 => counts.0 += 1,
+                1 => counts.1 += 1,
+                _ => {}
+            }
+        }
+        counts
     }
 
     /// Ask the host how much of the published API is implemented; the
@@ -688,6 +796,80 @@ impl ExtensionService {
                 let n = |i: usize| sel.and_then(|a| a.get(i)).and_then(Value::as_u64).unwrap_or(0) as usize;
                 out.push(EditorRequest::SetSelection { path: PathBuf::from(s("path")), line: n(2), character: n(3) });
             }
+            "providerRegistered" => {
+                self.provider_kinds.insert(s("kind"));
+                if let Some(chars) = msg.get("triggerCharacters").and_then(Value::as_array) {
+                    self.completion_triggers.extend(chars.iter().filter_map(Value::as_str).map(str::to_string));
+                }
+            }
+            "diagnostics" => {
+                let items: Vec<Diagnostic> = msg
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|d| {
+                                Some(Diagnostic {
+                                    range: wire_range(d.get("range")?)?,
+                                    message: d.get("message").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                    severity: d.get("severity").and_then(Value::as_u64).unwrap_or(0).min(3) as u8,
+                                    source: d.get("source").and_then(Value::as_str).map(str::to_string),
+                                    code: d.get("code").and_then(Value::as_str).map(str::to_string),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let path = PathBuf::from(s("path"));
+                let per_file = self.diagnostics.entry(path.clone()).or_default();
+                if items.is_empty() {
+                    per_file.remove(&s("owner"));
+                    if per_file.is_empty() {
+                        self.diagnostics.remove(&path);
+                    }
+                } else {
+                    per_file.insert(s("owner"), items);
+                }
+            }
+            "providerResult" => {
+                if let Some(id) = request_id {
+                    let result = msg.get("result").cloned().unwrap_or(Value::Null);
+                    let parsed = match s("kind").as_str() {
+                        "provideCompletion" => ProviderResult::Completion {
+                            incomplete: result.get("isIncomplete").and_then(Value::as_bool).unwrap_or(false),
+                            items: result
+                                .get("items")
+                                .and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(completion_entry).collect())
+                                .unwrap_or_default(),
+                        },
+                        "provideHover" => ProviderResult::Hover {
+                            contents: result
+                                .get("contents")
+                                .and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                                .unwrap_or_default(),
+                            range: result.get("range").and_then(wire_range),
+                        },
+                        _ => ProviderResult::Definition(
+                            result
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|l| {
+                                            Some(SourceLocation {
+                                                path: PathBuf::from(l.get("path")?.as_str()?),
+                                                range: wire_range(l.get("range")?)?,
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                    };
+                    self.provider_results.insert(id, parsed);
+                }
+            }
             "apiCoverage" => {
                 self.api_coverage = Some(msg.clone());
             }
@@ -888,5 +1070,35 @@ fn theme_color(id: &str) -> Option<egui::Color32> {
         "foreground" | "editor.foreground" => Palette::FG,
         "textLink.foreground" => Palette::VSCE_EXTENSION_VERIFIED_FG,
         _ => return None,
+    })
+}
+
+/// Which language feature to ask the extensions for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageFeature {
+    Completion,
+    Hover,
+    Definition,
+}
+
+fn wire_range(v: &Value) -> Option<[usize; 4]> {
+    let a = v.as_array()?;
+    let n = |i: usize| a.get(i).and_then(Value::as_u64).map(|x| x as usize);
+    Some([n(0)?, n(1)?, n(2)?, n(3)?])
+}
+
+fn completion_entry(v: &Value) -> Option<CompletionEntry> {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let label = s("label")?;
+    Some(CompletionEntry {
+        kind: s("kind").unwrap_or_else(|| "Text".into()),
+        detail: s("detail"),
+        documentation: s("documentation"),
+        insert_text: s("insertText").unwrap_or_else(|| label.clone()),
+        range: v.get("range").and_then(wire_range)?,
+        sort_text: s("sortText").unwrap_or_else(|| label.clone()),
+        filter_text: s("filterText").unwrap_or_else(|| label.clone()),
+        preselect: v.get("preselect").and_then(Value::as_bool).unwrap_or(false),
+        label,
     })
 }

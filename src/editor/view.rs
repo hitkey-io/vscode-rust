@@ -18,16 +18,51 @@ const CHEVRON_W: f32 = 16.0;
 /// Width of the diff decoration strip on the far left of the gutter.
 const DIFF_W: f32 = 3.0;
 
+/// A wavy underline under a byte range (a problem from an extension).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Squiggle {
+    pub start: usize,
+    pub end: usize,
+    pub color: egui::Color32,
+}
+
+/// What the code view reports back for language features.
+#[derive(Default)]
+pub struct EditorOutput {
+    /// Screen rect of the caret, when the editor shows editable text.
+    pub caret: Option<egui::Rect>,
+    /// Character index under the mouse pointer, and the pointer position.
+    pub hovered: Option<(usize, egui::Pos2)>,
+    /// Character index ⌘-clicked (go to definition).
+    pub command_clicked: Option<usize>,
+    /// Whether the text changed this frame.
+    pub changed: bool,
+    /// Character index of the caret.
+    pub caret_char: Option<usize>,
+}
+
 pub fn show(
     ui: &mut Ui,
     doc: &mut Document,
     diff: &BTreeMap<usize, DiffKind>,
     find: Option<&super::highlight::FindHighlight>,
-) {
+) -> EditorOutput {
+    show_with_squiggles(ui, doc, diff, find, &[])
+}
+
+/// [`show`] with wavy underlines for problems.
+pub fn show_with_squiggles(
+    ui: &mut Ui,
+    doc: &mut Document,
+    diff: &BTreeMap<usize, DiffKind>,
+    find: Option<&super::highlight::FindHighlight>,
+    squiggles: &[Squiggle],
+) -> EditorOutput {
+    let mut out = EditorOutput::default();
     // Diff tabs render a read-only inline diff against their HEAD base.
     if let Some(base) = &doc.diff_base {
         super::diff_view::show(ui, base, &doc.text, doc.language);
-        return;
+        return out;
     }
 
     // Recompute foldable regions every frame and drop any folded header that
@@ -69,7 +104,7 @@ pub fn show(
         if has_folds {
             show_folded(ui, doc, &all_lines, &visible, &ranges, gutter_width, number_w, diff);
         } else {
-            show_editable(ui, doc, line_count, &ranges, gutter_width, number_w, diff, find);
+            out = show_editable(ui, doc, line_count, &ranges, gutter_width, number_w, diff, find, squiggles);
         }
     });
 
@@ -80,6 +115,45 @@ pub fn show(
         );
         let visible_rows = (editor_rect.height() / LINE_HEIGHT).ceil() as usize;
         super::minimap::show(ui, mm_rect, doc, 0, visible_rows);
+    }
+    out
+}
+
+/// Paint a wavy underline under characters `[start, end)` of `galley`
+/// (VS Code's squiggly: a zigzag along the bottom of each line's run).
+fn paint_squiggle(ui: &Ui, galley: &egui::Galley, origin: egui::Pos2, text: &str, sq: &Squiggle) {
+    let start_char = text[..sq.start.min(text.len())].chars().count();
+    let mut end_char = text[..sq.end.min(text.len())].chars().count();
+    if end_char <= start_char {
+        end_char = start_char + 1; // empty ranges still get a mark
+    }
+    let mut a = start_char;
+    while a < end_char {
+        let ra = galley.pos_from_cursor(CCursor::new(a));
+        // Extend along the same row.
+        let mut b = a + 1;
+        while b < end_char && (galley.pos_from_cursor(CCursor::new(b)).top() - ra.top()).abs() < 1.0 {
+            b += 1;
+        }
+        let rb = galley.pos_from_cursor(CCursor::new(b));
+        let x1 = if (rb.top() - ra.top()).abs() < 1.0 { rb.left() } else { ra.left() + 7.0 };
+        let y = origin.y + ra.bottom() - 1.0;
+        let (x0, x1) = (origin.x + ra.left(), origin.x + x1.max(ra.left() + 3.0));
+        let mut points = Vec::new();
+        let mut x = x0;
+        let mut up = true;
+        while x < x1 {
+            points.push(egui::pos2(x, if up { y - 1.5 } else { y + 1.0 }));
+            x += 2.0;
+            up = !up;
+        }
+        points.push(egui::pos2(x1, y));
+        ui.painter().add(egui::Shape::line(points, egui::Stroke::new(1.0, sq.color)));
+        // Next row (skip the line break).
+        a = b.max(a + 1);
+        while a < end_char && (galley.pos_from_cursor(CCursor::new(a)).top() - ra.top()).abs() < 1.0 {
+            a += 1;
+        }
     }
 }
 
@@ -195,7 +269,9 @@ fn show_editable(
     number_w: f32,
     diff: &BTreeMap<usize, DiffKind>,
     find: Option<&super::highlight::FindHighlight>,
-) {
+    squiggles: &[Squiggle],
+) -> EditorOutput {
+    let mut out = EditorOutput::default();
     let pending = doc.pending_nav.take();
     let ctx = ui.ctx().clone();
     let style = ui.style().clone();
@@ -217,7 +293,7 @@ fn show_editable(
     let rows: Vec<usize> = (1..=line_count).collect();
     let mut toggled = None;
 
-    let response = egui::ScrollArea::both()
+    let output = egui::ScrollArea::both()
         .id_salt("editor_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -258,8 +334,7 @@ fn show_editable(
                     );
                 }
 
-                ui.add(
-                    TextEdit::multiline(&mut doc.text)
+                TextEdit::multiline(&mut doc.text)
                         .font(FontId::monospace(EDITOR_FONT_SIZE))
                         .code_editor()
                         .desired_rows(40)
@@ -270,12 +345,30 @@ fn show_editable(
                                 .fill(egui::Color32::TRANSPARENT)
                                 .inner_margin(egui::Margin::symmetric(6, 4)),
                         )
-                        .layouter(&mut layouter),
-                )
+                        .layouter(&mut layouter)
+                        .show(ui)
             })
             .inner
         })
         .inner;
+    let galley = output.galley.clone();
+    let origin = output.galley_pos;
+    for sq in squiggles {
+        paint_squiggle(ui, &galley, origin, &doc.text, sq);
+    }
+    if let Some(range) = output.cursor_range {
+        out.caret = Some(galley.pos_from_cursor(range.primary).translate(origin.to_vec2()));
+        out.caret_char = Some(range.primary.index);
+    }
+    let response = output.response.response;
+    if let Some(pointer) = response.hover_pos() {
+        let c = galley.cursor_from_pos(pointer - origin);
+        out.hovered = Some((c.index, pointer));
+        if response.clicked() && ui.input(|i| i.modifiers.command) {
+            out.command_clicked = Some(c.index);
+        }
+    }
+    out.changed = response.changed();
 
     if let Some(h) = toggled {
         doc.folded.insert(h);
@@ -307,6 +400,7 @@ fn show_editable(
             doc.cursor_col = col;
         }
     }
+    out
 }
 
 /// Folded path — at least one region is collapsed. Renders a read-only,

@@ -137,7 +137,7 @@ pub fn show(
 ) -> StatusBarOutput {
     show_with_extensions(
         ui, active, message, has_workspace, git_branch, git_changes, git_ahead_behind,
-        git_has_upstream, &[],
+        git_has_upstream, &[], (0, 0),
     )
 }
 
@@ -155,6 +155,7 @@ pub fn show_with_extensions(
     git_ahead_behind: (usize, usize),
     git_has_upstream: bool,
     extension_items: &[crate::extensions::StatusItem],
+    problems: (usize, usize),
 ) -> StatusBarOutput {
     let by_priority = |right: bool| {
         let mut v: Vec<&crate::extensions::StatusItem> =
@@ -231,10 +232,16 @@ pub fn show_with_extensions(
             }
             // Problems counter (errors / warnings). Zeroed until diagnostics
             // are wired, matching VS Code's always-present indicator.
-            if status_segment(ui, icons::ERROR_ICON, "0", "No Problems").clicked() {
+            let (errors, warnings) = problems;
+            let tip = if errors + warnings == 0 {
+                "No Problems".to_string()
+            } else {
+                format!("Errors: {errors}, Warnings: {warnings}")
+            };
+            if status_segment(ui, icons::ERROR_ICON, &errors.to_string(), &tip).clicked() {
                 out.palette_requested = true;
             }
-            if status_segment(ui, icons::WARNING_ICON, "0", "No Problems").clicked() {
+            if status_segment(ui, icons::WARNING_ICON, &warnings.to_string(), &tip).clicked() {
                 out.palette_requested = true;
             }
             for item in &left_items {

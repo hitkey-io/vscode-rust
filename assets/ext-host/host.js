@@ -835,18 +835,243 @@ const workspace = {
 // vscode.languages (providers are accepted but not consulted yet)
 // ---------------------------------------------------------------------------
 
+// Language features (extHostLanguageFeatures.ts, extHostDiagnostics.ts).
+
+class Diagnostic {
+	constructor(range, message, severity = 0) {
+		this.range = range; this.message = message; this.severity = severity;
+		this.source = undefined; this.code = undefined; this.relatedInformation = undefined; this.tags = undefined;
+	}
+}
+class DiagnosticRelatedInformation { constructor(location, message) { this.location = location; this.message = message; } }
+class CompletionItem { constructor(label, kind) { this.label = label; this.kind = kind; } }
+class CompletionList { constructor(items = [], isIncomplete = false) { this.items = items; this.isIncomplete = isIncomplete; } }
+class Hover { constructor(contents, range) { this.contents = Array.isArray(contents) ? contents : [contents]; this.range = range; } }
+class Location {
+	constructor(uri, rangeOrPosition) {
+		this.uri = uri;
+		this.range = rangeOrPosition && rangeOrPosition.start ? rangeOrPosition : new Range(rangeOrPosition, rangeOrPosition);
+	}
+}
+
+/** All diagnostics, per collection: owner -> fsPath -> Diagnostic[]. */
+const allDiagnostics = new Map();
+const diagnosticsChanged = new EventEmitter();
+
+function sendDiagnostics(owner, uri, diags) {
+	const fsPath = uri.fsPath || Uri.parse(String(uri)).fsPath;
+	send({
+		type: 'diagnostics', owner, path: fsPath,
+		items: (diags || []).map(d => ({
+			range: toWire(d.range),
+			message: String(d.message),
+			severity: typeof d.severity === 'number' ? d.severity : 0,
+			source: d.source || null,
+			code: d.code === undefined ? null : String(typeof d.code === 'object' && d.code ? d.code.value : d.code),
+		})),
+	});
+	diagnosticsChanged.fire({ uris: [uri] });
+}
+
+let nextCollection = 1;
 function diagnosticCollection(name) {
-	const map = new Map();
+	const owner = `${name || 'diagnostics'}#${nextCollection++}`;
+	const map = new Map(); // fsPath -> { uri, diags }
+	allDiagnostics.set(owner, map);
+	const put = (uri, diags) => {
+		const key = uri.fsPath;
+		if (diags && diags.length) { map.set(key, { uri, diags: [...diags] }); } else { map.delete(key); }
+		sendDiagnostics(owner, uri, diags || []);
+	};
 	return {
 		name,
-		set(uri, diags) { if (Array.isArray(uri)) { for (const [u, d] of uri) { map.set(String(u), d); } } else { map.set(String(uri), diags); } },
-		delete(uri) { map.delete(String(uri)); },
-		clear() { map.clear(); },
-		get(uri) { return map.get(String(uri)); },
-		has(uri) { return map.has(String(uri)); },
-		forEach(cb) { map.forEach((v, k) => cb(Uri.parse(k), v, this)); },
-		dispose() { map.clear(); },
+		set(uri, diags) {
+			if (Array.isArray(uri)) {
+				const merged = new Map();
+				for (const [u, d] of uri) {
+					if (!merged.has(u.fsPath)) { merged.set(u.fsPath, { uri: u, diags: [] }); }
+					if (d) { merged.get(u.fsPath).diags.push(...d); } else { merged.get(u.fsPath).diags = []; }
+				}
+				for (const { uri: u, diags } of merged.values()) { put(u, diags); }
+			} else { put(uri, diags); }
+		},
+		delete(uri) { put(uri, []); },
+		clear() { for (const { uri } of [...map.values()]) { put(uri, []); } },
+		get(uri) { const e = map.get(uri.fsPath); return e ? [...e.diags] : []; },
+		has(uri) { return map.has(uri.fsPath); },
+		forEach(cb) { for (const { uri, diags } of map.values()) { cb(uri, diags, this); } },
+		dispose() { this.clear(); allDiagnostics.delete(owner); },
+		[Symbol.iterator]: function* () { for (const { uri, diags } of map.values()) { yield [uri, diags]; } },
 	};
+}
+
+function getDiagnostics(uri) {
+	if (uri) {
+		const out = [];
+		for (const map of allDiagnostics.values()) { const e = map.get(uri.fsPath); if (e) { out.push(...e.diags); } }
+		return out;
+	}
+	const byPath = new Map();
+	for (const map of allDiagnostics.values()) {
+		for (const { uri: u, diags } of map.values()) {
+			if (!byPath.has(u.fsPath)) { byPath.set(u.fsPath, [u, []]); }
+			byPath.get(u.fsPath)[1].push(...diags);
+		}
+	}
+	return [...byPath.values()];
+}
+
+/** `vscode.languages.match`: a selector's score for a document (0 = no). */
+function globToRegExp(glob) {
+	let re = '';
+	for (let i = 0; i < glob.length; i++) {
+		const c = glob[i];
+		if (c === '*') {
+			if (glob[i + 1] === '*') { re += '.*'; i++; if (glob[i + 1] === '/') { i++; re += '(?:/)?'; } } else { re += '[^/]*'; }
+		} else if (c === '?') { re += '[^/]'; }
+		else if (c === '{') { const end = glob.indexOf('}', i); re += '(?:' + glob.slice(i + 1, end).split(',').map(x => x.replace(/[.+^$()|[\]\\]/g, '\\$&')).join('|') + ')'; i = end; }
+		else { re += c.replace(/[.+^$()|[\]\\]/g, '\\$&'); }
+	}
+	return new RegExp('^' + re + '$');
+}
+function match(selector, document) {
+	if (Array.isArray(selector)) { return Math.max(0, ...selector.map(s => match(s, document))); }
+	if (typeof selector === 'string') {
+		return selector === '*' ? 5 : selector === document.languageId ? 10 : 0;
+	}
+	if (!selector) { return 0; }
+	let score = 0;
+	if (selector.language) {
+		if (selector.language === document.languageId) { score = 10; } else if (selector.language === '*') { score = 5; } else { return 0; }
+	}
+	if (selector.scheme) {
+		if (selector.scheme === document.uri.scheme) { score = Math.max(score, 10); } else if (selector.scheme === '*') { score = Math.max(score, 5); } else { return 0; }
+	}
+	if (selector.pattern) {
+		const pattern = typeof selector.pattern === 'string' ? selector.pattern : selector.pattern.pattern;
+		const base = typeof selector.pattern === 'object' && selector.pattern.baseUri ? selector.pattern.baseUri.fsPath : null;
+		const target = base ? path.relative(base, document.fileName) : document.fileName;
+		const re = globToRegExp(pattern);
+		if (re.test(target) || re.test(document.fileName) || (!pattern.includes('/') && re.test(path.basename(document.fileName)))) { score = Math.max(score, 10); } else { return 0; }
+	}
+	return score;
+}
+
+/** Registered providers: kind -> [{ selector, provider, extra, owner }]. */
+const providers = new Map();
+function registerProvider(kind) {
+	return (selector, provider, ...extra) => {
+		const entry = { selector, provider, extra, owner: currentExtensionId };
+		if (!providers.has(kind)) { providers.set(kind, []); }
+		providers.get(kind).push(entry);
+		send({ type: 'providerRegistered', kind, triggerCharacters: kind === 'completion' ? extra.flat().filter(c => typeof c === 'string') : [] });
+		return new Disposable(() => {
+			const list = providers.get(kind);
+			const i = list.indexOf(entry);
+			if (i >= 0) { list.splice(i, 1); }
+		});
+	};
+}
+
+function providersFor(kind, document) {
+	return (providers.get(kind) || [])
+		.map(p => ({ ...p, score: match(p.selector, document) }))
+		.filter(p => p.score > 0)
+		.sort((a, b) => b.score - a.score);
+}
+
+function markdownText(c) {
+	if (c === undefined || c === null) { return ''; }
+	if (typeof c === 'string') { return c; }
+	if (c instanceof MarkdownString || 'value' in c && !('language' in c)) { return String(c.value); }
+	if ('language' in c) { return '```' + c.language + '\n' + c.value + '\n```'; }
+	return String(c);
+}
+
+const completionKindNames = ['Text', 'Method', 'Function', 'Constructor', 'Field', 'Variable', 'Class', 'Interface', 'Module', 'Property', 'Unit', 'Value', 'Enum', 'Keyword', 'Snippet', 'Color', 'File', 'Reference', 'Folder', 'EnumMember', 'Constant', 'Struct', 'Event', 'Operator', 'TypeParameter', 'User', 'Issue'];
+
+function wireCompletion(item, document, position) {
+	const label = typeof item.label === 'string' ? item.label : (item.label && item.label.label) || '';
+	const labelDetail = typeof item.label === 'object' && item.label ? (item.label.detail || '') + (item.label.description ? ' ' + item.label.description : '') : '';
+	let insert = item.insertText === undefined ? label : item.insertText;
+	insert = typeof insert === 'string' ? insert : snippetText(insert.value || '');
+	let range = item.range;
+	if (range && range.inserting) { range = range.replacing || range.inserting; }
+	if (!range) { range = document.getWordRangeAtPosition(position) || new Range(position, position); if (range.end.isBefore(position)) { range = new Range(range.start, position); } }
+	return {
+		label,
+		kind: typeof item.kind === 'number' ? completionKindNames[item.kind] || 'Text' : 'Text',
+		detail: item.detail || labelDetail || null,
+		documentation: item.documentation ? markdownText(item.documentation) : null,
+		insertText: insert,
+		range: toWire(range),
+		sortText: item.sortText || label,
+		filterText: item.filterText || label,
+		preselect: !!item.preselect,
+	};
+}
+
+async function provideCompletion(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return { items: [], isIncomplete: false }; }
+	const position = new Position(msg.position[0], msg.position[1]);
+	const token = new CancellationTokenSource().token;
+	const context = { triggerKind: msg.trigger ? 1 : 0, triggerCharacter: msg.trigger || undefined };
+	const items = [];
+	let isIncomplete = false;
+	for (const p of providersFor('completion', document)) {
+		if (msg.trigger && !(p.extra.flat().includes(msg.trigger))) { continue; }
+		try {
+			const r = await p.provider.provideCompletionItems(document, position, token, context);
+			if (!r) { continue; }
+			const list = Array.isArray(r) ? r : r.items || [];
+			if (!Array.isArray(r) && r.isIncomplete) { isIncomplete = true; }
+			for (const item of list) { items.push(wireCompletion(item, document, position)); }
+		} catch (err) { console.error(err); }
+	}
+	return { items, isIncomplete };
+}
+
+async function provideHover(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return null; }
+	const position = new Position(msg.position[0], msg.position[1]);
+	const token = new CancellationTokenSource().token;
+	const contents = [];
+	let range = null;
+	for (const p of providersFor('hover', document)) {
+		try {
+			const h = await p.provider.provideHover(document, position, token);
+			if (!h) { continue; }
+			for (const c of (Array.isArray(h.contents) ? h.contents : [h.contents])) {
+				const t = markdownText(c);
+				if (t.trim()) { contents.push(t); }
+			}
+			if (h.range && !range) { range = toWire(h.range); }
+		} catch (err) { console.error(err); }
+	}
+	return contents.length ? { contents, range } : null;
+}
+
+async function provideLocations(kind, method, msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return []; }
+	const position = new Position(msg.position[0], msg.position[1]);
+	const token = new CancellationTokenSource().token;
+	const out = [];
+	for (const p of providersFor(kind, document)) {
+		try {
+			let r = await p.provider[method](document, position, token);
+			if (!r) { continue; }
+			if (!Array.isArray(r)) { r = [r]; }
+			for (const l of r) {
+				const uri = l.targetUri || l.uri;
+				const range = l.targetSelectionRange || l.targetRange || l.range;
+				if (uri && range) { out.push({ path: uri.fsPath, range: toWire(range) }); }
+			}
+		} catch (err) { console.error(err); }
+	}
+	return out;
 }
 
 const languages = new Proxy({
@@ -854,11 +1079,18 @@ const languages = new Proxy({
 		return { id, selector, name: undefined, text: '', detail: undefined, severity: 0, busy: false, command: undefined, accessibilityInformation: undefined, dispose() { } };
 	},
 	createDiagnosticCollection: diagnosticCollection,
-	async getLanguages() { return []; },
-	onDidChangeDiagnostics: silentEvent,
-	getDiagnostics() { return []; },
+	async getLanguages() { return [...new Set([...docs.values()].map(d => d.languageId))]; },
+	onDidChangeDiagnostics: diagnosticsChanged.event,
+	getDiagnostics,
 	setLanguageConfiguration() { return new Disposable(() => { }); },
-	match() { return 0; },
+	match,
+	registerCompletionItemProvider: registerProvider('completion'),
+	registerHoverProvider: registerProvider('hover'),
+	registerDefinitionProvider: registerProvider('definition'),
+	registerDeclarationProvider: registerProvider('declaration'),
+	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
+	registerImplementationProvider: registerProvider('implementation'),
+	async setTextDocumentLanguage(document, languageId) { document.languageId = languageId; return document; },
 }, {
 	get(target, prop) {
 		if (prop in target) { return target[prop]; }
@@ -937,13 +1169,21 @@ const vscodeApi = {
 	DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
 	UIKind: { Desktop: 1, Web: 2 },
 	LogLevel: { Off: 0, Trace: 1, Debug: 2, Info: 3, Warning: 4, Error: 5 },
-	CompletionItemKind: new Proxy({}, { get: (_t, p) => typeof p === 'string' ? 0 : undefined }),
-	SymbolKind: new Proxy({}, { get: (_t, p) => typeof p === 'string' ? 0 : undefined }),
-	Diagnostic: plainClass('Diagnostic'),
-	CompletionItem: plainClass('CompletionItem'),
-	CompletionList: plainClass('CompletionList'),
-	Hover: plainClass('Hover'),
-	Location: plainClass('Location'),
+	Diagnostic, DiagnosticRelatedInformation, CompletionItem, CompletionList, Hover, Location,
+	NotebookCellOutputItem: class NotebookCellOutputItem {
+		static text(value, mime = 'text/plain') { return new NotebookCellOutputItem(Buffer.from(String(value)), mime); }
+		static json(value, mime = 'text/x-json') { return new NotebookCellOutputItem(Buffer.from(JSON.stringify(value, undefined, '\t')), mime); }
+		static stdout(value) { return NotebookCellOutputItem.text(value, 'application/vnd.code.notebook.stdout'); }
+		static stderr(value) { return NotebookCellOutputItem.text(value, 'application/vnd.code.notebook.stderr'); }
+		static error(err) {
+			const value = { name: err && err.name || 'Error', message: err && err.message || String(err), stack: err && err.stack };
+			return NotebookCellOutputItem.json(value, 'application/vnd.code.notebook.error');
+		}
+		constructor(data, mime) { this.data = data; this.mime = mime; }
+	},
+	NotebookCellOutput: class NotebookCellOutput {
+		constructor(items, idOrMetadata, metadata) { this.items = items; this.metadata = typeof idOrMetadata === 'object' ? idOrMetadata : metadata; }
+	},
 	TextEdit, WorkspaceEdit, TextDocument, TextLine, EndOfLine,
 	SnippetString: class SnippetString {
 		constructor(value = '') { this.value = value; this._tab = 1; }
@@ -1267,6 +1507,21 @@ async function handle(msg) {
 				classes: { total: ((API_NAMES && API_NAMES.classes) || []).length, stubbed: stubbed.classes },
 				enums: { total: Object.keys((API_NAMES && API_NAMES.enums) || {}).length },
 			});
+			break;
+		}
+		case 'provideCompletion':
+		case 'provideHover':
+		case 'provideDefinition': {
+			let result;
+			try {
+				result = msg.type === 'provideCompletion' ? await provideCompletion(msg)
+					: msg.type === 'provideHover' ? await provideHover(msg)
+						: [
+							...await provideLocations('definition', 'provideDefinition', msg),
+							...await provideLocations('declaration', 'provideDeclaration', msg),
+						];
+			} catch (err) { console.error(err); result = null; }
+			send({ type: 'providerResult', requestId: msg.requestId, kind: msg.type, result });
 			break;
 		}
 		case 'activateByEvent':
