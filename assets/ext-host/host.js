@@ -988,18 +988,22 @@ function stubFor(key, member, kind) {
 	}
 }
 
+/** Members of the published API that are stubs here (for `apiCoverage`). */
+const stubbed = { namespaces: {}, classes: [] };
+
 function addPublishedApi() {
 	if (!API_NAMES) { return; }
 	for (const [name, members] of Object.entries(API_NAMES.enums)) {
 		if (!(name in vscodeApi)) { vscodeApi[name] = Object.freeze({ ...members }); }
 	}
 	for (const name of API_NAMES.classes) {
-		if (!(name in vscodeApi)) { vscodeApi[name] = placeholderClass(name); }
+		if (!(name in vscodeApi)) { vscodeApi[name] = placeholderClass(name); stubbed.classes.push(name); }
 	}
 	for (const [ns, members] of Object.entries(API_NAMES.namespaces)) {
 		const target = vscodeApi[ns] || (vscodeApi[ns] = {});
 		for (const [member, kind] of Object.entries(members)) {
 			if (!(member in target)) {
+				(stubbed.namespaces[ns] = stubbed.namespaces[ns] || []).push(member);
 				Object.defineProperty(target, member, {
 					get: () => { report(`vscode.${ns}.${member}`); return stubFor(`vscode.${ns}.${member}`, member, kind); },
 					enumerable: true,
@@ -1249,6 +1253,20 @@ async function handle(msg) {
 					}
 				}
 			}
+			break;
+		}
+		case 'apiCoverage': {
+			// How much of vscode.d.ts is implemented rather than stubbed.
+			const namespaces = {};
+			for (const [ns, members] of Object.entries((API_NAMES && API_NAMES.namespaces) || {})) {
+				const missing = stubbed.namespaces[ns] || [];
+				namespaces[ns] = { total: Object.keys(members).length, stubbed: missing };
+			}
+			send({
+				type: 'apiCoverage', namespaces,
+				classes: { total: ((API_NAMES && API_NAMES.classes) || []).length, stubbed: stubbed.classes },
+				enums: { total: Object.keys((API_NAMES && API_NAMES.enums) || {}).length },
+			});
 			break;
 		}
 		case 'activateByEvent':

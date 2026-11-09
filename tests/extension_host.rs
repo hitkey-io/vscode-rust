@@ -157,3 +157,34 @@ fn quick_pick_and_input_box_answers_reach_the_extension() {
     assert_eq!(answered, 2);
     assert!(svc.notifications.iter().any(|n| n.text == "Picked Banana for Grace"), "log: {:#?}", svc.log);
 }
+
+/// Prints how much of vscode.d.ts the host implements (run with
+/// `--nocapture` to read it) and keeps the core namespaces from regressing.
+#[test]
+fn api_coverage_report() {
+    let Some(mut svc) = started() else { return };
+    svc.request_api_coverage();
+    assert!(svc.wait_until(WAIT, |s| s.api_coverage.is_some()));
+    let cov = svc.api_coverage.clone().unwrap();
+    let mut total = 0;
+    let mut real = 0;
+    let mut ns: Vec<_> = cov["namespaces"].as_object().unwrap().iter().collect();
+    ns.sort_by_key(|(k, _)| k.to_string());
+    for (name, v) in ns {
+        let t = v["total"].as_u64().unwrap();
+        let stubbed: Vec<&str> = v["stubbed"].as_array().unwrap().iter().filter_map(|x| x.as_str()).collect();
+        total += t;
+        real += t - stubbed.len() as u64;
+        println!("COVERAGE vscode.{name}: {}/{t} implemented; stubs: {}", t - stubbed.len() as u64, stubbed.join(", "));
+    }
+    let ct = cov["classes"]["total"].as_u64().unwrap();
+    let cs: Vec<&str> = cov["classes"]["stubbed"].as_array().unwrap().iter().filter_map(|x| x.as_str()).collect();
+    println!("COVERAGE functions/values: {real}/{total}; classes: {}/{ct} (stubs: {}); enums: all {}", ct - cs.len() as u64, cs.join(", "), cov["enums"]["total"]);
+    for core in ["commands", "workspace", "window"] {
+        let stubbed = cov["namespaces"][core]["stubbed"].as_array().unwrap();
+        assert!(
+            !stubbed.iter().any(|m| m == "registerCommand" || m == "getConfiguration" || m == "showInformationMessage"),
+            "core API regressed in {core}"
+        );
+    }
+}

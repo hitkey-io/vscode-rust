@@ -169,6 +169,8 @@ pub struct ExtensionService {
     /// Editor requests that arrived during `wait_until` (tests take them
     /// with `take_requests`).
     waited_requests: Vec<EditorRequest>,
+    /// Last `apiCoverage` answer from the host.
+    pub api_coverage: Option<Value>,
 }
 
 impl ExtensionService {
@@ -406,6 +408,14 @@ impl ExtensionService {
     /// Editor requests collected while waiting (for tests).
     pub fn take_requests(&mut self) -> Vec<EditorRequest> {
         std::mem::take(&mut self.waited_requests)
+    }
+
+    /// Ask the host how much of the published API is implemented; the
+    /// answer lands in `api_coverage`.
+    pub fn request_api_coverage(&mut self) {
+        if let Some(h) = self.host.as_mut() {
+            h.send(&json!({ "type": "apiCoverage" }));
+        }
     }
 
     /// Whether the host has started and answered `init`.
@@ -677,6 +687,9 @@ impl ExtensionService {
                 let sel = msg.get("selection").and_then(Value::as_array);
                 let n = |i: usize| sel.and_then(|a| a.get(i)).and_then(Value::as_u64).unwrap_or(0) as usize;
                 out.push(EditorRequest::SetSelection { path: PathBuf::from(s("path")), line: n(2), character: n(3) });
+            }
+            "apiCoverage" => {
+                self.api_coverage = Some(msg.clone());
             }
             "decorationType" => {
                 let style = msg.get("options").map(decoration_style).unwrap_or_default();
