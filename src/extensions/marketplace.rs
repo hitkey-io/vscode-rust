@@ -359,7 +359,16 @@ impl Marketplace {
                     .pointer("/files/readme")
                     .and_then(Value::as_str)
                     .and_then(|u| u.rfind('/').map(|i| u[..=i].to_string()));
-                let manifest = text("manifest").and_then(|m| serde_json::from_str(&m).ok());
+                let mut manifest: Option<Value> = text("manifest").and_then(|m| serde_json::from_str(&m).ok());
+                // The catalogue keeps no `package.nls.json`: read it out of
+                // the package itself, by range, so `%key%` titles resolve.
+                if let (Some(m), Some(url)) = (&manifest, json.pointer("/files/download").and_then(Value::as_str)) {
+                    if m.to_string().contains("\"%") {
+                        if let Some(nls) = remote_zip_entry(url, "extension/package.nls.json") {
+                            manifest = Some(super::manifest::localized_with(m, &String::from_utf8_lossy(&nls)));
+                        }
+                    }
+                }
                 let versions = versions_of(&json);
                 // "Published" is the first version's date.
                 let published = match versions.last() {
@@ -809,6 +818,17 @@ mod details_tests {
         assert_eq!(versions_of(&json), ["1.10.0", "1.10.0-beta", "1.9.3"]);
     }
 
+    /// Opt-in (reaches Open VSX): `cargo test --lib remote_zip -- --ignored`.
+    #[test]
+    #[ignore]
+    fn remote_zip_entry_reads_a_packaged_file() {
+        let meta: Value = serde_json::from_slice(&http_get("https://open-vsx.org/api/ms-python/python/latest").unwrap()).unwrap();
+        let url = meta.pointer("/files/download").and_then(Value::as_str).unwrap();
+        let nls = remote_zip_entry(url, "extension/package.nls.json").expect("package.nls.json");
+        let text = String::from_utf8(nls).unwrap();
+        assert!(text.contains("python.command.python.createNewFile.title"), "{}", &text[..200.min(text.len())]);
+    }
+
     #[test]
     fn category_queries_split() {
         assert_eq!(split_category(r#"@category:"Data Science" pandas"#), (Some("Data Science".into()), "pandas".into()));
@@ -835,4 +855,74 @@ pub fn set_recommended(workspace: &Path, id: &str, add: bool) -> Result<(), Stri
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     std::fs::write(&path, text + "\n").map_err(|e| e.to_string())
+}
+
+/// Part of `url` (`range` as curl takes it: `100-199`) and the whole
+/// file's size.
+fn http_range(url: &str, range: &str) -> Option<(Vec<u8>, u64)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let tmp = std::env::temp_dir().join(format!("vscode-rust-range-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "60", "-A", "vscode-rust", "-r", range, "-w", "%header{content-range}", "-o"])
+        .arg(&tmp)
+        .arg(url)
+        .output()
+        .ok()?;
+    let body = std::fs::read(&tmp).ok();
+    let _ = std::fs::remove_file(&tmp);
+    if !out.status.success() {
+        return None;
+    }
+    // `bytes 6760195-6826730/6826731`
+    let header = String::from_utf8_lossy(&out.stdout);
+    let total = header.rsplit('/').next()?.trim().parse().ok()?;
+    Some((body?, total))
+}
+
+/// One file from a ZIP on the web (a `.vsix`), reading only its central
+/// directory and that entry. `None` when it isn't there.
+pub fn remote_zip_entry(url: &str, name: &str) -> Option<Vec<u8>> {
+    let u16le = |b: &[u8], at: usize| -> Option<u64> { Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?) as u64) };
+    let u32le = |b: &[u8], at: usize| -> Option<u64> { Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as u64) };
+    // The file's size, then its last 64 KiB (the server takes no suffix
+    // ranges): the end-of-directory record and usually the directory.
+    let (_, total) = http_range(url, "0-0")?;
+    let tail_start = total.saturating_sub(65558);
+    let (tail, _) = http_range(url, &format!("{tail_start}-{}", total.checked_sub(1)?))?;
+    let eocd = (0..tail.len().saturating_sub(21)).rev().find(|&i| tail[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])?;
+    let cd_size = u32le(&tail, eocd + 12)?;
+    let cd_off = u32le(&tail, eocd + 16)?;
+    let cd = if cd_off >= tail_start {
+        let at = (cd_off - tail_start) as usize;
+        tail.get(at..at + cd_size as usize)?.to_vec()
+    } else {
+        http_range(url, &format!("{cd_off}-{}", cd_off + cd_size - 1))?.0
+    };
+    let mut i = 0usize;
+    while i + 46 <= cd.len() && cd[i..i + 4] == [0x50, 0x4b, 0x01, 0x02] {
+        let method = u16le(&cd, i + 10)?;
+        let comp = u32le(&cd, i + 20)?;
+        let n = u16le(&cd, i + 28)? as usize;
+        let extra = u16le(&cd, i + 30)? as usize;
+        let comment = u16le(&cd, i + 32)? as usize;
+        let local = u32le(&cd, i + 42)?;
+        let entry = cd.get(i + 46..i + 46 + n)?;
+        if entry == name.as_bytes() {
+            // Local header (its extra field can differ from the central one).
+            let (head, _) = http_range(url, &format!("{local}-{}", local + 29))?;
+            let start = local + 30 + u16le(&head, 26)? + u16le(&head, 28)?;
+            if comp == 0 {
+                return Some(Vec::new());
+            }
+            let (data, _) = http_range(url, &format!("{start}-{}", start + comp - 1))?;
+            return match method {
+                0 => Some(data),
+                8 => miniz_oxide::inflate::decompress_to_vec(&data).ok(),
+                _ => None,
+            };
+        }
+        i += 46 + n + extra + comment;
+    }
+    None
 }

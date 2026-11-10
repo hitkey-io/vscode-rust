@@ -208,6 +208,17 @@ pub enum EditorRequest {
 /// Last lines of the extension host log kept for the Extensions view.
 const LOG_LINES: usize = 500;
 
+/// How an extension was activated (VS Code's `ActivationTimes`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActivationTime {
+    /// Loading its code (`codeLoadingTime`).
+    pub load_ms: u64,
+    /// Its `activate()` call (`activateCallTime`).
+    pub activate_ms: u64,
+    /// The event that activated it (`*`, `onLanguage:python`…).
+    pub reason: String,
+}
+
 /// Whether an installed extension runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Enablement {
@@ -274,6 +285,8 @@ pub struct ExtensionService {
     pub state: ExtensionState,
     /// `id@version` updates already started by auto-update.
     auto_updated: BTreeSet<String>,
+    /// How long each running extension took to activate.
+    pub activation_times: BTreeMap<String, ActivationTime>,
     pub activation: BTreeMap<String, Activation>,
     host: Option<host::Host>,
     /// Commands an extension registered at runtime.
@@ -485,6 +498,7 @@ impl ExtensionService {
         self.ready = false;
         self.queued.clear();
         self.registered.clear();
+        self.activation_times.clear();
         self.status_items.clear();
         self.fired_events.clear();
         self.synced.clear();
@@ -961,6 +975,11 @@ impl ExtensionService {
                 }
             }
             "activated" => {
+                let ms = |k: &str| msg.get(k).and_then(Value::as_u64).unwrap_or(0);
+                self.activation_times.insert(
+                    s("id"),
+                    ActivationTime { load_ms: ms("loadMs"), activate_ms: ms("activateMs"), reason: s("reason") },
+                );
                 self.activation.insert(s("id"), Activation::Active);
             }
             "activationFailed" => {

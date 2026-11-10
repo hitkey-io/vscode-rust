@@ -274,6 +274,13 @@ impl Palette {
     /// hovered row action button.
     pub const VSCE_QUICK_INPUT_ACTION_HOVER_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x18);
 
+    /// --vscode-toolbar-hoverBackground (2026-dark.json) behind a hovered
+    /// icon action, e.g. an extension row's ⚙ Manage.
+    pub const VSCE_TOOLBAR_HOVER_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x18);
+    /// --vscode-disabledForeground (2026-dark.json) — a disabled
+    /// extension's row.
+    pub const VSCE_DISABLED_FG: Color32 = rgb(0x55, 0x55, 0x55);
+
     // --vscode-dropdown-* (from dark_modern.json:dropdown.*)
     pub const VSCE_DROPDOWN_BG: Color32 = rgb(0x31, 0x31, 0x31);
     pub const VSCE_DROPDOWN_BORDER: Color32 = rgb(0x3C, 0x3C, 0x3C);

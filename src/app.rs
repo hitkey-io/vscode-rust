@@ -97,6 +97,8 @@ pub struct App {
     pending_copy: Option<String>,
     /// Height of the window's content, for placing native menus.
     viewport_height: f32,
+    /// A menu asked for during the frame: (extension, which menu, where).
+    pending_ext_menu: Option<(String, String, egui::Pos2)>,
 }
 
 /// An extension's page in an editor tab.
@@ -180,6 +182,7 @@ enum ExtPageAction {
     CopyLink,
     Recommend(bool),
     Download,
+    ToggleAutoUpdate,
 }
 
 /// Request ids of the editor's own version pickers (far above the
@@ -267,6 +270,7 @@ impl App {
             ext_pick: None,
             pending_copy: None,
             viewport_height: 0.0,
+            pending_ext_menu: None,
             next_internal_handle: crate::workbench::webviews::INTERNAL_HANDLE_BASE,
         }
     }
@@ -1015,6 +1019,11 @@ impl App {
                 if d.enabled == Enabled::Yes && e.main.is_some() {
                     d.runtime = Some(Runtime {
                         activated: matches!(activation, Some(crate::extensions::Activation::Active)),
+                        activation: self
+                            .extensions
+                            .activation_times
+                            .get(&e.id)
+                            .map(|t| (t.reason.clone(), t.activate_ms)),
                         error: match activation {
                             Some(crate::extensions::Activation::Failed(err)) => Some(err),
                             _ => None,
@@ -1186,11 +1195,11 @@ impl App {
                 let menu = str_of("menu").unwrap_or_default();
                 let x = msg.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                 let y = msg.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                let items = self.extension_menu_items(&id, &menu);
                 // The page sits at the tab's rect; menus open under the button.
                 let origin = self.webview_host.placed_rect(handle).map(|r| r.min).unwrap_or_default();
+                self.pending_ext_menu = Some((id.clone(), menu, egui::pos2(origin.x + x, origin.y + y + 2.0)));
                 if let Some(frame) = frame {
-                    self.show_extension_menu(frame, &id, items, origin.x + x, origin.y + y + 2.0);
+                    self.show_pending_extension_menu(frame);
                 }
             }
             "openLink" => {
@@ -1255,11 +1264,41 @@ impl App {
 
     /// The items of one of the page's menus: (label, action), `None` for a
     /// separator.
-    fn extension_menu_items(&self, id: &str, menu: &str) -> Vec<Option<(String, ExtPageAction)>> {
+    fn extension_menu_items(&self, id: &str, menu: &str) -> Vec<Option<(String, ExtPageAction, Option<bool>)>> {
         let installed = self.extensions.is_installed(id);
         let workspace = self.workspace_root.is_some();
-        let item = |label: &str, a: ExtPageAction| Some((label.to_string(), a));
+        let item = |label: &str, a: ExtPageAction| Some((label.to_string(), a, None));
         match menu {
+            // `ManageExtensionAction`: the ⚙ of a row in the Extensions view.
+            "list" => {
+                let mut v = Vec::new();
+                if self.extensions.enablement(id) == crate::extensions::Enablement::Enabled {
+                    v.push(item("Disable", ExtPageAction::Disable(false)));
+                    if workspace {
+                        v.push(item("Disable (Workspace)", ExtPageAction::Disable(true)));
+                    }
+                } else {
+                    v.push(item("Enable", ExtPageAction::Enable(false)));
+                    if workspace {
+                        v.push(item("Enable (Workspace)", ExtPageAction::Enable(true)));
+                    }
+                }
+                let ours = self.extensions.can_uninstall(id);
+                if ours {
+                    v.push(None);
+                    v.push(item("Uninstall", ExtPageAction::Uninstall));
+                    v.push(None);
+                    v.push(item("Install Specific Version...", ExtPageAction::PickVersion));
+                    v.push(Some(("Auto Update".to_string(), ExtPageAction::ToggleAutoUpdate, Some(self.extensions.auto_update(id)))));
+                }
+                v.push(None);
+                v.extend(self.extension_menu_items(id, "manage").into_iter().filter(|e| {
+                    !matches!(e, Some((_, ExtPageAction::PickVersion, _)))
+                }));
+                // No leading separator twice.
+                v.dedup_by(|a, b| a.is_none() && b.is_none());
+                v
+            }
             "disable" => {
                 let mut v = vec![item("Disable", ExtPageAction::Disable(false))];
                 if workspace {
@@ -1300,16 +1339,36 @@ impl App {
         }
     }
 
+    /// Show the menu a page or a row asked for (needs the window).
+    fn show_pending_extension_menu(&mut self, frame: &eframe::Frame) {
+        if let Some((id, menu, pos)) = self.pending_ext_menu.take() {
+            if let Some((ns, name)) = id.split_once('.') {
+                // "Install Specific Version..." lists the catalogue's versions.
+                if self.marketplace_allowed && !self.extensions.marketplace.enabled {
+                    self.extensions.marketplace.enable(|| {});
+                }
+                self.extensions.marketplace.request_details(ns, name);
+            }
+            let items = self.extension_menu_items(&id, &menu);
+            self.show_extension_menu(frame, &id, items, pos.x, pos.y);
+        }
+    }
+
     /// Show a native menu at `x, y` (window points) and remember what its
     /// items do; the choice comes back as a menu event.
-    fn show_extension_menu(&mut self, frame: &eframe::Frame, id: &str, items: Vec<Option<(String, ExtPageAction)>>, x: f32, y: f32) {
+    fn show_extension_menu(&mut self, frame: &eframe::Frame, id: &str, items: Vec<Option<(String, ExtPageAction, Option<bool>)>>, x: f32, y: f32) {
         use muda::ContextMenu;
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let menu = muda::Menu::new();
         let mut actions = Vec::new();
         for entry in items {
             match entry {
-                Some((label, action)) => {
+                Some((label, action, Some(checked))) => {
+                    let item = muda::CheckMenuItem::new(label, true, checked, None);
+                    actions.push((item.id().clone(), id.to_string(), action));
+                    let _ = menu.append(&item);
+                }
+                Some((label, action, None)) => {
                     let item = muda::MenuItem::new(label, true, None);
                     actions.push((item.id().clone(), id.to_string(), action));
                     let _ = menu.append(&item);
@@ -1348,6 +1407,10 @@ impl App {
             ExtPageAction::InstallVersion(v) => self.extensions.marketplace.install_version(&ns, &name, Some(v)),
             ExtPageAction::Uninstall => self.extensions.uninstall(id),
             ExtPageAction::Enable(ws) => self.extensions.set_enabled(id, true, ws),
+            ExtPageAction::ToggleAutoUpdate => {
+                let on = self.extensions.auto_update(id);
+                self.extensions.set_auto_update(id, !on);
+            }
             ExtPageAction::Disable(ws) => self.extensions.set_enabled(id, false, ws),
             ExtPageAction::PickVersion | ExtPageAction::PickDownload => {
                 let versions = self
@@ -1376,6 +1439,14 @@ impl App {
             }
             ExtPageAction::Copy => {
                 let e = self.ext_pages.iter().filter_map(|p| p.shown.as_ref()).find(|d| d.id.eq_ignore_ascii_case(id));
+                if e.is_none() {
+                    if let Some(x) = self.extensions.installed().find(|x| x.id.eq_ignore_ascii_case(id)) {
+                        self.pending_copy = Some(format!(
+                            "Name: {}\nId: {}\nDescription: {}\nVersion: {}\nPublisher: {}\nMarketplace Link: {}",
+                            x.display_name, x.id, x.description, x.version, x.publisher, link
+                        ));
+                    }
+                }
                 if let Some(d) = e {
                     let version = d.install_info.as_ref().map(|i| i.version.clone()).or_else(|| d.market_info.as_ref().map(|m| m.version.clone())).unwrap_or_default();
                     let text = format!(
@@ -2798,6 +2869,9 @@ impl App {
                             if let Some(target) = view.open {
                                 self.open_extension_page(target, view.open_pinned);
                             }
+                            if let Some((id, pos)) = view.manage {
+                                self.pending_ext_menu = Some((id, "list".into(), pos));
+                            }
                             return SidebarOutput::default();
                         }
                         let graph_root = self.active_repo_root();
@@ -3036,6 +3110,7 @@ impl eframe::App for App {
         for (handle, msg) in self.webview_host.take_internal_messages() {
             self.extension_page_message(handle, msg, Some(frame));
         }
+        self.show_pending_extension_menu(frame);
         self.webview_host.sync(frame, &mut self.extensions);
         if !self.extensions.webviews.is_empty() || !self.ext_pages.is_empty() {
             // Page messages arrive between frames.

@@ -46,6 +46,8 @@ skrifa = "0.40"
 wry = "0.57"
 # Extension README / CHANGELOG pages.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# One file out of a catalogue .vsix (its translations), fetched by range.
+miniz_oxide = "0.8"
 # Marketplace extension icons.
 image = { version = "0.25", default-features = false, features = ["png"] }
 

@@ -282,9 +282,13 @@ fn version_key(v: &str) -> Vec<u64> {
 }
 
 fn read_nls(dir: &Path) -> BTreeMap<String, String> {
-    std::fs::read_to_string(dir.join("package.nls.json"))
+    std::fs::read_to_string(dir.join("package.nls.json")).map(|s| parse_nls(&s)).unwrap_or_default()
+}
+
+/// `package.nls.json` text to key → message.
+fn parse_nls(text: &str) -> BTreeMap<String, String> {
+    serde_json::from_str::<BTreeMap<String, Value>>(text.trim_start_matches('\u{feff}'))
         .ok()
-        .and_then(|s| serde_json::from_str::<BTreeMap<String, Value>>(&s).ok())
         .map(|m| {
             m.into_iter()
                 .filter_map(|(k, v)| {
@@ -313,6 +317,20 @@ pub fn localized_manifest(manifest: &Value, dir: &Path) -> Value {
         }
     }
     walk(manifest, &read_nls(dir))
+}
+
+/// The manifest with `%key%` strings resolved through `nls` (the text of a
+/// `package.nls.json` taken from the extension's package).
+pub fn localized_with(manifest: &Value, nls: &str) -> Value {
+    fn walk(v: &Value, nls: &BTreeMap<String, String>) -> Value {
+        match v {
+            Value::String(s) => Value::String(localize(s, nls)),
+            Value::Array(a) => Value::Array(a.iter().map(|x| walk(x, nls)).collect()),
+            Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), walk(x, nls))).collect()),
+            other => other.clone(),
+        }
+    }
+    walk(manifest, &parse_nls(nls))
 }
 
 /// Resolve a `%key%` placeholder through `package.nls.json`.

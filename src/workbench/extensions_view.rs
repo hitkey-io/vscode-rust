@@ -39,6 +39,9 @@ pub struct ExtensionsViewOutput {
     pub open: Option<OpenDetails>,
     /// It was double-clicked: keep the page (not a preview).
     pub open_pinned: bool,
+    /// The ⚙ of an installed extension's row was clicked: open its Manage
+    /// menu at this point (window coordinates).
+    pub manage: Option<(String, egui::Pos2)>,
 }
 
 pub use super::extension_details::OpenTarget as OpenDetails;
@@ -284,6 +287,18 @@ struct RowText<'a> {
     rating: Option<f32>,
     /// Right of the name instead of the stats (installed rows).
     version: Option<&'a str>,
+    /// Right of the name for a running extension: its activation time.
+    activation_ms: Option<u64>,
+    /// A disabled extension: publisher in `disabledForeground`.
+    disabled: bool,
+}
+
+impl RowText<'_> {
+    /// Install count and rating show only for extensions not installed
+    /// (`InstallCountWidget` / `RatingsWidget` in small mode).
+    fn for_state(self, installed: bool) -> Self {
+        if installed { Self { downloads: None, rating: None, ..self } } else { self }
+    }
 }
 
 fn row_frame(ui: &mut Ui, a11y: String) -> (egui::Rect, egui::Response) {
@@ -323,7 +338,14 @@ fn paint_row(ui: &mut Ui, rect: egui::Rect, icon: Option<&egui::TextureHandle>, 
     // Right of the name: stats or version, laid out right to left.
     let mut stats_left = right;
     let small = FontId::proportional(11.0);
-    if let Some(v) = t.version {
+    if let Some(ms) = t.activation_ms {
+        // `ExtensionRuntimeStatusWidget`: history icon + "23ms".
+        let g = p.layout_no_wrap(format!("{ms}ms"), small.clone(), Palette::FG);
+        stats_left -= g.size().x;
+        p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG);
+        stats_left -= 16.0;
+        paint_codicon(ui, egui::pos2(stats_left + 7.0, line1), "history", 14.0, Palette::FG);
+    } else if let Some(v) = t.version {
         let g = p.layout_no_wrap(format!("v{v}"), small.clone(), Palette::FG_DESCRIPTION);
         stats_left -= g.size().x;
         p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG_DESCRIPTION);
@@ -369,8 +391,36 @@ fn paint_row(ui: &mut Ui, rect: egui::Rect, icon: Option<&egui::TextureHandle>, 
         Align2::LEFT_CENTER,
         t.publisher,
         crate::ui_font::bold(12.0),
-        Palette::FG_DESCRIPTION,
+        if t.disabled { Palette::VSCE_DISABLED_FG } else { Palette::FG_DESCRIPTION },
     );
+}
+
+/// The ⚙ Manage action at a row's bottom-right (`ManageExtensionAction`,
+/// 16px codicon with 1px 2px padding). Returns where its menu opens when
+/// clicked: under the icon.
+fn manage_gear(ui: &mut Ui, rect: egui::Rect, id: egui::Id) -> Option<egui::Pos2> {
+    let r = egui::Rect::from_min_size(egui::pos2(rect.right() - PAD_RIGHT - 20.0, rect.bottom() - 15.0 - 9.0), egui::vec2(20.0, 18.0));
+    let resp = ui.interact(r, id, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Manage"));
+    if resp.hovered() {
+        ui.painter().rect_filled(r, CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+    }
+    paint_codicon(ui, r.center(), "gear", 16.0, Palette::FG);
+    let clicked = resp.clicked();
+    resp.on_hover_text("Manage");
+    clicked.then(|| egui::pos2(r.left(), r.bottom() + 2.0))
+}
+
+/// `ExtensionStatusAction` in a row: an error or warning icon left of ⚙.
+fn status_icon(ui: &mut Ui, rect: egui::Rect, state: &Activation) {
+    let (name, color, tip) = match state {
+        Activation::Failed(e) => ("error", Palette::VSCE_EDITOR_ERROR_FG, format!("Activating the extension failed: {e}")),
+        Activation::NeedsNode => ("warning", Palette::VSCE_EDITOR_WARNING_FG, "This extension needs Node.js to run, and it wasn't found.".to_string()),
+        _ => return,
+    };
+    let r = egui::Rect::from_min_size(egui::pos2(rect.right() - PAD_RIGHT - 20.0 - 6.0 - 20.0, rect.bottom() - 15.0 - 9.0), egui::vec2(20.0, 18.0));
+    paint_codicon(ui, r.center(), name, 16.0, color);
+    ui.interact(r, ui.id().with(("ext_status", rect.min.y as i64)), Sense::hover()).on_hover_text(tip);
 }
 
 /// A prominent action button at the row's bottom-right ("Install").
@@ -445,13 +495,19 @@ fn gallery_row(ui: &mut Ui, service: &mut ExtensionService, ext: &GalleryExtensi
             downloads: Some(ext.downloads),
             rating: ext.rating,
             version: None,
-        },
+            activation_ms: None,
+            disabled: false,
+        }
+        .for_state(service.is_installed(&id)),
     );
     let installing = service.marketplace.installing.contains(&id);
-    let installed = service.is_installed(&id);
+    let installed = service.installed().find(|e| e.id.eq_ignore_ascii_case(&id)).map(|e| e.id.clone());
     let button_id = ui.id().with(("ext_install", &id));
-    if installed {
-        row_button(ui, rect, "Installed", button_id, false, false);
+    if let Some(installed) = installed {
+        // Installed: the Manage gear, as in the INSTALLED list.
+        if let Some(pos) = manage_gear(ui, rect, ui.id().with(("ext_manage_g", &id))) {
+            out.manage = Some((installed, pos));
+        }
     } else if installing {
         row_button(ui, rect, "Installing", button_id, false, true);
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
@@ -476,7 +532,6 @@ fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, o
         out.open_pinned = resp.double_clicked();
         out.open = Some(OpenDetails::Installed(ext.id.clone()));
     }
-    let hovered = resp.hovered();
     let tooltip = match &state {
         Activation::Failed(e) => format!("{}\n{e}", ext.id),
         _ => format!("{} v{}\n{}", ext.id, ext.version, ext.path.display()),
@@ -489,6 +544,18 @@ fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, o
         .and_then(|v| v.as_str())
         .map(|rel| format!("file://{}", ext.path.join(rel).display()));
     let icon = icon_url.as_deref().and_then(|url| local_icon(ui.ctx(), service, url));
+    // The catalogue knows whether the publisher is verified.
+    let verified = service
+        .marketplace
+        .lists
+        .values()
+        .flat_map(|l| l.items.iter())
+        .find(|g| g.id().eq_ignore_ascii_case(&ext.id))
+        .is_some_and(|g| g.verified);
+    let activation_ms = match state {
+        Activation::Active if !disabled => service.activation_times.get(&ext.id).map(|t| t.load_ms + t.activate_ms),
+        _ => None,
+    };
     paint_row(
         ui,
         rect,
@@ -497,28 +564,19 @@ fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, o
             name: &ext.display_name,
             description: &ext.description,
             publisher: &ext.publisher,
-            verified: false,
+            verified,
             downloads: None,
             rating: None,
-            version: Some(&ext.version),
+            version: None,
+            activation_ms,
+            disabled,
         },
     );
-    if hovered && service.can_uninstall(&ext.id) {
-        if row_button(ui, rect, "Uninstall", ui.id().with(("ext_uninstall", &ext.id)), true, false) {
-            out.uninstall = Some(ext.id.clone());
-        }
-    } else {
-        let color = match state {
-            Activation::Failed(_) | Activation::NeedsNode => Palette::VSCE_NOTIFICATIONS_ERROR_ICON,
-            _ => Palette::FG_DESCRIPTION,
-        };
-        ui.painter_at(rect).text(
-            egui::pos2(rect.right() - PAD_RIGHT, rect.bottom() - 15.0),
-            Align2::RIGHT_CENTER,
-            status,
-            FontId::proportional(12.0),
-            color,
-        );
+    if !disabled {
+        status_icon(ui, rect, &state);
+    }
+    if let Some(pos) = manage_gear(ui, rect, ui.id().with(("ext_manage", &ext.id))) {
+        out.manage = Some((ext.id.clone(), pos));
     }
 }
 

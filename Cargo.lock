@@ -5036,6 +5036,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "image",
+ "miniz_oxide",
  "muda",
  "notify",
  "once_cell",

@@ -84,6 +84,8 @@ pub struct MarketInfo {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Runtime {
     pub activated: bool,
+    /// What activated it and how long its `activate()` took (ms).
+    pub activation: Option<(String, u64)>,
     pub error: Option<String>,
 }
 
@@ -764,7 +766,12 @@ pub fn features(manifest: &Value, runtime: Option<&Runtime>) -> Vec<Feature> {
     if let Some(rt) = runtime {
         let mut md = String::from("### Activation\n\n");
         if rt.activated {
-            md.push_str("Activated\n\n");
+            // RuntimeStatusMarkdownRenderer's wording.
+            match &rt.activation {
+                Some((reason, ms)) if reason == "*" => md.push_str(&format!("Activated on Startup: `{ms}ms`\n\n")),
+                Some((reason, ms)) => md.push_str(&format!("Activated by `{reason}` event: `{ms}ms`\n\n")),
+                None => md.push_str("Activated\n\n"),
+            }
         } else {
             md.push_str("Not yet activated\n\n");
         }
@@ -1606,7 +1613,8 @@ mod tests {
                 "debuggers": [{ "type": "x", "label": "X Debug" }]
             }
         });
-        let f = features(&manifest, Some(&Runtime { activated: true, error: None }));
+        let f = features(&manifest, Some(&Runtime { activated: true, activation: Some(("onLanguage:python".into(), 12)), error: None }));
+        assert!(f[0].html.contains("Activated by <code>onLanguage:python</code> event: <code>12ms</code>"));
         let labels: Vec<&str> = f.iter().map(|f| f.label).collect();
         assert_eq!(labels, ["Runtime Status", "Activation Events", "Commands", "Debuggers", "Settings"]);
         let commands = &f[2].html;

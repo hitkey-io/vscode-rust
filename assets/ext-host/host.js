@@ -1638,11 +1638,14 @@ async function activate(id, reason) {
 	const record = { exports: undefined, context: null, module: null };
 	state.activated.set(id, record);
 	if (!desc.main) {
-		send({ type: 'activated', id, reason });
+		send({ type: 'activated', id, reason, loadMs: 0, activateMs: 0 });
 		return true;
 	}
 	const previous = currentExtensionId;
 	currentExtensionId = id;
+	// VS Code's activation times: code loading, then the activate() call.
+	const loadStart = Date.now();
+	let activateStart = loadStart;
 	try {
 		const mainPath = require.resolve(path.resolve(desc.path, desc.main));
 		let mod;
@@ -1679,10 +1682,11 @@ async function activate(id, reason) {
 			asAbsolutePath: rel => path.join(desc.path, rel),
 		};
 		record.context = context;
+		activateStart = Date.now();
 		if (typeof mod.activate === 'function') {
 			record.exports = await mod.activate(context);
 		}
-		send({ type: 'activated', id, reason });
+		send({ type: 'activated', id, reason, loadMs: activateStart - loadStart, activateMs: Date.now() - activateStart });
 		return true;
 	} catch (err) {
 		send({ type: 'activationFailed', id, error: String(err && err.stack || err) });
