@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub use history::{
-    blob_at, build_graph, commit_changes, log, Commit, CommitFile, GraphRow, Lane, RefBadge,
-    RefKind,
+    blob_at, build_graph, commit_changes, graph, log, Badge, Commit, CommitFile, GraphRefs, GraphRow,
+    Lane, NodeKind, RefBadge, RefKind,
 };
 pub use repository::{discover_repos, status_v2, Repository, ResourceGroupKind};
 pub use status::{

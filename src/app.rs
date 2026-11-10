@@ -52,9 +52,7 @@ pub struct App {
     /// loop detect edits and recompute the gutter only when the text changed.
     git_diff_snapshot: String,
     /// Open branch-picker popup: `(repo_root, anchor)`.
-    branch_picker: Option<(PathBuf, egui::Pos2)>,
     /// Open Commit-mode dropdown: `(repo_root, anchor)`.
-    commit_menu: Option<(PathBuf, egui::Pos2)>,
     /// Explorer OUTLINE / TIMELINE section expanded state.
     outline_expanded: bool,
     timeline_expanded: bool,
@@ -99,6 +97,68 @@ pub struct App {
     viewport_height: f32,
     /// A menu asked for during the frame: (extension, which menu, where).
     pending_ext_menu: Option<(String, String, egui::Pos2)>,
+    /// A Source Control menu asked for during the frame.
+    pending_scm_menu: Option<(crate::workbench::source_control::ScmMenu, egui::Pos2)>,
+    /// What the items of the open Source Control menu do.
+    scm_menu_actions: Vec<(muda::MenuId, ScmAction)>,
+    /// A Quick Access pick or input the Source Control view opened.
+    git_prompt: Option<(u64, GitPrompt)>,
+    /// `git.enableSmartCommit` ("Always" in the no-staged-changes prompt).
+    smart_commit: bool,
+}
+
+use crate::workbench::source_control::ScmAction;
+
+/// An entry of a native menu built for the Source Control view.
+enum MenuEntry {
+    Item(String, ScmAction),
+    Check(String, ScmAction, bool),
+    Separator,
+    Sub(String, Vec<MenuEntry>),
+}
+
+/// Where a picked checkout target goes.
+#[derive(Clone, Debug)]
+enum GitTarget {
+    NewBranch,
+    NewBranchFrom,
+    Detached,
+    /// `refs/heads/x`, `refs/remotes/o/x` or `refs/tags/t`.
+    Ref(String),
+}
+
+/// A Source Control pick or input box waiting for its answer.
+#[derive(Clone, Debug)]
+enum GitPrompt {
+    Checkout(PathBuf, Vec<GitTarget>),
+    Detached(PathBuf, Vec<String>),
+    NewBranch(PathBuf, Option<String>),
+    BranchFrom(PathBuf, Vec<String>),
+    RenameBranch(PathBuf),
+    DeleteBranch(PathBuf, Vec<String>),
+    Merge(PathBuf, Vec<String>),
+    Rebase(PathBuf, Vec<String>),
+    TagName(PathBuf, Option<String>),
+    TagMessage(PathBuf, String, Option<String>),
+    DeleteTag(PathBuf, Vec<String>),
+    StashMessage(PathBuf, bool, bool),
+    /// `apply` / `pop` / `drop` and the stash ids offered.
+    Stash(PathBuf, &'static str, Vec<String>),
+    RemoteUrl(PathBuf),
+    RemoteName(PathBuf, String),
+    RemoveRemote(PathBuf, Vec<String>),
+    PublishTo(PathBuf, String, Vec<String>),
+    CommitMessage(PathBuf, crate::git::CommitMode, crate::workbench::source_control::CommitScope, bool),
+    GraphFilter(Vec<crate::workbench::source_control::GraphFilter>),
+    CloneUrl,
+}
+
+/// Request ids of the Source Control view's picks and inputs.
+const GIT_PROMPT_BASE: u64 = 1 << 52;
+
+/// `refs/heads/main` → `main`, `refs/remotes/origin/x` → `origin/x`.
+fn short_ref(r: &str) -> String {
+    r.trim_start_matches("refs/heads/").trim_start_matches("refs/remotes/").trim_start_matches("refs/tags/").to_string()
 }
 
 /// An extension's page in an editor tab.
@@ -236,7 +296,8 @@ impl App {
             active_doc: None,
             active_view: ActivityView::Explorer,
             sidebar_visible: true,
-            sidebar_width: 260.0,
+            // layout.ts: `Math.min(300, width / 4)`.
+            sidebar_width: 300.0,
             status_message: String::new(),
             palette: CommandPaletteState::default(),
             search: SearchState::default(),
@@ -251,8 +312,6 @@ impl App {
             git_watcher: None,
             git_head_blob: None,
             git_diff_snapshot: String::new(),
-            branch_picker: None,
-            commit_menu: None,
             outline_expanded: false,
             timeline_expanded: false,
             find: crate::editor::find::FindState::default(),
@@ -271,6 +330,10 @@ impl App {
             pending_copy: None,
             viewport_height: 0.0,
             pending_ext_menu: None,
+            pending_scm_menu: None,
+            scm_menu_actions: Vec::new(),
+            git_prompt: None,
+            smart_commit: false,
             next_internal_handle: crate::workbench::webviews::INTERNAL_HANDLE_BASE,
         }
     }
@@ -380,7 +443,7 @@ impl App {
         }
         self.sync_extension_documents();
         for id in self.palette.take_abandoned() {
-            if !self.extension_version_picked(id, None) {
+            if !self.extension_version_picked(id, None) && !self.git_prompt_answered(id, None, None) {
                 self.extensions.answer(id, serde_json::Value::Null);
             }
         }
@@ -1703,10 +1766,27 @@ impl App {
     /// the active repo's commit graph, and recompute the active-doc gutter.
     fn refresh_git(&mut self) {
         self.git_model.refresh();
+        self.scm_ui.folder_open = self.workspace_root.is_some();
+        // A repository in a parent folder isn't opened by itself
+        // (`git.openRepositoryInParentFolders: prompt`): the view offers it.
+        self.scm_ui.parent_repos = match &self.workspace_root {
+            Some(w) if self.git_model.repos.is_empty() => {
+                crate::git::repo_root(w).filter(|r| r != w).into_iter().collect()
+            }
+            _ => Vec::new(),
+        };
         self.git_decorations = self.git_model.decorations();
         // Commit graph for the active repository.
         self.git_history = match self.active_repo_root() {
-            Some(root) => crate::git::build_graph(&crate::git::log(&root, 200)),
+            Some(root) => {
+                use crate::workbench::source_control::GraphFilter;
+                let filter = match &self.scm_ui.graph_filter {
+                    GraphFilter::Auto => None,
+                    GraphFilter::All => Some("--all".to_string()),
+                    GraphFilter::Ref(r) => Some(r.clone()),
+                };
+                crate::git::graph(&root, filter.as_deref(), 200)
+            }
             None => Vec::new(),
         };
         self.refresh_git_line_changes();
@@ -1924,102 +2004,924 @@ impl App {
             .or(if self.documents.is_empty() { None } else { Some(0) });
     }
 
-    /// Branch-picker popup (status-bar branch click): a context menu of local
-    /// branches; selecting one checks it out.
-    fn show_branch_picker(&mut self, ctx: &Context) {
-        use crate::vscode_widgets::composite::{context_menu, ContextMenuItem, ContextMenuProps};
-
-        let Some((root, pos)) = self.branch_picker.clone() else {
-            return;
-        };
-        let branches = crate::git::branches(&root);
-        if branches.is_empty() {
-            self.branch_picker = None;
-            return;
+    /// Apply the Source Control view's events.
+    fn dispatch_scm(&mut self, scm: crate::workbench::source_control::ScmOutput) {
+        for a in scm.actions {
+            self.run_scm_action(a);
         }
-        let items: Vec<ContextMenuItem> =
-            branches.iter().map(|b| ContextMenuItem::new(b)).collect();
-
-        // Anchor the menu so its bottom sits at `pos.y` (it grows upward from
-        // the status bar). Approximate height = items * 26 + padding.
-        let height = items.len() as f32 * 26.0 + 8.0;
-        let mut chosen = None;
-        let area = egui::Area::new(egui::Id::new("branch_picker"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(pos.x, pos.y - height))
-            .show(ctx, |ui| {
-                let resp = context_menu(ui, &ContextMenuProps::default(), &items);
-                chosen = resp.selected;
-            });
-
-        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        if let Some(sel) = chosen {
-            if let Some(name) = branches.get(sel) {
-                if crate::git::checkout(&root, name) {
-                    self.set_status(format!("Switched to branch '{name}'"));
-                } else {
-                    self.status_message =
-                        format!("Could not switch to '{name}' (uncommitted changes?)");
-                }
-                self.refresh_git();
-            }
-            self.branch_picker = None;
-        } else if escape || area.response.clicked_elsewhere() {
-            self.branch_picker = None;
+        if let Some(m) = scm.menu {
+            self.pending_scm_menu = Some(m);
         }
     }
 
-    /// Apply the Source Control view's emitted events to git, then refresh.
-    fn dispatch_scm(&mut self, scm: crate::workbench::source_control::ScmOutput) {
-        let mut dirty = false;
-        if let Some((root, rel, _staged)) = scm.open_diff {
-            self.open_diff(root.join(rel));
+    /// Run a git command in `root`; failures become an error toast (as the
+    /// git extension shows them). Returns its output when it succeeded.
+    fn git(&mut self, root: &Path, args: &[&str]) -> Option<String> {
+        let out = std::process::Command::new("git").arg("-C").arg(root).args(args).output();
+        match out {
+            Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).into_owned()),
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("git failed").trim().to_string();
+                self.extensions.notify_error(format!("Git: {first}"));
+                None
+            }
+            Err(e) => {
+                self.extensions.notify_error(format!("Git: {e}"));
+                None
+            }
         }
-        if let Some((root, rel)) = scm.stage {
-            crate::git::stage(&root, &rel);
-            dirty = true;
-        }
-        if let Some((root, rel)) = scm.unstage {
-            crate::git::unstage(&root, &rel);
-            dirty = true;
-        }
-        if let Some((root, rel, untracked)) = scm.discard {
-            crate::git::discard(&root, &rel, untracked);
-            dirty = true;
-        }
-        if let Some(root) = scm.stage_all {
-            crate::git::stage_all(&root);
-            dirty = true;
-        }
-        if let Some(root) = scm.unstage_all {
-            crate::git::unstage_all(&root);
-            dirty = true;
-        }
-        if let Some(root) = scm.refresh {
-            let _ = root;
-            dirty = true;
-        }
-        if let Some(root) = scm.sync {
-            crate::git::pull(&root);
-            crate::git::push(&root);
-            dirty = true;
-        }
-        if let Some((root, mode)) = scm.commit {
-            self.do_commit(&root, mode); // refreshes itself
-        }
-        if let Some((root, anchor)) = scm.commit_menu {
-            self.commit_menu = Some((root, anchor));
-        }
-        if let Some((root, anchor)) = scm.repo_menu {
-            // Reuse the branch picker location for now: open a small repo menu.
-            let _ = anchor;
-            let _ = root;
-        }
-        if let Some((root, rel, parent, commit)) = scm.open_commit_diff {
-            self.open_commit_diff(&root, &rel, &parent, &commit);
+    }
+
+    /// A modal warning with one action button (`showWarningMessage(…,
+    /// { modal: true }, yes)`); `true` when that button was chosen.
+    fn confirm(message: &str, detail: &str, yes: &str) -> bool {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title(message)
+            .set_description(detail)
+            .set_buttons(rfd::MessageButtons::OkCancelCustom(yes.to_string(), "Cancel".to_string()))
+            .show()
+            == rfd::MessageDialogResult::Custom(yes.to_string())
+    }
+
+    /// Open a Quick Access pick for the Source Control view.
+    fn git_pick(&mut self, prompt: GitPrompt, items: Vec<(String, Option<String>)>, placeholder: &str) {
+        let request = GIT_PROMPT_BASE + self.git_prompt.as_ref().map(|p| p.0 - GIT_PROMPT_BASE + 1).unwrap_or(0);
+        let items = items.into_iter().map(|(l, d)| (l, d, None, false)).collect();
+        self.git_prompt = Some((request, prompt));
+        self.palette.open_pick(request, items, Some(placeholder.to_string()));
+    }
+
+    /// Open a Quick Access input box for the Source Control view.
+    fn git_input(&mut self, prompt: GitPrompt, text: &str, placeholder: &str, value: &str) {
+        let request = GIT_PROMPT_BASE + self.git_prompt.as_ref().map(|p| p.0 - GIT_PROMPT_BASE + 1).unwrap_or(0);
+        self.git_prompt = Some((request, prompt));
+        self.palette.open_input(request, Some(text.to_string()), Some(placeholder.to_string()), value.to_string(), false);
+    }
+
+    /// Branches (`refs/heads`), remote branches and tags of `root`, with
+    /// their short commit, for pickers.
+    fn git_refs(&mut self, root: &Path, kinds: &[&str]) -> Vec<(String, String)> {
+        let mut args = vec!["for-each-ref", "--sort=-committerdate", "--format=%(refname)%00%(objectname:short)"];
+        args.extend_from_slice(kinds);
+        self.git(root, &args)
+            .map(|s| {
+                s.lines()
+                    .filter_map(|l| l.split_once('\0'))
+                    .filter(|(r, _)| !r.ends_with("/HEAD"))
+                    .map(|(r, h)| (r.to_string(), h.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Do what the Source Control view, its menus or the status bar ask.
+    fn run_scm_action(&mut self, action: ScmAction) {
+        use crate::workbench::source_control::CommitScope;
+        let mut dirty = true;
+        match action {
+            ScmAction::OpenChange { root, rel, .. } => {
+                dirty = false;
+                self.open_diff(root.join(rel));
+            }
+            ScmAction::OpenFile { root, rel } => {
+                dirty = false;
+                self.open_file(root.join(rel));
+            }
+            ScmAction::OpenHeadFile { root, rel } => {
+                dirty = false;
+                let text = crate::git::head_blob(&root, &rel).unwrap_or_default();
+                let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+                let doc = Document::diff(root.join(&rel), text.clone(), text, format!("{name} (HEAD)"));
+                self.documents.push(doc);
+                self.active_doc = Some(self.documents.len() - 1);
+            }
+            ScmAction::OpenGroupChanges { root, kind } => {
+                dirty = false;
+                if let Some(repo) = self.git_model.repo_for(&root).cloned() {
+                    let files = match kind {
+                        crate::git::ResourceGroupKind::Index => repo.index.clone(),
+                        crate::git::ResourceGroupKind::Merge => repo.merge.clone(),
+                        _ => repo.working.clone(),
+                    };
+                    for f in files {
+                        self.open_diff(root.join(&f.rel));
+                    }
+                }
+            }
+            ScmAction::Stage { root, rel } => {
+                self.git(&root, &["add", "-A", "--", &rel]);
+            }
+            ScmAction::Unstage { root, rel } => {
+                crate::git::unstage(&root, &rel);
+            }
+            ScmAction::Discard { root, rel, untracked } => {
+                let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+                let ok = if untracked {
+                    Self::confirm(
+                        &format!("Are you sure you want to DELETE the following untracked file: '{name}'?"),
+                        "This is IRREVERSIBLE!\nThis file will be FOREVER LOST if you proceed.",
+                        "Delete File",
+                    )
+                } else {
+                    Self::confirm(&format!("Are you sure you want to discard changes in '{name}'?"), "", "Discard File")
+                };
+                if ok {
+                    crate::git::discard(&root, &rel, untracked);
+                }
+            }
+            ScmAction::StageAll(root) => {
+                self.git(&root, &["add", "-A"]);
+            }
+            ScmAction::UnstageAll(root) => {
+                crate::git::unstage_all(&root);
+            }
+            ScmAction::DiscardAll(root) => {
+                let Some(repo) = self.git_model.repo_for(&root).cloned() else { return };
+                let n = repo.working.len();
+                if n == 0 {
+                    return;
+                }
+                let ok = Self::confirm(
+                    &format!("Are you sure you want to discard ALL changes in {n} files?"),
+                    "This is IRREVERSIBLE!\nYour current working set will be FOREVER LOST if you proceed.",
+                    &format!("Discard All {n} Files"),
+                );
+                if ok {
+                    for f in &repo.working {
+                        crate::git::discard(&root, &f.rel, matches!(f.kind, crate::git::ChangeKind::Untracked));
+                    }
+                }
+            }
+            ScmAction::Ignore { root, rel } => {
+                let path = root.join(".gitignore");
+                let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str(&rel);
+                text.push('\n');
+                if let Err(e) = std::fs::write(&path, text) {
+                    self.extensions.notify_error(format!("Couldn't update .gitignore: {e}"));
+                }
+            }
+            ScmAction::RevealInFinder(path) => {
+                dirty = false;
+                let _ = std::process::Command::new("open").arg("-R").arg(path).spawn();
+            }
+            ScmAction::RevealInExplorer(path) => {
+                dirty = false;
+                self.show_view(ActivityView::Explorer);
+                self.open_file(path);
+            }
+            ScmAction::Commit { root, mode, scope, amend, signoff } => {
+                dirty = false;
+                self.scm_commit(&root, mode, scope, amend, signoff, None);
+            }
+            ScmAction::UndoCommit(root) => {
+                let merge = self
+                    .git(&root, &["rev-list", "--parents", "-n", "1", "HEAD"])
+                    .is_some_and(|l| l.split_whitespace().count() > 2);
+                if !merge || Self::confirm("The last commit was a merge commit. Are you sure you want to undo it?", "", "Undo merge commit") {
+                    if let Some(msg) = self.git(&root, &["log", "-1", "--format=%B"]) {
+                        if self.git(&root, &["reset", "--soft", "HEAD~1"]).is_some() {
+                            self.scm_ui.commit_messages.insert(root.clone(), msg.trim_end().to_string());
+                        }
+                    }
+                }
+            }
+            ScmAction::Refresh(_) | ScmAction::GraphRefresh(_) => {}
+            ScmAction::Pull { root, rebase } => {
+                self.git(&root, if rebase { &["pull", "--rebase"] } else { &["pull"] });
+            }
+            ScmAction::Push { root } => {
+                self.git(&root, &["push"]);
+            }
+            ScmAction::Sync { root, rebase } => {
+                if self.git(&root, if rebase { &["pull", "--rebase"] } else { &["pull"] }).is_some() {
+                    self.git(&root, &["push"]);
+                }
+            }
+            ScmAction::Fetch { root, prune, all } => {
+                let mut args = vec!["fetch"];
+                if all {
+                    args.push("--all");
+                }
+                if prune {
+                    args.push("--prune");
+                }
+                self.git(&root, &args);
+            }
+            ScmAction::Publish(root) => {
+                let remotes: Vec<String> = self.git(&root, &["remote"]).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default();
+                let branch = self.git_model.repo_for(&root).and_then(|r| r.branch.clone());
+                match (remotes.as_slice(), branch) {
+                    (_, None) => {}
+                    ([], _) => self.extensions.notify_info("Your repository has no remotes configured to publish to.".into()),
+                    ([one], Some(b)) => {
+                        let one = one.clone();
+                        self.git(&root, &["push", "-u", &one, &b]);
+                    }
+                    (many, Some(b)) => {
+                        let items = many.iter().map(|r| (r.clone(), None)).collect();
+                        dirty = false;
+                        self.git_pick(GitPrompt::PublishTo(root, b, many.to_vec()), items, "Pick a remote to publish the branch to:");
+                    }
+                }
+            }
+            ScmAction::Checkout(root) => {
+                dirty = false;
+                let refs = self.git_refs(&root, &["refs/heads", "refs/remotes", "refs/tags"]);
+                let mut items = vec![
+                    ("+ Create new branch...".to_string(), None),
+                    ("+ Create new branch from...".to_string(), None),
+                    ("Checkout detached...".to_string(), None),
+                ];
+                let mut targets = vec![GitTarget::NewBranch, GitTarget::NewBranchFrom, GitTarget::Detached];
+                for (r, h) in refs {
+                    let (label, kind) = if let Some(n) = r.strip_prefix("refs/heads/") {
+                        (n.to_string(), "")
+                    } else if let Some(n) = r.strip_prefix("refs/remotes/") {
+                        (n.to_string(), "Remote branch at ")
+                    } else {
+                        (r.trim_start_matches("refs/tags/").to_string(), "Tag at ")
+                    };
+                    items.push((label.clone(), Some(format!("{kind}{h}"))));
+                    targets.push(GitTarget::Ref(r));
+                }
+                self.git_pick(GitPrompt::Checkout(root, targets), items, "Select a branch or tag to checkout");
+            }
+            ScmAction::CreateBranch { root, from } => {
+                dirty = false;
+                self.git_input(GitPrompt::NewBranch(root, from), "Please provide a new branch name", "Branch name", "");
+            }
+            ScmAction::CreateBranchFromPick(root) => {
+                dirty = false;
+                let refs = self.git_refs(&root, &["refs/heads", "refs/remotes", "refs/tags"]);
+                let items = refs.iter().map(|(r, h)| (short_ref(r), Some(h.clone()))).collect();
+                self.git_pick(GitPrompt::BranchFrom(root, refs.into_iter().map(|r| r.0).collect()), items, "Select a ref to create the branch from");
+            }
+            ScmAction::RenameBranch(root) => {
+                dirty = false;
+                let current = self.git_model.repo_for(&root).and_then(|r| r.branch.clone()).unwrap_or_default();
+                self.git_input(GitPrompt::RenameBranch(root), "Please provide a new branch name", "Branch name", &current);
+            }
+            ScmAction::DeleteBranch(root) => {
+                dirty = false;
+                let current = self.git_model.repo_for(&root).and_then(|r| r.branch.clone());
+                let refs: Vec<String> = self
+                    .git_refs(&root, &["refs/heads"])
+                    .into_iter()
+                    .map(|(r, _)| r.trim_start_matches("refs/heads/").to_string())
+                    .filter(|b| Some(b) != current.as_ref())
+                    .collect();
+                let items = refs.iter().map(|b| (b.clone(), None)).collect();
+                self.git_pick(GitPrompt::DeleteBranch(root, refs), items, "Select a branch to delete");
+            }
+            ScmAction::Merge(root) => {
+                dirty = false;
+                let refs = self.git_refs(&root, &["refs/heads", "refs/remotes", "refs/tags"]);
+                let items = refs.iter().map(|(r, h)| (short_ref(r), Some(h.clone()))).collect();
+                self.git_pick(GitPrompt::Merge(root, refs.into_iter().map(|r| r.0).collect()), items, "Select a branch or tag to merge from");
+            }
+            ScmAction::Rebase(root) => {
+                dirty = false;
+                let refs = self.git_refs(&root, &["refs/heads", "refs/remotes"]);
+                let items = refs.iter().map(|(r, h)| (short_ref(r), Some(h.clone()))).collect();
+                self.git_pick(GitPrompt::Rebase(root, refs.into_iter().map(|r| r.0).collect()), items, "Select a branch to rebase onto");
+            }
+            ScmAction::CreateTag { root, rev } => {
+                dirty = false;
+                self.git_input(GitPrompt::TagName(root, rev), "Please provide a tag name", "Tag name", "");
+            }
+            ScmAction::DeleteTag(root) => {
+                dirty = false;
+                let tags: Vec<String> = self
+                    .git_refs(&root, &["refs/tags"])
+                    .into_iter()
+                    .map(|(r, _)| r.trim_start_matches("refs/tags/").to_string())
+                    .collect();
+                let items = tags.iter().map(|t| (t.clone(), None)).collect();
+                self.git_pick(GitPrompt::DeleteTag(root, tags), items, "Select a tag to delete");
+            }
+            ScmAction::PushTags(root) => {
+                self.git(&root, &["push", "--tags"]);
+            }
+            ScmAction::Stash { root, untracked, staged } => {
+                dirty = false;
+                self.git_input(GitPrompt::StashMessage(root, untracked, staged), "Optionally provide a stash message", "Stash message", "");
+            }
+            ScmAction::StashApplyLatest(root) => {
+                self.git(&root, &["stash", "apply"]);
+            }
+            ScmAction::StashPopLatest(root) => {
+                self.git(&root, &["stash", "pop"]);
+            }
+            ScmAction::StashApply(root) => {
+                dirty = false;
+                self.pick_stash(root, "apply");
+            }
+            ScmAction::StashPop(root) => {
+                dirty = false;
+                self.pick_stash(root, "pop");
+            }
+            ScmAction::StashDrop(root) => {
+                dirty = false;
+                self.pick_stash(root, "drop");
+            }
+            ScmAction::StashDropAll(root) => {
+                let n = self.git(&root, &["stash", "list"]).map(|s| s.lines().count()).unwrap_or(0);
+                if n > 0
+                    && Self::confirm(
+                        &format!(
+                            "Are you sure you want to drop ALL stashes? There {} that will be subject to pruning, and MAY BE IMPOSSIBLE TO RECOVER.",
+                            if n == 1 { "is 1 stash".to_string() } else { format!("are {n} stashes") }
+                        ),
+                        "",
+                        "Drop All Stashes",
+                    )
+                {
+                    self.git(&root, &["stash", "clear"]);
+                }
+            }
+            ScmAction::AddRemote(root) => {
+                dirty = false;
+                self.git_input(GitPrompt::RemoteUrl(root), "Please provide a repository URL", "Repository URL", "");
+            }
+            ScmAction::RemoveRemote(root) => {
+                dirty = false;
+                let remotes: Vec<String> = self.git(&root, &["remote"]).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default();
+                let items = remotes.iter().map(|r| (r.clone(), None)).collect();
+                self.git_pick(GitPrompt::RemoveRemote(root, remotes), items, "Pick a remote to remove");
+            }
+            ScmAction::CheckoutDetached { root, id } => {
+                self.git(&root, &["checkout", "--detach", &id]);
+            }
+            ScmAction::CherryPick { root, id } => {
+                self.git(&root, &["cherry-pick", &id]);
+            }
+            ScmAction::CopyText(t) => {
+                dirty = false;
+                self.pending_copy = Some(t);
+            }
+            ScmAction::OpenCommitDiff { root, rel, parent, commit } => {
+                dirty = false;
+                self.open_commit_diff(&root, &rel, &parent, &commit);
+            }
+            ScmAction::GraphFilterPick(root) => {
+                dirty = false;
+                let refs = self.git_refs(&root, &["refs/heads", "refs/remotes", "refs/tags"]);
+                let mut items = vec![
+                    ("Auto".to_string(), Some("Current history item reference(s)".to_string())),
+                    ("All".to_string(), Some("All history item references".to_string())),
+                ];
+                let mut filters = vec![
+                    crate::workbench::source_control::GraphFilter::Auto,
+                    crate::workbench::source_control::GraphFilter::All,
+                ];
+                for (r, h) in refs {
+                    items.push((short_ref(&r), Some(h)));
+                    filters.push(crate::workbench::source_control::GraphFilter::Ref(r));
+                }
+                self.git_pick(GitPrompt::GraphFilter(filters), items, "Select one/more history item references to view, press Enter to confirm");
+            }
+            ScmAction::TogglePane(changes) => {
+                dirty = false;
+                let ui = &mut self.scm_ui;
+                if changes {
+                    ui.changes_visible = !ui.changes_visible || !ui.graph_visible;
+                } else {
+                    ui.graph_visible = !ui.graph_visible || !ui.changes_visible;
+                }
+            }
+            ScmAction::GraphViewTree(tree) => {
+                dirty = false;
+                self.scm_ui.graph_tree = tree;
+            }
+            ScmAction::InitRepository => {
+                if let Some(root) = self.workspace_root.clone() {
+                    if self.git(&root, &["init"]).is_some() {
+                        self.git_model = crate::git::Model::discover(&root);
+                    }
+                }
+            }
+            ScmAction::OpenParentRepositories => {
+                let repos = std::mem::take(&mut self.scm_ui.parent_repos);
+                for r in repos {
+                    if !self.git_model.repos.iter().any(|x| x.root == r) {
+                        self.git_model.repos.push(crate::git::status_v2(&r));
+                    }
+                }
+            }
+            ScmAction::OpenFolder => {
+                dirty = false;
+                self.open_folder_dialog();
+            }
+            ScmAction::CloneRepository => {
+                dirty = false;
+                self.git_input(GitPrompt::CloneUrl, "Provide repository URL", "Repository URL", "");
+            }
         }
         if dirty {
             self.refresh_git();
+        }
+    }
+
+    /// "Apply / Pop / Drop Stash...": pick one of the stashes.
+    fn pick_stash(&mut self, root: PathBuf, verb: &'static str) {
+        let stashes: Vec<String> = self.git(&root, &["stash", "list"]).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default();
+        if stashes.is_empty() {
+            self.extensions.notify_info("There are no stashes in the repository.".into());
+            return;
+        }
+        let items = stashes
+            .iter()
+            .map(|l| {
+                let (id, msg) = l.split_once(": ").unwrap_or((l.as_str(), ""));
+                (msg.to_string(), Some(id.to_string()))
+            })
+            .collect();
+        let ids = stashes.iter().map(|l| l.split(':').next().unwrap_or("").to_string()).collect();
+        self.git_pick(GitPrompt::Stash(root, verb, ids), items, "Pick a stash");
+    }
+
+    /// `git.commit` and friends: the message from the box (or asked for),
+    /// the smart-commit question when nothing is staged.
+    fn scm_commit(
+        &mut self,
+        root: &Path,
+        mode: crate::git::CommitMode,
+        scope: crate::workbench::source_control::CommitScope,
+        amend: bool,
+        signoff: bool,
+        message: Option<String>,
+    ) {
+        use crate::workbench::source_control::CommitScope;
+        let Some(repo) = self.git_model.repo_for(root).cloned() else { return };
+        let mut all = scope == CommitScope::All;
+        if scope == CommitScope::Default && repo.index.is_empty() && !amend {
+            if repo.working.is_empty() && repo.merge.is_empty() {
+                self.extensions.notify_info("There are no changes to commit.".into());
+                return;
+            }
+            if !self.smart_commit {
+                let pick = rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_title("There are no staged changes to commit.")
+                    .set_description("Would you like to stage all your changes and commit them directly?")
+                    .set_buttons(rfd::MessageButtons::YesNoCancelCustom("Yes".into(), "Always".into(), "Never".into()))
+                    .show();
+                match pick {
+                    rfd::MessageDialogResult::Custom(s) if s == "Always" => self.smart_commit = true,
+                    rfd::MessageDialogResult::Custom(s) if s == "Yes" => {}
+                    _ => return,
+                }
+            }
+            all = true;
+        }
+        let msg = match message {
+            Some(m) => m,
+            None => self.scm_ui.commit_messages.get(root).map(|m| m.trim().to_string()).unwrap_or_default(),
+        };
+        if msg.is_empty() && !amend {
+            self.git_input(GitPrompt::CommitMessage(root.to_path_buf(), mode, scope, signoff), "Please provide a commit message", "Commit message", "");
+            return;
+        }
+        if all {
+            self.git(root, &["add", "-A"]);
+        }
+        let mut args: Vec<&str> = vec!["commit", "--quiet"];
+        if amend {
+            args.push("--amend");
+            if msg.is_empty() {
+                args.push("--no-edit");
+            }
+        }
+        if signoff {
+            args.push("--signoff");
+        }
+        if !msg.is_empty() {
+            args.push("-m");
+            args.push(&msg);
+        }
+        if self.git(root, &args).is_some() {
+            self.scm_ui.commit_messages.remove(root);
+            match mode {
+                crate::git::CommitMode::Plain => {}
+                crate::git::CommitMode::AndPush => {
+                    self.git(root, &["push"]);
+                }
+                crate::git::CommitMode::AndSync => {
+                    if self.git(root, &["pull"]).is_some() {
+                        self.git(root, &["push"]);
+                    }
+                }
+            }
+        }
+        self.refresh_git();
+    }
+
+    /// The answer to a Source Control pick or input. `true` when the request
+    /// was one of ours.
+    fn git_prompt_answered(&mut self, request_id: u64, index: Option<usize>, text: Option<String>) -> bool {
+        let Some((req, _)) = &self.git_prompt else { return false };
+        if *req != request_id {
+            return false;
+        }
+        let (_, prompt) = self.git_prompt.take().unwrap();
+        // `None` = dismissed; `Some("")` = submitted empty.
+        let submitted = text.is_some();
+        let text = text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        match prompt {
+            GitPrompt::Checkout(root, targets) => match index.and_then(|i| targets.get(i)).cloned() {
+                Some(GitTarget::NewBranch) => self.run_scm_action(ScmAction::CreateBranch { root, from: None }),
+                Some(GitTarget::NewBranchFrom) => self.run_scm_action(ScmAction::CreateBranchFromPick(root)),
+                Some(GitTarget::Detached) => {
+                    let refs = self.git_refs(&root, &["refs/heads", "refs/remotes", "refs/tags"]);
+                    let items = refs.iter().map(|(r, h)| (short_ref(r), Some(h.clone()))).collect();
+                    self.git_pick(GitPrompt::Detached(root, refs.into_iter().map(|r| r.0).collect()), items, "Select a branch to checkout in detached mode");
+                }
+                Some(GitTarget::Ref(r)) => {
+                    if let Some(local) = r.strip_prefix("refs/heads/") {
+                        self.git(&root, &["checkout", local]);
+                    } else if let Some(remote) = r.strip_prefix("refs/remotes/") {
+                        // A remote branch: check out a local tracking branch.
+                        let local = remote.split_once('/').map(|(_, b)| b).unwrap_or(remote).to_string();
+                        if self.git(&root, &["checkout", "-q", &local]).is_none() {
+                            self.git(&root, &["checkout", "--track", remote]);
+                        }
+                    } else {
+                        self.git(&root, &["checkout", "--detach", &r]);
+                    }
+                    self.refresh_git();
+                }
+                None => {}
+            },
+            GitPrompt::Detached(root, refs) => {
+                if let Some(r) = index.and_then(|i| refs.get(i)) {
+                    self.git(&root, &["checkout", "--detach", r]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::NewBranch(root, from) => {
+                if let Some(name) = text {
+                    let name = name.replace(char::is_whitespace, "-");
+                    let mut args = vec!["checkout", "-q", "-b", name.as_str()];
+                    if let Some(f) = &from {
+                        args.push(f);
+                    }
+                    self.git(&root, &args);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::BranchFrom(root, refs) => {
+                if let Some(r) = index.and_then(|i| refs.get(i)).cloned() {
+                    self.run_scm_action(ScmAction::CreateBranch { root, from: Some(r) });
+                }
+            }
+            GitPrompt::RenameBranch(root) => {
+                if let Some(name) = text {
+                    self.git(&root, &["branch", "-m", &name]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::DeleteBranch(root, branches) => {
+                if let Some(b) = index.and_then(|i| branches.get(i)).cloned() {
+                    if self.git(&root, &["branch", "-d", &b]).is_none()
+                        && Self::confirm(&format!("The branch '{b}' is not fully merged. Delete anyway?"), "", "Delete Branch")
+                    {
+                        self.git(&root, &["branch", "-D", &b]);
+                    }
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::Merge(root, refs) => {
+                if let Some(r) = index.and_then(|i| refs.get(i)).cloned() {
+                    self.git(&root, &["merge", &short_ref(&r)]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::Rebase(root, refs) => {
+                if let Some(r) = index.and_then(|i| refs.get(i)).cloned() {
+                    self.git(&root, &["rebase", &short_ref(&r)]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::TagName(root, rev) => {
+                if let Some(name) = text {
+                    self.git_input(GitPrompt::TagMessage(root, name, rev), "Please provide a message to annotate the tag", "Message", "");
+                }
+            }
+            GitPrompt::TagMessage(root, name, rev) => {
+                let mut args = vec!["tag"];
+                let msg = text.unwrap_or_default();
+                if !msg.is_empty() {
+                    args.extend_from_slice(&["-a", name.as_str(), "-m", msg.as_str()]);
+                } else {
+                    args.push(&name);
+                }
+                if let Some(r) = &rev {
+                    args.push(r);
+                }
+                self.git(&root, &args);
+                self.refresh_git();
+            }
+            GitPrompt::DeleteTag(root, tags) => {
+                if let Some(t) = index.and_then(|i| tags.get(i)).cloned() {
+                    self.git(&root, &["tag", "-d", &t]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::StashMessage(root, untracked, staged) => {
+                // Dismissing the box cancels; an empty message is fine.
+                if !submitted {
+                    return true;
+                }
+                let mut args = vec!["stash", "push"];
+                if untracked {
+                    args.push("--include-untracked");
+                }
+                if staged {
+                    args.push("--staged");
+                }
+                let msg = text.unwrap_or_default();
+                if !msg.is_empty() {
+                    args.extend_from_slice(&["-m", msg.as_str()]);
+                }
+                self.git(&root, &args);
+                self.refresh_git();
+            }
+            GitPrompt::Stash(root, verb, ids) => {
+                if let Some(id) = index.and_then(|i| ids.get(i)).cloned() {
+                    self.git(&root, &["stash", verb, &id]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::RemoteUrl(root) => {
+                if let Some(url) = text {
+                    self.git_input(GitPrompt::RemoteName(root, url), "Please provide a remote name", "Remote name", "origin");
+                }
+            }
+            GitPrompt::RemoteName(root, url) => {
+                if let Some(name) = text {
+                    self.git(&root, &["remote", "add", &name, &url]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::RemoveRemote(root, remotes) => {
+                if let Some(r) = index.and_then(|i| remotes.get(i)).cloned() {
+                    self.git(&root, &["remote", "remove", &r]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::PublishTo(root, branch, remotes) => {
+                if let Some(r) = index.and_then(|i| remotes.get(i)).cloned() {
+                    self.git(&root, &["push", "-u", &r, &branch]);
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::CommitMessage(root, mode, scope, signoff) => {
+                if let Some(msg) = text {
+                    self.scm_commit(&root, mode, scope, false, signoff, Some(msg));
+                }
+            }
+            GitPrompt::GraphFilter(filters) => {
+                if let Some(f) = index.and_then(|i| filters.get(i)).cloned() {
+                    self.scm_ui.graph_filter = f;
+                    self.refresh_git();
+                }
+            }
+            GitPrompt::CloneUrl => {
+                if let Some(url) = text {
+                    if let Some(parent) = rfd::FileDialog::new().set_title("Choose a folder to clone into").pick_folder() {
+                        let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or("repo").trim_end_matches(".git").to_string();
+                        if self.git(&parent, &["clone", &url, &name]).is_some() {
+                            self.set_workspace(parent.join(name));
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// The items of a Source Control menu (the git extension's menus).
+    fn scm_menu_entries(&self, menu: &crate::workbench::source_control::ScmMenu) -> Vec<MenuEntry> {
+        use crate::git::{CommitMode, ResourceGroupKind as K};
+        use crate::workbench::source_control::{CommitScope, ScmMenu};
+        let item = |l: &str, a: ScmAction| MenuEntry::Item(l.to_string(), a);
+        let commit = |root: &PathBuf, scope: CommitScope, amend: bool, signoff: bool| ScmAction::Commit {
+            root: root.clone(),
+            mode: CommitMode::Plain,
+            scope,
+            amend,
+            signoff,
+        };
+        match menu {
+            ScmMenu::ChangesTitle(r) => vec![
+                item("Pull", ScmAction::Pull { root: r.clone(), rebase: false }),
+                item("Push", ScmAction::Push { root: r.clone() }),
+                item("Clone", ScmAction::CloneRepository),
+                item("Checkout to...", ScmAction::Checkout(r.clone())),
+                item("Fetch", ScmAction::Fetch { root: r.clone(), prune: false, all: false }),
+                MenuEntry::Separator,
+                MenuEntry::Sub(
+                    "Commit".into(),
+                    vec![
+                        item("Commit", commit(r, CommitScope::Default, false, false)),
+                        item("Commit Staged", commit(r, CommitScope::Staged, false, false)),
+                        item("Commit All", commit(r, CommitScope::All, false, false)),
+                        item("Undo Last Commit", ScmAction::UndoCommit(r.clone())),
+                        MenuEntry::Separator,
+                        item("Commit (Amend)", commit(r, CommitScope::Default, true, false)),
+                        item("Commit Staged (Amend)", commit(r, CommitScope::Staged, true, false)),
+                        item("Commit All (Amend)", commit(r, CommitScope::All, true, false)),
+                        MenuEntry::Separator,
+                        item("Commit (Signed Off)", commit(r, CommitScope::Default, false, true)),
+                        item("Commit Staged (Signed Off)", commit(r, CommitScope::Staged, false, true)),
+                        item("Commit All (Signed Off)", commit(r, CommitScope::All, false, true)),
+                    ],
+                ),
+                MenuEntry::Sub(
+                    "Changes".into(),
+                    vec![
+                        item("Stage All Changes", ScmAction::StageAll(r.clone())),
+                        item("Unstage All Changes", ScmAction::UnstageAll(r.clone())),
+                        item("Discard All Changes", ScmAction::DiscardAll(r.clone())),
+                    ],
+                ),
+                MenuEntry::Sub(
+                    "Pull, Push".into(),
+                    vec![
+                        item("Sync", ScmAction::Sync { root: r.clone(), rebase: false }),
+                        item("Sync (Rebase)", ScmAction::Sync { root: r.clone(), rebase: true }),
+                        MenuEntry::Separator,
+                        item("Pull", ScmAction::Pull { root: r.clone(), rebase: false }),
+                        item("Pull (Rebase)", ScmAction::Pull { root: r.clone(), rebase: true }),
+                        MenuEntry::Separator,
+                        item("Push", ScmAction::Push { root: r.clone() }),
+                        MenuEntry::Separator,
+                        item("Fetch", ScmAction::Fetch { root: r.clone(), prune: false, all: false }),
+                        item("Fetch (Prune)", ScmAction::Fetch { root: r.clone(), prune: true, all: false }),
+                        item("Fetch From All Remotes", ScmAction::Fetch { root: r.clone(), prune: false, all: true }),
+                    ],
+                ),
+                MenuEntry::Sub(
+                    "Branch".into(),
+                    vec![
+                        item("Merge...", ScmAction::Merge(r.clone())),
+                        item("Rebase Branch...", ScmAction::Rebase(r.clone())),
+                        MenuEntry::Separator,
+                        item("Create Branch...", ScmAction::CreateBranch { root: r.clone(), from: None }),
+                        item("Create Branch From...", ScmAction::CreateBranchFromPick(r.clone())),
+                        MenuEntry::Separator,
+                        item("Rename Branch...", ScmAction::RenameBranch(r.clone())),
+                        item("Delete Branch...", ScmAction::DeleteBranch(r.clone())),
+                        MenuEntry::Separator,
+                        item("Publish Branch...", ScmAction::Publish(r.clone())),
+                    ],
+                ),
+                MenuEntry::Sub(
+                    "Remote".into(),
+                    vec![item("Add Remote...", ScmAction::AddRemote(r.clone())), item("Remove Remote", ScmAction::RemoveRemote(r.clone()))],
+                ),
+                MenuEntry::Sub(
+                    "Stash".into(),
+                    vec![
+                        item("Stash", ScmAction::Stash { root: r.clone(), untracked: false, staged: false }),
+                        item("Stash (Include Untracked)", ScmAction::Stash { root: r.clone(), untracked: true, staged: false }),
+                        item("Stash Staged", ScmAction::Stash { root: r.clone(), untracked: false, staged: true }),
+                        MenuEntry::Separator,
+                        item("Apply Latest Stash", ScmAction::StashApplyLatest(r.clone())),
+                        item("Apply Stash...", ScmAction::StashApply(r.clone())),
+                        MenuEntry::Separator,
+                        item("Pop Latest Stash", ScmAction::StashPopLatest(r.clone())),
+                        item("Pop Stash...", ScmAction::StashPop(r.clone())),
+                        MenuEntry::Separator,
+                        item("Drop Stash...", ScmAction::StashDrop(r.clone())),
+                        item("Drop All Stashes...", ScmAction::StashDropAll(r.clone())),
+                    ],
+                ),
+                MenuEntry::Sub(
+                    "Tags".into(),
+                    vec![
+                        item("Create Tag...", ScmAction::CreateTag { root: r.clone(), rev: None }),
+                        item("Delete Tag...", ScmAction::DeleteTag(r.clone())),
+                        MenuEntry::Separator,
+                        item("Push Tags", ScmAction::PushTags(r.clone())),
+                    ],
+                ),
+            ],
+            ScmMenu::CommitDropdown(r) => vec![
+                item("Commit", commit(r, CommitScope::Default, false, false)),
+                item("Commit (Amend)", commit(r, CommitScope::Default, true, false)),
+                item("Commit & Push", ScmAction::Commit { root: r.clone(), mode: CommitMode::AndPush, scope: CommitScope::Default, amend: false, signoff: false }),
+                item("Commit & Sync", ScmAction::Commit { root: r.clone(), mode: CommitMode::AndSync, scope: CommitScope::Default, amend: false, signoff: false }),
+            ],
+            ScmMenu::Group { root, kind } => match kind {
+                K::Index => vec![item("Unstage All Changes", ScmAction::UnstageAll(root.clone()))],
+                K::Merge => vec![item("Stage All Merge Changes", ScmAction::StageAll(root.clone()))],
+                _ => vec![
+                    item("Discard All Changes", ScmAction::DiscardAll(root.clone())),
+                    item("Stage All Changes", ScmAction::StageAll(root.clone())),
+                ],
+            },
+            ScmMenu::File { root, rel, kind, untracked } => {
+                let path = root.join(rel);
+                let mut v = vec![
+                    item("Open Changes", ScmAction::OpenChange { root: root.clone(), rel: rel.clone(), staged: *kind == K::Index }),
+                    item("Open File", ScmAction::OpenFile { root: root.clone(), rel: rel.clone() }),
+                ];
+                if *kind != K::Merge {
+                    v.push(item("Open File (HEAD)", ScmAction::OpenHeadFile { root: root.clone(), rel: rel.clone() }));
+                }
+                v.push(MenuEntry::Separator);
+                match kind {
+                    K::Index => v.push(item("Unstage Changes", ScmAction::Unstage { root: root.clone(), rel: rel.clone() })),
+                    K::Merge => v.push(item("Stage Changes", ScmAction::Stage { root: root.clone(), rel: rel.clone() })),
+                    _ => {
+                        v.push(item("Stage Changes", ScmAction::Stage { root: root.clone(), rel: rel.clone() }));
+                        v.push(item("Discard Changes", ScmAction::Discard { root: root.clone(), rel: rel.clone(), untracked: *untracked }));
+                        v.push(item("Add to .gitignore", ScmAction::Ignore { root: root.clone(), rel: rel.clone() }));
+                    }
+                }
+                v.push(MenuEntry::Separator);
+                v.push(item("Reveal in Finder", ScmAction::RevealInFinder(path.clone())));
+                v.push(item("Reveal in Explorer View", ScmAction::RevealInExplorer(path)));
+                v
+            }
+            ScmMenu::Commit { root, id, summary, .. } => vec![
+                item("Checkout (Detached)", ScmAction::CheckoutDetached { root: root.clone(), id: id.clone() }),
+                MenuEntry::Separator,
+                item("Create Branch...", ScmAction::CreateBranch { root: root.clone(), from: Some(id.clone()) }),
+                MenuEntry::Separator,
+                item("Create Tag...", ScmAction::CreateTag { root: root.clone(), rev: Some(id.clone()) }),
+                MenuEntry::Separator,
+                item("Cherry Pick", ScmAction::CherryPick { root: root.clone(), id: id.clone() }),
+                MenuEntry::Separator,
+                item("Copy Commit Hash", ScmAction::CopyText(id.clone())),
+                item("Copy Commit Message", ScmAction::CopyText(summary.clone())),
+            ],
+            ScmMenu::Views => vec![
+                MenuEntry::Check("Changes".into(), ScmAction::TogglePane(true), self.scm_ui.changes_visible),
+                MenuEntry::Check("Graph".into(), ScmAction::TogglePane(false), self.scm_ui.graph_visible),
+            ],
+            ScmMenu::GraphTitle(r) => vec![
+                MenuEntry::Check("View as List".into(), ScmAction::GraphViewTree(false), !self.scm_ui.graph_tree),
+                MenuEntry::Check("View as Tree".into(), ScmAction::GraphViewTree(true), self.scm_ui.graph_tree),
+                MenuEntry::Separator,
+                item("Refresh", ScmAction::GraphRefresh(r.clone())),
+            ],
+        }
+    }
+
+    /// Open a Source Control menu natively, under the pointer or button.
+    fn show_pending_scm_menu(&mut self, frame: &eframe::Frame) {
+        use muda::ContextMenu;
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Some((menu, pos)) = self.pending_scm_menu.take() else { return };
+        let entries = self.scm_menu_entries(&menu);
+        let root = muda::Menu::new();
+        let mut actions = Vec::new();
+        fn add(entries: Vec<MenuEntry>, actions: &mut Vec<(muda::MenuId, ScmAction)>, append: &mut dyn FnMut(&dyn muda::IsMenuItem)) {
+            for e in entries {
+                match e {
+                    MenuEntry::Item(label, a) => {
+                        let it = muda::MenuItem::new(label, true, None);
+                        actions.push((it.id().clone(), a));
+                        append(&it);
+                    }
+                    MenuEntry::Check(label, a, checked) => {
+                        let it = muda::CheckMenuItem::new(label, true, checked, None);
+                        actions.push((it.id().clone(), a));
+                        append(&it);
+                    }
+                    MenuEntry::Separator => append(&muda::PredefinedMenuItem::separator()),
+                    MenuEntry::Sub(label, children) => {
+                        let sub = muda::Submenu::new(label, true);
+                        add(children, actions, &mut |i| {
+                            let _ = sub.append(i);
+                        });
+                        append(&sub);
+                    }
+                }
+            }
+        }
+        add(entries, &mut actions, &mut |i| {
+            let _ = root.append(i);
+        });
+        self.scm_menu_actions = actions;
+        let Ok(handle) = frame.window_handle() else { return };
+        if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+            let y = self.viewport_height - pos.y;
+            // SAFETY: the view belongs to the live editor window.
+            unsafe {
+                root.show_context_menu_for_nsview(
+                    appkit.ns_view.as_ptr() as *const std::ffi::c_void,
+                    Some(muda::dpi::Position::Logical(muda::dpi::LogicalPosition::new(pos.x as f64, y as f64))),
+                );
+            }
         }
     }
 
@@ -2049,40 +2951,6 @@ impl App {
         let doc = Document::diff(path, base, working, title);
         self.documents.push(doc);
         self.active_doc = Some(self.documents.len() - 1);
-    }
-
-    /// The Commit-mode dropdown (Commit / Commit & Push / Commit & Sync).
-    fn show_commit_menu(&mut self, ctx: &Context) {
-        use crate::vscode_widgets::composite::{context_menu, ContextMenuItem, ContextMenuProps};
-        use crate::git::CommitMode;
-
-        let Some((root, pos)) = self.commit_menu.clone() else {
-            return;
-        };
-        let items = [
-            ContextMenuItem::new("Commit"),
-            ContextMenuItem::new("Commit & Push"),
-            ContextMenuItem::new("Commit & Sync"),
-        ];
-        let mut chosen = None;
-        let area = egui::Area::new(egui::Id::new("commit_menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(pos)
-            .show(ctx, |ui| {
-                chosen = context_menu(ui, &ContextMenuProps::default(), &items).selected;
-            });
-        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        if let Some(sel) = chosen {
-            let mode = match sel {
-                1 => CommitMode::AndPush,
-                2 => CommitMode::AndSync,
-                _ => CommitMode::Plain,
-            };
-            self.commit_menu = None;
-            self.do_commit(&root, mode);
-        } else if escape || area.response.clicked_elsewhere() {
-            self.commit_menu = None;
-        }
     }
 
     /// Render the per-tab right-click context menu, if one is open.
@@ -2266,6 +3134,8 @@ impl App {
                 self.extensions.execute(&id, serde_json::json!([]))
             }
             PaletteAction::Picked { request_id, index } if self.extension_version_picked(request_id, index) => {}
+            PaletteAction::Picked { request_id, index } if self.git_prompt_answered(request_id, index, None) => {}
+            PaletteAction::Input { request_id, value } if self.git_prompt_answered(request_id, None, value.clone()) => {}
             PaletteAction::Picked { request_id, index } => {
                 let value = index.map(|i| serde_json::json!(i)).unwrap_or(serde_json::Value::Null);
                 self.extensions.answer(request_id, value);
@@ -2687,6 +3557,10 @@ impl App {
                 self.extension_page_action(&id, action);
                 continue;
             }
+            if let Some((_, action)) = self.scm_menu_actions.iter().find(|(m, _)| m == &ev.id).cloned() {
+                self.run_scm_action(action);
+                continue;
+            }
             self.dispatch_menu_event(ctx, &ev.id);
         }
         if let Some(text) = self.pending_copy.take() {
@@ -2725,8 +3599,25 @@ impl App {
                 let repo = active_root
                     .as_ref()
                     .and_then(|r| self.git_model.repo_for(r));
-                let branch = repo.and_then(|r| r.branch.as_deref());
-                let changes = repo.map(|r| r.total()).unwrap_or(0);
+                // The git extension's branch item: `main*+` (working tree
+                // changes, staged changes, merge changes).
+                let branch_label = repo.and_then(|r| {
+                    let b = r.branch.clone()?;
+                    Some(format!(
+                        "{b}{}{}{}",
+                        if r.working.is_empty() { "" } else { "*" },
+                        if r.index.is_empty() { "" } else { "+" },
+                        if r.merge.is_empty() { "" } else { "!" }
+                    ))
+                });
+                let branch = branch_label.as_deref();
+                let changes = 0;
+                let branch_icon = match repo {
+                    Some(r) if !r.merge.is_empty() => "git-branch-conflicts",
+                    Some(r) if !r.index.is_empty() => "git-branch-staged-changes",
+                    Some(r) if !r.working.is_empty() => "git-branch-changes",
+                    _ => "git-branch",
+                };
                 let ahead_behind = repo.map(|r| (r.ahead, r.behind)).unwrap_or((0, 0));
                 let has_upstream = repo.map(|r| r.has_upstream).unwrap_or(false);
                 // Status messages are transient (VS Code's setStatusMessage):
@@ -2747,6 +3638,7 @@ impl App {
                     message,
                     has_workspace,
                     branch,
+                    branch_icon,
                     changes,
                     ahead_behind,
                     has_upstream,
@@ -2756,21 +3648,18 @@ impl App {
                 if let Some((command, args)) = sb.extension_command.clone() {
                     self.extensions.execute(&command, args);
                 }
-                if let Some(rect) = sb.branch_clicked {
+                if sb.branch_clicked.is_some() {
                     if let Some(root) = active_root.clone() {
-                        self.branch_picker =
-                            Some((root, egui::pos2(rect.left(), rect.top() - 4.0)));
+                        self.run_scm_action(ScmAction::Checkout(root));
                     }
                 }
                 if sb.sync_clicked {
                     if let Some(root) = active_root {
-                        if has_upstream {
-                            crate::git::pull(&root);
-                            crate::git::push(&root);
+                        self.run_scm_action(if has_upstream {
+                            ScmAction::Sync { root, rebase: false }
                         } else {
-                            crate::git::push(&root); // Publish (push)
-                        }
-                        self.refresh_git();
+                            ScmAction::Publish(root)
+                        });
                     }
                 }
                 if sb.palette_requested {
@@ -2778,8 +3667,6 @@ impl App {
                 }
             });
 
-        self.show_branch_picker(ctx);
-        self.show_commit_menu(ctx);
 
         SidePanel::left("activity_bar")
             .exact_width(48.0)
@@ -2827,13 +3714,9 @@ impl App {
             // Use a panel-id keyed by the active view so each view has its own width
             // memory; this way switching Explorer↔Search doesn't carry over a stale
             // resize state which previously stretched the sidebar to fill the window.
-            let panel_id = match self.active_view {
-                ActivityView::Explorer => "sidebar_explorer",
-                ActivityView::Search => "sidebar_search",
-                ActivityView::SourceControl => "sidebar_scm",
-                ActivityView::Extensions => "sidebar_extensions",
-                ActivityView::ExtensionContainer => "sidebar_ext_container",
-            };
+            // One width for every view, as in VS Code; views lay out within
+            // it (nothing may widen the panel).
+            let panel_id = "sidebar";
             let sidebar_output: SidebarOutput;
             {
                 let resp = SidePanel::left(panel_id)
@@ -3088,9 +3971,7 @@ impl App {
         // Native web views sit above everything egui draws; hide them while a
         // popup would overlap them.
         self.webview_host.suppressed = self.palette.visible
-            || self.tab_menu.is_some()
-            || self.branch_picker.is_some()
-            || self.commit_menu.is_some();
+            || self.tab_menu.is_some();
         self.language_widgets(ctx);
 
         for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
@@ -3111,6 +3992,7 @@ impl eframe::App for App {
             self.extension_page_message(handle, msg, Some(frame));
         }
         self.show_pending_extension_menu(frame);
+        self.show_pending_scm_menu(frame);
         self.webview_host.sync(frame, &mut self.extensions);
         if !self.extensions.webviews.is_empty() || !self.ext_pages.is_empty() {
             // Page messages arrive between frames.

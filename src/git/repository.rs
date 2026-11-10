@@ -12,7 +12,7 @@ use std::process::Command;
 use super::status::{ChangeKind, FileChange};
 
 /// VS Code's SCM resource groups, in display order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceGroupKind {
     Merge,
     Index,

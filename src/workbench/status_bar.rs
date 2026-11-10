@@ -136,7 +136,7 @@ pub fn show(
     git_has_upstream: bool,
 ) -> StatusBarOutput {
     show_with_extensions(
-        ui, active, message, has_workspace, git_branch, git_changes, git_ahead_behind,
+        ui, active, message, has_workspace, git_branch, "git-branch", git_changes, git_ahead_behind,
         git_has_upstream, &[], (0, 0),
     )
 }
@@ -151,6 +151,8 @@ pub fn show_with_extensions(
     message: &str,
     _has_workspace: bool,
     git_branch: Option<&str>,
+    // The branch item's codicon (`git-branch-changes` etc., statusbar.ts).
+    git_branch_icon: &str,
     git_changes: usize,
     git_ahead_behind: (usize, usize),
     git_has_upstream: bool,
@@ -196,8 +198,8 @@ pub fn show_with_extensions(
                 } else {
                     branch.to_string()
                 };
-                let resp =
-                    status_segment(ui, icons::GIT_BRANCH, &text, "Checkout branch…");
+                let icon = icons::codicon_by_name(git_branch_icon).unwrap_or(icons::GIT_BRANCH);
+                let resp = status_segment(ui, icon, &text, &format!("{branch}, Checkout Branch/Tag..."));
                 if resp.clicked() {
                     out.branch_clicked = Some(resp.rect);
                 }
@@ -219,12 +221,7 @@ pub fn show_with_extensions(
                         "Synchronize Changes (pull, then push)",
                     )
                 } else {
-                    status_segment(
-                        ui,
-                        icons::CLOUD_UPLOAD,
-                        "Publish Branch",
-                        "Publish Branch",
-                    )
+                    status_segment(ui, icons::CLOUD_UPLOAD, "", "Publish Branch")
                 };
                 if sresp.clicked() {
                     out.sync_clicked = true;

@@ -123,8 +123,10 @@ impl Palette {
         rgb(0x40, 0xB0, 0xA6),
         rgb(0xB6, 0x6D, 0xFF),
     ];
-    pub const SCM_REF_LOCAL: Color32 = rgb(0x37, 0x94, 0xFF); // chartsBlue (editorInfo)
-    pub const SCM_REF_REMOTE: Color32 = rgb(0xB1, 0x80, 0xD7); // chartsPurple
+    /// scmGraph.historyItemRefColor = charts.blue (2026-dark.json).
+    pub const SCM_REF_LOCAL: Color32 = rgb(0x57, 0xA3, 0xF8);
+    /// scmGraph.historyItemRemoteRefColor = charts.purple (2026-dark.json).
+    pub const SCM_REF_REMOTE: Color32 = rgb(0xAD, 0x80, 0xD7);
     pub const SCM_REF_BASE: Color32 = rgb(0xEA, 0x5C, 0x00);
 
     // Title bar
@@ -274,6 +276,23 @@ impl Palette {
     /// hovered row action button.
     pub const VSCE_QUICK_INPUT_ACTION_HOVER_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x18);
 
+    /// --vscode-sideBarSectionHeader-background (2026-dark.json) — pane
+    /// headers such as CHANGES / GRAPH.
+    pub const VSCE_SIDEBAR_SECTION_HEADER_BG: Color32 = rgb(0x19, 0x1A, 0x1B);
+    /// --vscode-sideBarSectionHeader-foreground (2026-dark.json).
+    pub const VSCE_SIDEBAR_SECTION_HEADER_FG: Color32 = rgb(0xBF, 0xBF, 0xBF);
+    /// --vscode-sideBarSectionHeader-border (2026-dark.json) — between panes.
+    pub const VSCE_SIDEBAR_SECTION_HEADER_BORDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+    /// --vscode-icon-foreground (2026-dark.json) — action and twistie icons.
+    pub const VSCE_ICON_2026_FG: Color32 = rgb(0x8C, 0x8C, 0x8C);
+    /// --vscode-list-hoverBackground (2026-dark.json `#FFFFFF0D`).
+    pub const VSCE_LIST_HOVER_2026_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x0D);
+    /// --vscode-input-background (2026-dark.json).
+    pub const VSCE_INPUT_2026_BG: Color32 = rgb(0x19, 0x1A, 0x1B);
+    /// --vscode-input-placeholderForeground (2026-dark.json).
+    pub const VSCE_INPUT_2026_PLACEHOLDER_FG: Color32 = rgb(0x55, 0x55, 0x55);
+    /// --vscode-badge-foreground (2026-dark.json).
+    pub const VSCE_BADGE_2026_FG: Color32 = rgb(0xFF, 0xFF, 0xFF);
     /// --vscode-toolbar-hoverBackground (2026-dark.json) behind a hovered
     /// icon action, e.g. an extension row's ⚙ Manage.
     pub const VSCE_TOOLBAR_HOVER_BG: Color32 = rgba(0xFF, 0xFF, 0xFF, 0x18);

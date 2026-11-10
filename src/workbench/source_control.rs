@@ -1,809 +1,1212 @@
-//! Source Control view — VS Code's multi-repository SCM panel.
+//! Source Control view — VS Code's SCM view container: a "CHANGES" pane
+//! (commit input, Commit button, resource groups) and a "GRAPH" pane (the
+//! commit history), stacked like VS Code's pane view with a draggable sash.
 //!
-//! Layout (top → bottom): the "SOURCE CONTROL" title with a "…" overflow;
-//! one **collapsible section per repository** (header: chevron + repo icon +
-//! name + branch + count + commit/sync/refresh/"…" actions); each expanded
-//! repo shows its commit input + Commit button, then resource groups
-//! (Merge / Staged Changes / Changes) with file rows; finally a "GRAPH"
-//! section rendering the active repo's commit history as a lane graph.
-//!
-//! Single-repo workspaces skip the repo header (the lone repo is always
-//! expanded), matching VS Code.
+//! VS Code analogues:
+//! - `src/vs/workbench/contrib/scm/browser/scmViewPane.ts` + `media/scm.css`
+//!   (22px rows, `.scm-input` / `.scm-editor`, resource groups with count
+//!   badges, inline actions on hover, `SCMTreeSorter` path order)
+//! - `src/vs/workbench/contrib/scm/browser/scmHistoryViewPane.ts` +
+//!   `scmHistory.ts` (swimlanes 11×22px, circles, reference badges)
+//! - `src/vs/base/browser/ui/splitview/paneview.css` (22px pane headers,
+//!   11px bold uppercase titles, actions shown while the pane is hovered)
+//! - `extensions/git/package.json` (`scm/title`, `scm/resourceGroup/context`,
+//!   `scm/resourceState/context`, `scm/history/title` menus and icons)
+//! - `extensions/git/package.json` `viewsWelcome` (no repository texts)
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use egui::{Align2, FontId, Key, Pos2, Sense, Stroke, Ui};
+use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, Ui};
 
-use crate::git::{
-    ChangeKind, CommitMode, FileChange, GraphRow, Model, RefKind, Repository, ResourceGroupKind,
-};
-use crate::icons::{self, codicon_font};
+use crate::git::{ChangeKind, CommitMode, FileChange, GraphRow, Model, NodeKind, Repository, ResourceGroupKind};
+use crate::icons::{codicon_by_name, codicon_font};
 use crate::theme::Palette;
-use crate::vscode_widgets::primitives::{badge, button, icon_button, label, BadgeProps, ButtonProps,
-    IconButtonProps, LabelProps};
+
+/// Height of a pane header and of every list row (`--vscode-*` row height).
+const ROW_H: f32 = 22.0;
+/// Right padding of tree rows (`.scm-view .monaco-tl-contents > div`).
+const PAD_R: f32 = 12.0;
 
 /// Caller-owned UI state for the SCM view.
-#[derive(Default)]
 pub struct ScmUiState {
     pub commit_messages: HashMap<PathBuf, String>,
+    /// Repositories expanded in a multi-repository workspace.
     pub expanded: HashSet<PathBuf>,
-    pub graph_open: bool,
-    /// The "CHANGES" parent group (multi-repo) collapse state.
     pub changes_open: bool,
+    pub graph_open: bool,
+    /// Panes shown at all ("Views" in the title's "…" menu).
+    pub changes_visible: bool,
+    pub graph_visible: bool,
+    /// Collapsed resource groups: (repository, group).
+    pub collapsed_groups: HashSet<(PathBuf, ResourceGroupKind)>,
     /// Commit ids whose changed-file list is expanded in the GRAPH.
     pub expanded_commits: HashSet<String>,
-    /// `false` until the first render decides the initial expand state.
+    /// Share of the height the CHANGES pane gets when both are open.
+    pub split: f32,
+    /// Commit files as a folder tree ("View as Tree") instead of a list.
+    pub graph_tree: bool,
+    /// Scroll the graph to the HEAD row on the next frame.
+    pub reveal_head: bool,
+    /// Which refs the GRAPH follows (shown on its picker).
+    pub graph_filter: GraphFilter,
+    /// A folder is open (the welcome text differs without one).
+    pub folder_open: bool,
+    /// Git repositories in parent folders of the open folder.
+    pub parent_repos: Vec<PathBuf>,
+    /// Focus the commit input on the next frame.
+    pub focus_input: bool,
     initialized: bool,
+}
+
+impl Default for ScmUiState {
+    fn default() -> Self {
+        Self {
+            commit_messages: HashMap::new(),
+            expanded: HashSet::new(),
+            changes_open: true,
+            graph_open: true,
+            changes_visible: true,
+            graph_visible: true,
+            collapsed_groups: HashSet::new(),
+            expanded_commits: HashSet::new(),
+            split: 0.5,
+            graph_tree: false,
+            reveal_head: false,
+            graph_filter: GraphFilter::Auto,
+            folder_open: true,
+            parent_repos: Vec::new(),
+            focus_input: false,
+            initialized: false,
+        }
+    }
+}
+
+/// The GRAPH's history item reference picker ("Auto" by default).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum GraphFilter {
+    /// The current branch, its upstream and base (VS Code's "Auto").
+    #[default]
+    Auto,
+    /// Every reference.
+    All,
+    /// One reference (`refs/heads/x`, `refs/remotes/o/x`, `refs/tags/t`).
+    Ref(String),
+}
+
+impl GraphFilter {
+    pub fn label(&self) -> String {
+        match self {
+            GraphFilter::Auto => "Auto".into(),
+            GraphFilter::All => "All".into(),
+            GraphFilter::Ref(r) => r
+                .trim_start_matches("refs/heads/")
+                .trim_start_matches("refs/remotes/")
+                .trim_start_matches("refs/tags/")
+                .to_string(),
+        }
+    }
+}
+
+/// What a click in the view asks for (run by the app).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScmAction {
+    /// Open the diff of a changed file (`git.openChange`).
+    OpenChange { root: PathBuf, rel: String, staged: bool },
+    /// Open the file itself (`git.openFile`).
+    OpenFile { root: PathBuf, rel: String },
+    /// Open the file as it is in HEAD (`git.openHEADFile`).
+    OpenHeadFile { root: PathBuf, rel: String },
+    /// Open every change of a group (`git.viewChanges` / `viewStagedChanges`).
+    OpenGroupChanges { root: PathBuf, kind: ResourceGroupKind },
+    Stage { root: PathBuf, rel: String },
+    Unstage { root: PathBuf, rel: String },
+    /// `git.clean` (asks first).
+    Discard { root: PathBuf, rel: String, untracked: bool },
+    StageAll(PathBuf),
+    UnstageAll(PathBuf),
+    /// `git.cleanAll` (asks first).
+    DiscardAll(PathBuf),
+    /// `git.ignore`.
+    Ignore { root: PathBuf, rel: String },
+    RevealInFinder(PathBuf),
+    RevealInExplorer(PathBuf),
+    /// `git.commit` and its variants.
+    Commit { root: PathBuf, mode: CommitMode, scope: CommitScope, amend: bool, signoff: bool },
+    UndoCommit(PathBuf),
+    Refresh(PathBuf),
+    Pull { root: PathBuf, rebase: bool },
+    Push { root: PathBuf },
+    Sync { root: PathBuf, rebase: bool },
+    Fetch { root: PathBuf, prune: bool, all: bool },
+    Publish(PathBuf),
+    /// Pickers and prompts (the app opens Quick Access).
+    Checkout(PathBuf),
+    CreateBranch { root: PathBuf, from: Option<String> },
+    CreateBranchFromPick(PathBuf),
+    RenameBranch(PathBuf),
+    DeleteBranch(PathBuf),
+    Merge(PathBuf),
+    Rebase(PathBuf),
+    CreateTag { root: PathBuf, rev: Option<String> },
+    DeleteTag(PathBuf),
+    PushTags(PathBuf),
+    Stash { root: PathBuf, untracked: bool, staged: bool },
+    StashApplyLatest(PathBuf),
+    StashPopLatest(PathBuf),
+    StashApply(PathBuf),
+    StashPop(PathBuf),
+    StashDrop(PathBuf),
+    StashDropAll(PathBuf),
+    AddRemote(PathBuf),
+    RemoveRemote(PathBuf),
+    /// History items.
+    CheckoutDetached { root: PathBuf, id: String },
+    CherryPick { root: PathBuf, id: String },
+    CopyText(String),
+    OpenCommitDiff { root: PathBuf, rel: String, parent: String, commit: String },
+    GraphFilterPick(PathBuf),
+    GraphViewTree(bool),
+    /// Show or hide a pane (`true` = CHANGES, `false` = GRAPH).
+    TogglePane(bool),
+    GraphRefresh(PathBuf),
+    /// Welcome view buttons.
+    InitRepository,
+    OpenParentRepositories,
+    OpenFolder,
+    CloneRepository,
+}
+
+/// Which changes a Commit takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitScope {
+    /// Staged changes, or all of them when nothing is staged (smart commit).
+    Default,
+    Staged,
+    All,
+}
+
+/// A context or "…" menu the view asks for, opened natively by the app.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScmMenu {
+    /// "…" of the CHANGES pane (`scm/title`).
+    ChangesTitle(PathBuf),
+    /// The Commit button's dropdown.
+    CommitDropdown(PathBuf),
+    /// Right-click on a resource group.
+    Group { root: PathBuf, kind: ResourceGroupKind },
+    /// Right-click on a changed file.
+    File { root: PathBuf, rel: String, kind: ResourceGroupKind, untracked: bool },
+    /// Right-click on a commit in the GRAPH.
+    Commit { root: PathBuf, id: String, summary: String, parents: Vec<String> },
+    /// "…" of the GRAPH pane.
+    GraphTitle(PathBuf),
+    /// "…" of the view title: which panes are open.
+    Views,
 }
 
 /// Domain events emitted by the SCM view (dispatched in `app.rs`).
 #[derive(Default)]
 pub struct ScmOutput {
-    /// `(repo_root, rel, staged)` — open a diff of this file.
-    pub open_diff: Option<(PathBuf, String, bool)>,
-    pub stage: Option<(PathBuf, String)>,
-    pub unstage: Option<(PathBuf, String)>,
-    /// `(repo_root, rel, untracked)`.
-    pub discard: Option<(PathBuf, String, bool)>,
-    pub stage_all: Option<PathBuf>,
-    pub unstage_all: Option<PathBuf>,
-    pub commit: Option<(PathBuf, CommitMode)>,
-    /// `(repo_root, anchor)` — open the Commit-mode dropdown.
-    pub commit_menu: Option<(PathBuf, Pos2)>,
-    /// `(repo_root, anchor)` — open the per-repo "…" menu.
-    pub repo_menu: Option<(PathBuf, Pos2)>,
-    pub refresh: Option<PathBuf>,
-    pub sync: Option<PathBuf>,
-    /// `(repo_root, rel, parent_rev, commit_rev)` — open a commit's file diff.
-    pub open_commit_diff: Option<(PathBuf, String, String, String)>,
+    pub actions: Vec<ScmAction>,
+    /// `(menu, where)` — a native menu to open (window coordinates).
+    pub menu: Option<(ScmMenu, Pos2)>,
+}
+
+impl ScmOutput {
+    fn act(&mut self, a: ScmAction) {
+        self.actions.push(a);
+    }
 }
 
 pub fn show(
     ui: &mut Ui,
     model: &Model,
     history: &[GraphRow],
-    graph_root: Option<&std::path::Path>,
+    graph_root: Option<&Path>,
     st: &mut ScmUiState,
 ) -> ScmOutput {
     let mut out = ScmOutput::default();
+    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
 
-    title_row(ui);
+    let title = crate::workbench::sidebar::title_bar(ui, "SOURCE CONTROL");
+    if let Some(pos) = header_action(ui, "scm_title_more", egui::pos2(title.right() - 23.0, title.center().y), "ellipsis", "Views and More Actions...") {
+        out.menu = Some((ScmMenu::Views, pos));
+    }
 
     if model.repos.is_empty() {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.add_space(10.0);
-            crate::vscode_widgets::forms::form_helper(
-                ui,
-                &crate::vscode_widgets::forms::FormHelperProps::new(
-                    "The open folder is not a Git repository.",
-                ),
-            );
-        });
+        welcome(ui, st, &mut out);
         return out;
     }
 
-    // First render: expand all repos + the CHANGES group.
     if !st.initialized {
         for r in &model.repos {
             st.expanded.insert(r.root.clone());
         }
-        st.changes_open = true;
-        st.graph_open = true; // VS Code shows the GRAPH section expanded by default
         st.initialized = true;
     }
 
-    let single = model.repos.len() == 1;
+    let area = ui.available_rect_before_wrap();
+    ui.allocate_rect(area, Sense::hover());
+    let total = area.height();
+    let headers = st.changes_visible as u8 + st.graph_visible as u8;
+    let body_h = (total - headers as f32 * ROW_H).max(0.0);
+    let changes_open = st.changes_open && st.changes_visible;
+    let graph_open = st.graph_open && st.graph_visible;
+    let (changes_h, graph_h) = match (changes_open, graph_open) {
+        (true, true) => {
+            let c = (body_h * st.split).clamp(ROW_H.min(body_h), (body_h - ROW_H).max(0.0));
+            (c, body_h - c)
+        }
+        (true, false) => (body_h, 0.0),
+        (false, true) => (0.0, body_h),
+        (false, false) => (0.0, 0.0),
+    };
+    let changes_header = Rect::from_min_size(area.min, egui::vec2(area.width(), if st.changes_visible { ROW_H } else { 0.0 }));
+    let changes_body = Rect::from_min_size(changes_header.left_bottom(), egui::vec2(area.width(), changes_h));
+    // A collapsed GRAPH pane keeps its header at the bottom, as in VS Code.
+    let graph_top = if graph_open || !st.changes_visible { changes_body.bottom() } else { area.bottom() - ROW_H };
+    let graph_header = Rect::from_min_size(egui::pos2(area.left(), graph_top), egui::vec2(area.width(), ROW_H));
+    let graph_body = Rect::from_min_size(graph_header.left_bottom(), egui::vec2(area.width(), graph_h));
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.style_mut().spacing.scroll.floating = true;
+    let active = graph_root
+        .and_then(|r| model.repos.iter().find(|x| x.root == r))
+        .or(model.repos.first());
+    let pointer = ui.ctx().pointer_hover_pos();
+    let changes_hovered = pointer.is_some_and(|p| changes_header.union(changes_body).contains(p));
+    let graph_hovered = pointer.is_some_and(|p| graph_header.union(graph_body).contains(p));
 
-            if single {
-                if let Some(repo) = model.repos.first() {
-                    repo_section(ui, repo, true, st, &mut out);
-                }
-            } else {
-                // Multi-repo: a "CHANGES" parent group containing repo rows.
-                changes_header(ui, model, st);
-                if st.changes_open {
-                    for repo in &model.repos {
-                        repo_section(ui, repo, false, st, &mut out);
+    // CHANGES pane.
+    if st.changes_visible && pane_header(ui, changes_header, "CHANGES", st.changes_open, false) {
+        st.changes_open = !st.changes_open;
+    }
+    if changes_hovered && st.changes_visible {
+        if let Some(repo) = active {
+            let actions = [("ellipsis", "More Actions..."), ("refresh", "Refresh"), ("check", "Commit")];
+            for (i, (name, tip)) in actions.iter().enumerate() {
+                let c = egui::pos2(changes_header.right() - 23.0 - 22.0 * i as f32, changes_header.center().y);
+                if let Some(pos) = header_action(ui, ("scm_changes_act", i), c, name, tip) {
+                    match *name {
+                        "check" => out.act(ScmAction::Commit {
+                            root: repo.root.clone(),
+                            mode: CommitMode::Plain,
+                            scope: CommitScope::Default,
+                            amend: false,
+                            signoff: false,
+                        }),
+                        "refresh" => out.act(ScmAction::Refresh(repo.root.clone())),
+                        _ => out.menu = Some((ScmMenu::ChangesTitle(repo.root.clone()), pos)),
                     }
                 }
             }
+        }
+    }
+    if changes_open && changes_h > 0.0 {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(changes_body).layout(egui::Layout::top_down(egui::Align::Min)));
+        child.set_clip_rect(changes_body);
+        child.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        egui::ScrollArea::vertical()
+            .id_salt("scm_changes_scroll")
+            .auto_shrink([false, false])
+            .show(&mut child, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                ui.style_mut().spacing.scroll.floating = true;
+                let single = model.repos.len() == 1;
+                for repo in &model.repos {
+                    if !single && !repo_row(ui, repo, st, &mut out) {
+                        continue;
+                    }
+                    let indent = if single { 0.0 } else { 8.0 };
+                    commit_input(ui, repo, st, &mut out, indent);
+                    commit_button(ui, repo, &mut out, indent);
+                    ui.add_space(4.5);
+                    for (kind, files) in repo.groups() {
+                        group(ui, repo, kind, files, st, &mut out, indent);
+                    }
+                }
+                ui.add_space(4.0);
+            });
+    }
 
-            // GRAPH section (active repo's history).
-            ui.add_space(6.0);
-            graph_section(ui, history, graph_root, st, &mut out);
+    // GRAPH pane, with the sash above it.
+    if changes_open && graph_open {
+        let sash = Rect::from_center_size(graph_header.center_top(), egui::vec2(area.width(), 4.0));
+        let resp = ui.interact(sash, ui.id().with("scm_sash"), Sense::drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resp.dragged() && body_h > 0.0 {
+            st.split = ((changes_h + resp.drag_delta().y) / body_h).clamp(0.1, 0.9);
+        }
+    }
+    if !st.graph_visible {
+        return out;
+    }
+    if pane_header(ui, graph_header, "GRAPH", st.graph_open, st.changes_visible) {
+        st.graph_open = !st.graph_open;
+    }
+    if let (true, Some(root)) = (graph_hovered, graph_root) {
+        graph_header_actions(ui, graph_header, root, active, st, &mut out);
+    }
+    if graph_open && graph_h > 0.0 {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(graph_body).layout(egui::Layout::top_down(egui::Align::Min)));
+        child.set_clip_rect(graph_body);
+        child.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        let mut scroll = egui::ScrollArea::vertical().id_salt("scm_graph_scroll").auto_shrink([false, false]);
+        if st.reveal_head {
+            st.reveal_head = false;
+            if let Some(i) = history.iter().position(|r| r.kind == NodeKind::Head) {
+                scroll = scroll.vertical_scroll_offset((i as f32 * ROW_H - ROW_H).max(0.0));
+            }
+        }
+        scroll.show(&mut child, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            ui.style_mut().spacing.scroll.floating = true;
+            graph_rows(ui, history, graph_root, st, &mut out);
         });
-
+    }
     out
 }
 
-/// The "CHANGES" parent group header (multi-repo) with collapse-all + "…".
-fn changes_header(ui: &mut Ui, _model: &Model, st: &mut ScmUiState) {
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
+// ── Panes ──────────────────────────────────────────────────────────────────
+
+/// A pane header (`paneview.css`): chevron, 11px bold uppercase title, a
+/// top border between panes. Returns `true` when clicked (toggle).
+fn pane_header(ui: &mut Ui, rect: Rect, title: &str, open: bool, border: bool) -> bool {
+    let resp = ui.interact(rect, ui.id().with(("pane_header", title)), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_BG);
+    if border {
+        p.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_BORDER));
+    }
+    let cy = rect.center().y;
+    let chev = if open { "chevron-down" } else { "chevron-right" };
+    paint_codicon(p, egui::pos2(rect.left() + 10.0, cy), chev, 16.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_FG);
+    p.text(
+        egui::pos2(rect.left() + 20.0, cy),
+        Align2::LEFT_CENTER,
+        title,
+        crate::ui_font::bold(11.0),
+        Palette::VSCE_SIDEBAR_SECTION_HEADER_FG,
+    );
+    resp.clicked()
+}
+
+/// A 22px icon action in a pane header. Returns where its menu would open
+/// when clicked.
+fn header_action(ui: &mut Ui, id: impl std::hash::Hash, center: Pos2, icon: &str, tip: &str) -> Option<Pos2> {
+    let r = Rect::from_center_size(center, egui::vec2(22.0, 22.0));
+    let resp = ui.interact(r, ui.id().with(id), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+    if resp.hovered() {
+        ui.painter().rect_filled(r.shrink(1.0), egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+    }
+    paint_codicon(ui.painter(), center, icon, 16.0, Palette::VSCE_ICON_2026_FG);
+    let clicked = resp.clicked();
+    resp.on_hover_text(tip);
+    clicked.then(|| r.left_bottom())
+}
+
+/// GRAPH header actions, right to left: "…", refresh, publish/push, pull,
+/// fetch, go to current, then the reference picker ("⑂ Auto").
+fn graph_header_actions(ui: &mut Ui, rect: Rect, root: &Path, repo: Option<&Repository>, st: &mut ScmUiState, out: &mut ScmOutput) {
+    let has_upstream = repo.is_some_and(|r| r.has_upstream);
+    let root = root.to_path_buf();
+    let mut actions: Vec<(&str, &str, ScmAction)> = vec![
+        ("ellipsis", "More Actions...", ScmAction::GraphRefresh(root.clone())),
+        ("refresh", "Refresh", ScmAction::GraphRefresh(root.clone())),
+    ];
+    if has_upstream {
+        actions.push(("repo-push", "Push", ScmAction::Push { root: root.clone() }));
+    } else {
+        actions.push(("cloud-upload", "Publish Branch...", ScmAction::Publish(root.clone())));
+    }
+    actions.push(("repo-pull", "Pull", ScmAction::Pull { root: root.clone(), rebase: false }));
+    actions.push(("repo-fetch", "Fetch From All Remotes", ScmAction::Fetch { root: root.clone(), prune: false, all: true }));
+    let mut x = rect.right() - 23.0;
+    for (i, (icon, tip, action)) in actions.into_iter().enumerate() {
+        if let Some(pos) = header_action(ui, ("scm_graph_act", i), egui::pos2(x, rect.center().y), icon, tip) {
+            if i == 0 {
+                out.menu = Some((ScmMenu::GraphTitle(root.clone()), pos));
+            } else {
+                out.act(action);
+            }
+        }
+        x -= 22.0;
+    }
+    if header_action(ui, "scm_graph_target", egui::pos2(x, rect.center().y), "target", "Go to Current History Item").is_some() {
+        st.reveal_head = true;
+    }
+    x -= 11.0 + 4.0;
+    // The reference picker: git-branch icon + its label.
+    let label = st.graph_filter.label();
+    let font = FontId::proportional(13.0);
+    let w = ui.painter().layout_no_wrap(label.clone(), font.clone(), Palette::FG).size().x + 16.0 + 6.0;
+    let r = Rect::from_min_max(egui::pos2(x - w, rect.top() + 2.0), egui::pos2(x, rect.bottom() - 2.0));
+    let resp = ui.interact(r, ui.id().with("scm_graph_ref_picker"), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(r, egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+    }
+    paint_codicon(ui.painter(), egui::pos2(r.left() + 3.0 + 8.0, rect.center().y), "git-branch", 16.0, Palette::VSCE_ICON_2026_FG);
+    ui.painter().text(egui::pos2(r.left() + 3.0 + 16.0 + 1.0, rect.center().y), Align2::LEFT_CENTER, &label, font, Palette::VSCE_ICON_2026_FG);
+    if resp.on_hover_text("History Item Reference Picker").clicked() {
+        out.act(ScmAction::GraphFilterPick(root));
+    }
+}
+
+// ── Welcome ────────────────────────────────────────────────────────────────
+
+/// `viewsWelcome` of the git extension: what the view says without a
+/// repository.
+fn welcome(ui: &mut Ui, st: &ScmUiState, out: &mut ScmOutput) {
+    let (texts, button, after): (&[&str], (&str, ScmAction), &str) = if !st.parent_repos.is_empty() {
+        (
+            &["A Git repository was found in the parent folders of the workspace or the open file(s)."],
+            ("Open Repository", ScmAction::OpenParentRepositories),
+            "Use the git.openRepositoryInParentFolders setting to control whether Git repositories in parent folders of workspaces or open files are opened. To learn more read our docs.",
+        )
+    } else if st.folder_open {
+        (
+            &["The folder currently open doesn't have a Git repository. You can initialize a repository which will enable source control features powered by Git."],
+            ("Initialize Repository", ScmAction::InitRepository),
+            "To learn more about how to use Git and source control in VS Code read our docs.",
+        )
+    } else {
+        (
+            &["In order to use Git features, you can open a folder containing a Git repository or clone from a URL."],
+            ("Open Folder", ScmAction::OpenFolder),
+            "To learn more about how to use Git and source control in VS Code read our docs.",
+        )
+    };
+    let w = (ui.available_width() - 40.0).max(60.0);
+    let para = |ui: &mut Ui, text: &str| {
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
+                ui.set_width(w);
+                let mut job = egui::text::LayoutJob::single_section(
+                    text.to_string(),
+                    egui::text::TextFormat { font_id: FontId::proportional(13.0), color: Palette::FG, line_height: Some(18.0), ..Default::default() },
+                );
+                job.wrap.max_width = w;
+                ui.label(job);
+            });
+        });
+    };
+    ui.add_space(13.0);
+    for t in texts {
+        para(ui, t);
+    }
+    ui.add_space(13.0);
+    let mut button_row = |ui: &mut Ui, label: &str, action: ScmAction| {
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), Sense::click());
+            let bg = if resp.hovered() { Palette::BUTTON_HOVER } else { Palette::BUTTON_BG };
+            ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), Color32::WHITE);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            if resp.clicked() {
+                out.act(action);
+            }
+        });
+        ui.add_space(13.0);
+    };
+    button_row(ui, button.0, button.1);
+    if !st.folder_open {
+        button_row(ui, "Clone Repository", ScmAction::CloneRepository);
+    }
+    para(ui, after);
+}
+
+// ── CHANGES ────────────────────────────────────────────────────────────────
+
+/// A repository row in a multi-repository workspace. Returns whether it is
+/// expanded.
+fn repo_row(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut ScmOutput) -> bool {
+    let expanded = st.expanded.contains(&repo.root);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+    }
     let p = ui.painter();
     let cy = rect.center().y;
-    let chev = if st.changes_open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-    p.text(egui::pos2(rect.left() + 12.0, cy), Align2::CENTER_CENTER, chev.to_string(),
-        codicon_font(12.0), Palette::FG_DESCRIPTION);
-    p.text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, "CHANGES",
-        FontId::proportional(11.0), Palette::FG);
+    paint_codicon(p, egui::pos2(rect.left() + 18.0, cy), if expanded { "chevron-down" } else { "chevron-right" }, 16.0, Palette::VSCE_ICON_2026_FG);
+    paint_codicon(p, egui::pos2(rect.left() + 36.0, cy), "repo", 16.0, Palette::VSCE_ICON_2026_FG);
+    let name = p.layout_no_wrap(repo.name.clone(), crate::ui_font::bold(13.0), Palette::FG);
+    let nw = name.size().x;
+    p.galley(egui::pos2(rect.left() + 46.0, cy - name.size().y / 2.0), name, Palette::FG);
+    if let Some(b) = &repo.branch {
+        let x = rect.left() + 46.0 + nw + 6.0;
+        paint_codicon(p, egui::pos2(x + 8.0, cy), "git-branch", 16.0, Palette::VSCE_ICON_2026_FG);
+        p.text(egui::pos2(x + 18.0, cy), Align2::LEFT_CENTER, b, FontId::proportional(13.0), Palette::FG_DESCRIPTION);
+    }
     if resp.clicked() {
-        st.changes_open = !st.changes_open;
-    }
-}
-
-fn title_row(ui: &mut Ui) {
-    use crate::vscode_widgets::layout::{toolbar_container, ToolbarContainerProps};
-    ui.allocate_ui(egui::vec2(ui.available_width(), 30.0), |ui| {
-        ui.painter()
-            .rect_filled(ui.available_rect_before_wrap(), 0.0, Palette::SIDEBAR_BG);
-        toolbar_container(
-            ui,
-            &ToolbarContainerProps::new().title("SOURCE CONTROL"),
-            |ui| {
-                let _ = icon_button(ui, &IconButtonProps::new(icons::ELLIPSIS).icon_size(14.0))
-                    .on_hover_text("Views and More Actions…");
-            },
-        );
-    });
-}
-
-fn repo_section(
-    ui: &mut Ui,
-    repo: &Repository,
-    single: bool,
-    st: &mut ScmUiState,
-    out: &mut ScmOutput,
-) {
-    let expanded = single || st.expanded.contains(&repo.root);
-
-    if !single {
-        // Hand-rolled collapsible repo header (chevron + icon + name + branch
-        // + count + action cluster).
-        let h = 24.0;
-        let (rect, resp) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), h), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
-        }
-        let p = ui.painter();
-        let cy = rect.center().y;
-        // Indent under the "CHANGES" parent group (+ a left guide line).
-        let lx = rect.left() + 12.0;
-        p.line_segment(
-            [egui::pos2(lx, rect.top()), egui::pos2(lx, rect.bottom())],
-            Stroke::new(1.0, Palette::VSCE_TREE_INDENT_GUIDE),
-        );
-        let chev = if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-        p.text(egui::pos2(rect.left() + 24.0, cy), Align2::CENTER_CENTER, chev.to_string(),
-            codicon_font(12.0), Palette::FG_DESCRIPTION);
-        // With multiple repositories VS Code shows the "repo-selected" glyph
-        // (a repo with a check) rather than the plain repo icon
-        // (scmRepositoryRenderer.ts: showSelectedIcon).
-        p.text(egui::pos2(rect.left() + 38.0, cy), Align2::LEFT_CENTER,
-            icons::REPO_SELECTED.to_string(),
-            codicon_font(14.0), Palette::FG_DESCRIPTION);
-        p.text(egui::pos2(rect.left() + 58.0, cy), Align2::LEFT_CENTER, &repo.name,
-            FontId::proportional(13.0), Palette::FG);
-        // Branch indicator: git-branch glyph (codicon font!) + name (proportional).
-        let name_w = p
-            .layout_no_wrap(repo.name.clone(), FontId::proportional(13.0), Palette::FG)
-            .size()
-            .x;
-        if let Some(b) = &repo.branch {
-            let bx = rect.left() + 58.0 + name_w + 12.0;
-            p.text(egui::pos2(bx, cy), Align2::LEFT_CENTER, icons::GIT_BRANCH.to_string(),
-                codicon_font(13.0), Palette::FG_DESCRIPTION);
-            p.text(egui::pos2(bx + 16.0, cy), Align2::LEFT_CENTER, b,
-                FontId::proportional(11.5), Palette::FG_DESCRIPTION);
-        }
-
-        if resp.clicked() {
-            if st.expanded.contains(&repo.root) {
-                st.expanded.remove(&repo.root);
-            } else {
-                st.expanded.insert(repo.root.clone());
-            }
-        }
-
-        // Right action cluster (right-to-left): "…", refresh, commit ✓, sync.
-        // Visual left-to-right = sync, commit, refresh, "…" (VS Code order).
-        let mut x = rect.right() - 18.0;
-        for (glyph, tip) in [
-            (icons::ELLIPSIS, "More Actions…"),
-            (icons::REFRESH, "Refresh"),
-            (icons::CHECK, "Commit"),
-            (icons::SYNC, "Synchronize Changes"),
-        ] {
-            let c = egui::pos2(x, cy);
-            let r = egui::Rect::from_center_size(c, egui::vec2(20.0, 20.0));
-            let ar = ui.interact(r, resp.id.with(("repoact", glyph as u32)), Sense::click());
-            if ar.hovered() {
-                ui.painter().rect_filled(r, 3.0, Palette::SIDEBAR_BG);
-            }
-            ui.painter().text(c, Align2::CENTER_CENTER, glyph.to_string(),
-                codicon_font(13.0), Palette::FG_DESCRIPTION);
-            let ar = ar.on_hover_text(tip);
-            if ar.clicked() {
-                match glyph {
-                    g if g == icons::CHECK => out.commit = Some((repo.root.clone(), CommitMode::Plain)),
-                    g if g == icons::SYNC => out.sync = Some(repo.root.clone()),
-                    g if g == icons::REFRESH => out.refresh = Some(repo.root.clone()),
-                    _ => out.repo_menu = Some((repo.root.clone(), c)),
-                }
-            }
-            x -= 22.0;
-        }
-        // Count badge before the actions.
-        if repo.total() > 0 {
-            let bx = x - 6.0;
-            ui.painter().text(egui::pos2(bx, cy), Align2::RIGHT_CENTER,
-                repo.total().to_string(), FontId::proportional(11.0), Palette::FG_DESCRIPTION);
+        if expanded {
+            st.expanded.remove(&repo.root);
+        } else {
+            st.expanded.insert(repo.root.clone());
         }
     }
-
-    if !expanded {
-        return;
+    if resp.secondary_clicked() {
+        out.menu = Some((ScmMenu::ChangesTitle(repo.root.clone()), ui.ctx().pointer_interact_pos().unwrap_or(rect.center())));
     }
-
-    // Indent the repo body slightly when multi-repo.
-    let indent = if single { 0.0 } else { 6.0 };
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width() - indent, 0.0),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            if indent > 0.0 {
-                ui.add_space(0.0);
-            }
-            commit_box(ui, repo, st, out);
-            for (kind, files) in repo.groups() {
-                group(ui, repo, kind, files, out);
-            }
-        },
-    );
+    st.expanded.contains(&repo.root)
 }
 
-fn commit_box(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut ScmOutput) {
+/// The commit message box (`.scm-input` / `.scm-editor`): input background,
+/// 1px input border (focus border when focused), 4px radius.
+fn commit_input(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut ScmOutput, indent: f32) {
     let branch = repo.branch.clone().unwrap_or_else(|| "HEAD".into());
     let placeholder = format!("Message (⌘Enter to commit on \"{branch}\")");
-    let pad_l = 16.0;
-    let pad_r = 8.0;
-    ui.add_space(3.0);
-
-    // --- message input: VS Code's .scm-editor — single line, 26px, input
-    // background, 1px input border (focus border when focused), radius 4.
-    let input_h = 26.0;
-    let w = ui.available_width() - pad_l - pad_r;
-    let mut commit_now = false;
-    ui.horizontal(|ui| {
-        ui.add_space(pad_l);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, input_h), Sense::hover());
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(4), Palette::VSCE_INPUT_BG);
-        let msg = st.commit_messages.entry(repo.root.clone()).or_default();
-        let inner = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 8.0, rect.top() + 4.0),
-            egui::vec2(rect.width() - 16.0, rect.height() - 8.0),
-        );
-        let resp = ui
-            .scope_builder(
-                egui::UiBuilder::new().max_rect(inner).layout(*ui.layout()),
-                |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(msg)
-                            .background_color(egui::Color32::TRANSPARENT)
-                            .desired_width(f32::INFINITY)
-                            .hint_text(&placeholder)
-                            .font(FontId::proportional(12.5))
-                            .text_color(Palette::FG),
-                    )
-                },
-            )
-            .inner;
-        let border = if resp.has_focus() {
-            Palette::FOCUS_BORDER
-        } else {
-            Palette::INPUT_BORDER
-        };
-        ui.painter().rect_stroke(
-            rect,
-            egui::CornerRadius::same(4),
-            Stroke::new(1.0, border),
-            egui::StrokeKind::Inside,
-        );
-        if resp.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
-            commit_now = true;
-        }
-    });
-    if commit_now {
-        out.commit = Some((repo.root.clone(), CommitMode::Plain));
+    ui.add_space(4.0);
+    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
+    let rect = Rect::from_min_max(egui::pos2(row.left() + 19.0 + indent, row.top()), egui::pos2(row.right() - PAD_R, row.bottom()));
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(4), Palette::VSCE_INPUT_2026_BG);
+    let msg = st.commit_messages.entry(repo.root.clone()).or_default();
+    let inner = Rect::from_min_max(egui::pos2(rect.left() + 7.0, rect.top() + 4.0), egui::pos2(rect.right() - 7.0, rect.bottom() - 4.0));
+    let id = egui::Id::new(("scm_commit_input", &repo.root));
+    // A child that doesn't move this Ui's cursor (scope_builder would).
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let resp = child.add(
+        egui::TextEdit::singleline(msg)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .desired_width(f32::INFINITY)
+            .hint_text(egui::RichText::new(&placeholder).color(Palette::VSCE_INPUT_2026_PLACEHOLDER_FG))
+            .font(FontId::proportional(13.0))
+            .text_color(Palette::FG),
+    );
+    if st.focus_input {
+        st.focus_input = false;
+        resp.request_focus();
     }
-    ui.add_space(4.0);
-
-    // --- commit split button: one 26px monaco-button-dropdown — centred
-    // "✓ Commit", a 1px divider, then the caret. Muted when no changes.
-    let has_changes = repo.total() > 0;
-    let a = if has_changes { 1.0 } else { 0.45 };
-    ui.horizontal(|ui| {
-        ui.add_space(pad_l);
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, input_h), Sense::click());
-        let caret_w = 20.0;
-        let main = egui::Rect::from_min_max(
-            rect.min,
-            egui::pos2(rect.right() - caret_w, rect.bottom()),
-        );
-        let caret = egui::Rect::from_min_max(main.right_top(), rect.max);
-        let hovered = has_changes && resp.hovered();
-        let bg = if hovered { Palette::BUTTON_HOVER } else { Palette::BUTTON_BG };
-        let p = ui.painter();
-        p.rect_filled(rect, egui::CornerRadius::same(2), with_alpha(bg, a));
-        // divider between the button body and the caret
-        p.vline(
-            caret.left(),
-            caret.y_range().shrink(5.0),
-            Stroke::new(1.0, with_alpha(egui::Color32::BLACK, 0.4 * a)),
-        );
-        let fg = with_alpha(Palette::FG_BRIGHT, if has_changes { 1.0 } else { 0.6 });
-        // centred "✓ Commit"
-        let label_w = p
-            .layout_no_wrap("Commit".into(), FontId::proportional(13.0), fg)
-            .size()
-            .x;
-        let cxs = main.center().x - (label_w + 18.0) / 2.0;
-        p.text(
-            egui::pos2(cxs + 8.0, main.center().y),
-            Align2::CENTER_CENTER,
-            icons::CHECK.to_string(),
-            codicon_font(13.0),
-            fg,
-        );
-        p.text(
-            egui::pos2(cxs + 18.0, main.center().y),
-            Align2::LEFT_CENTER,
-            "Commit",
-            FontId::proportional(13.0),
-            fg,
-        );
-        p.text(
-            caret.center(),
-            Align2::CENTER_CENTER,
-            icons::CHEVRON_DOWN.to_string(),
-            codicon_font(12.0),
-            fg,
-        );
-        if has_changes && resp.clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                if pos.x >= caret.left() {
-                    out.commit_menu = Some((repo.root.clone(), caret.left_bottom()));
-                } else {
-                    out.commit = Some((repo.root.clone(), CommitMode::Plain));
-                }
-            }
-        }
-        ui.add_space(pad_r);
-    });
-    ui.add_space(4.0);
+    let border = if resp.has_focus() { Palette::FOCUS_BORDER } else { Palette::INPUT_BORDER };
+    ui.painter().rect_stroke(rect, egui::CornerRadius::same(4), Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    if resp.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
+        out.act(ScmAction::Commit { root: repo.root.clone(), mode: CommitMode::Plain, scope: CommitScope::Default, amend: false, signoff: false });
+    }
 }
 
+/// The Commit button (`scm.css .button-container`): a 25px split button,
+/// "✓ Commit" centred, a divider, the dropdown chevron.
+fn commit_button(ui: &mut Ui, repo: &Repository, out: &mut ScmOutput, indent: f32) {
+    ui.add_space(9.0);
+    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
+    let rect = Rect::from_min_max(egui::pos2(row.left() + 19.0 + indent, row.top()), egui::pos2(row.right() - PAD_R, row.bottom()));
+    let enabled = repo.total() > 0;
+    let drop_w = 25.0;
+    let main = Rect::from_min_max(rect.min, egui::pos2(rect.right() - drop_w, rect.bottom()));
+    let drop = Rect::from_min_max(egui::pos2(main.right(), rect.top()), rect.max);
+    let main_resp = ui.interact(main, egui::Id::new(("scm_commit_btn", &repo.root)), Sense::click());
+    let drop_resp = ui.interact(drop, egui::Id::new(("scm_commit_drop", &repo.root)), Sense::click());
+    main_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Commit"));
+    let p = ui.painter();
+    let alpha = if enabled { 1.0 } else { 0.4 };
+    p.rect_filled(rect, egui::CornerRadius::same(4), with_alpha(Palette::BUTTON_BG, alpha));
+    if enabled && main_resp.hovered() {
+        p.rect_filled(main, egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }, Palette::BUTTON_HOVER);
+    }
+    if enabled && drop_resp.hovered() {
+        p.rect_filled(drop, egui::CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, Palette::BUTTON_HOVER);
+    }
+    let fg = with_alpha(Color32::WHITE, if enabled { 1.0 } else { 0.6 });
+    p.vline(drop.left(), drop.y_range().shrink(4.0), Stroke::new(1.0, with_alpha(Color32::WHITE, 0.4 * alpha)));
+    let label = p.layout_no_wrap("Commit".into(), FontId::proportional(13.0), fg);
+    let w = 16.0 + 4.0 + label.size().x;
+    let x0 = main.center().x - w / 2.0;
+    paint_codicon(p, egui::pos2(x0 + 8.0, main.center().y), "check", 16.0, fg);
+    p.galley(egui::pos2(x0 + 20.0, main.center().y - label.size().y / 2.0), label, fg);
+    paint_codicon(p, drop.center(), "chevron-down", 16.0, fg);
+    if enabled && main_resp.clicked() {
+        out.act(ScmAction::Commit { root: repo.root.clone(), mode: CommitMode::Plain, scope: CommitScope::Default, amend: false, signoff: false });
+    }
+    if enabled && drop_resp.clicked() {
+        out.menu = Some((ScmMenu::CommitDropdown(repo.root.clone()), drop.left_bottom()));
+    }
+    let _ = main_resp.on_hover_text(format!("Commit Changes on \"{}\"", repo.branch.as_deref().unwrap_or("HEAD")));
+}
+
+/// `SCMTreeSorter` with the default "path" key: `comparePaths` — fewer
+/// folders first, then folder by folder, each by `compareFileNames`.
+pub fn sort_changes(files: &mut [&FileChange]) {
+    files.sort_by(|a, b| compare_paths(&a.rel, &b.rel));
+}
+
+fn compare_paths(a: &str, b: &str) -> std::cmp::Ordering {
+    let pa: Vec<&str> = a.split('/').collect();
+    let pb: Vec<&str> = b.split('/').collect();
+    for i in 0.. {
+        let (end_a, end_b) = (i == pa.len() - 1, i == pb.len() - 1);
+        match (end_a, end_b) {
+            (true, true) => return compare_file_names(pa[i], pb[i]),
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        let c = compare_file_names(pa[i], pb[i]);
+        if c != std::cmp::Ordering::Equal {
+            return c;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// `compareFileNames`: case-insensitive with numbers compared by value.
+fn compare_file_names(a: &str, b: &str) -> std::cmp::Ordering {
+    let key = |s: &str| -> Vec<(bool, String, u64)> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut digits = false;
+        for ch in s.chars() {
+            if ch.is_ascii_digit() != digits && !cur.is_empty() {
+                let n = if digits { cur.parse().unwrap_or(0) } else { 0 };
+                out.push((digits, std::mem::take(&mut cur).to_lowercase(), n));
+            }
+            digits = ch.is_ascii_digit();
+            cur.push(ch);
+        }
+        if !cur.is_empty() {
+            let n = if digits { cur.parse().unwrap_or(0) } else { 0 };
+            out.push((digits, cur.to_lowercase(), n));
+        }
+        out
+    };
+    let (ka, kb) = (key(a), key(b));
+    for (x, y) in ka.iter().zip(kb.iter()) {
+        let c = match (x.0, y.0) {
+            (true, true) => x.2.cmp(&y.2),
+            _ => x.1.cmp(&y.1),
+        };
+        if c != std::cmp::Ordering::Equal {
+            return c;
+        }
+    }
+    ka.len().cmp(&kb.len()).then_with(|| a.cmp(b))
+}
+
+/// A resource group: twistie, label, inline actions on hover, count badge,
+/// then its files.
 fn group(
     ui: &mut Ui,
     repo: &Repository,
     kind: ResourceGroupKind,
     files: &[FileChange],
+    st: &mut ScmUiState,
     out: &mut ScmOutput,
+    indent: f32,
 ) {
-    // Group header: label + count + hover actions.
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.add_space(10.0);
-        label(ui, &LabelProps::new(kind.label()).size(11.0).color(Palette::FG_DESCRIPTION));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(8.0);
-            badge(ui, &BadgeProps::counter(&files.len().to_string()));
-            ui.add_space(6.0);
-            // Group inline actions.
-            let actions: &[(char, &str)] = match kind {
-                ResourceGroupKind::Index => &[(icons::REMOVE, "Unstage All Changes")],
-                ResourceGroupKind::WorkingTree => {
-                    &[(icons::DISCARD, "Discard All Changes"), (icons::ADD, "Stage All Changes")]
-                }
-                ResourceGroupKind::Merge => &[(icons::ADD, "Stage All Merge Changes")],
-                ResourceGroupKind::Untracked => {
-                    &[(icons::DISCARD, "Discard All"), (icons::ADD, "Stage All")]
-                }
-            };
-            for (glyph, tip) in actions {
-                if icon_button(ui, &IconButtonProps::new(*glyph).icon_size(13.0))
-                    .on_hover_text(*tip)
-                    .clicked()
-                {
-                    match (kind, *glyph) {
-                        (ResourceGroupKind::Index, _) => out.unstage_all = Some(repo.root.clone()),
-                        (_, g) if g == icons::ADD => out.stage_all = Some(repo.root.clone()),
-                        _ => {} // discard-all: handled per-row for now
-                    }
-                }
-            }
-        });
-    });
-    ui.add_space(2.0);
+    let key = (repo.root.clone(), kind);
+    let open = !st.collapsed_groups.contains(&key);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, kind.label()));
+    let hovered = ui.rect_contains_pointer(rect);
+    if hovered {
+        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+    }
+    let cy = rect.center().y;
+    let left = rect.left() + indent;
+    paint_codicon(ui.painter(), egui::pos2(left + 18.5, cy), if open { "chevron-down" } else { "chevron-right" }, 16.0, Palette::VSCE_ICON_2026_FG);
+    ui.painter().text(egui::pos2(left + 30.5, cy), Align2::LEFT_CENTER, kind.label(), FontId::proportional(13.0), Palette::FG);
 
-    for fc in files {
-        file_row(ui, repo, kind, fc, out);
+    // Count badge (`CountBadge`): 18px round, badge colours.
+    let count = files.len().to_string();
+    let g = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), Palette::VSCE_BADGE_2026_FG);
+    let bw = (g.size().x + 12.0).max(18.0);
+    let badge = Rect::from_center_size(egui::pos2(rect.right() - PAD_R - bw / 2.0, cy), egui::vec2(bw, 18.0));
+    ui.painter().rect_filled(badge, egui::CornerRadius::same(9), Palette::VSCE_BADGE_2026_BG);
+    ui.painter().galley(badge.center() - g.size() / 2.0, g, Palette::VSCE_BADGE_2026_FG);
+
+    let mut acted = false;
+    if hovered {
+        let root = repo.root.clone();
+        let actions: Vec<(&str, &str, ScmAction)> = match kind {
+            ResourceGroupKind::Index => vec![
+                ("remove", "Unstage All Changes", ScmAction::UnstageAll(root.clone())),
+                ("diff-multiple", "Open Staged Changes", ScmAction::OpenGroupChanges { root, kind }),
+            ],
+            ResourceGroupKind::Merge => vec![("add", "Stage All Merge Changes", ScmAction::StageAll(root))],
+            _ => vec![
+                ("add", "Stage All Changes", ScmAction::StageAll(root.clone())),
+                ("discard", "Discard All Changes", ScmAction::DiscardAll(root.clone())),
+                ("diff-multiple", "Open Changes", ScmAction::OpenGroupChanges { root, kind }),
+            ],
+        };
+        let mut x = badge.left() - 4.0 - 10.0;
+        for (i, (icon, tip, action)) in actions.into_iter().enumerate() {
+            if row_action(ui, ("grp_act", &repo.root, kind as u8, i), egui::pos2(x, cy), icon, tip) {
+                out.act(action);
+                acted = true;
+            }
+            x -= 20.0;
+        }
+    }
+    if resp.clicked() && !acted {
+        if open {
+            st.collapsed_groups.insert(key.clone());
+        } else {
+            st.collapsed_groups.remove(&key);
+        }
+    }
+    if resp.secondary_clicked() {
+        out.menu = Some((ScmMenu::Group { root: repo.root.clone(), kind }, ui.ctx().pointer_interact_pos().unwrap_or(rect.center())));
+    }
+    if !open {
+        return;
+    }
+    let mut sorted: Vec<&FileChange> = files.iter().collect();
+    sort_changes(&mut sorted);
+    for fc in sorted {
+        file_row(ui, repo, kind, fc, out, indent);
     }
 }
 
-fn file_row(
-    ui: &mut Ui,
-    repo: &Repository,
-    kind: ResourceGroupKind,
-    fc: &FileChange,
-    out: &mut ScmOutput,
-) {
+/// One changed file: Seti icon, name (struck through when deleted), its
+/// folder, inline actions on hover, the status letter.
+fn file_row(ui: &mut Ui, repo: &Repository, kind: ResourceGroupKind, fc: &FileChange, out: &mut ScmOutput, indent: f32) {
     let staged = matches!(kind, ResourceGroupKind::Index);
     let untracked = matches!(fc.kind, ChangeKind::Untracked);
-    let row_h = 22.0;
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("scm:{}", fc.rel))
-    });
-    let hovered = resp.hovered();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("scm:{}", fc.rel)));
+    let hovered = ui.rect_contains_pointer(rect);
     if hovered {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
     }
     let p = ui.painter();
     let cy = rect.center().y;
-    // Faded for untracked (VS Code `.resource.faded { opacity: 0.7 }`).
-    let alpha = if untracked { 0.7 } else { 1.0 };
-    let fg = with_alpha(Palette::FG, alpha);
-    let dim = with_alpha(Palette::FG_DESCRIPTION, alpha);
-
+    let left = rect.left() + indent;
     let name = fc.rel.rsplit('/').next().unwrap_or(&fc.rel);
-    let parent: String = {
-        let mut it = fc.rel.rsplitn(2, '/');
-        let _ = it.next();
-        it.next().unwrap_or("").to_string()
-    };
-    // File-type icon from the Seti theme (same as the Explorer tree), tinted
-    // by the row's faded alpha. Falls back to the codicon file glyph.
+    let parent = fc.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
     let icon_path = repo.root.join(&fc.rel);
-    if let Some((glyph, color)) = crate::file_icons::icon_for(&icon_path) {
-        p.text(egui::pos2(rect.left() + 13.0, cy), Align2::LEFT_CENTER, glyph.to_string(),
-            crate::file_icons::seti_font(15.0), with_alpha(color, alpha));
-    } else {
-        p.text(egui::pos2(rect.left() + 12.0, cy), Align2::LEFT_CENTER, icons::FILE.to_string(),
-            codicon_font(14.0), dim);
+    match crate::file_icons::icon_for(&icon_path) {
+        Some((glyph, color)) => {
+            p.text(egui::pos2(left + 25.5, cy), Align2::CENTER_CENTER, glyph.to_string(), crate::file_icons::seti_font(20.0), color);
+        }
+        None => paint_codicon(p, egui::pos2(left + 25.5, cy), "file", 16.0, Palette::VSCE_ICON_2026_FG),
     }
-    let name_pos = egui::pos2(rect.left() + 32.0, cy);
-    let name_galley = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), fg);
-    let name_w = name_galley.size().x;
-    p.galley(egui::pos2(name_pos.x, cy - name_galley.size().y / 2.0), name_galley, fg);
+    let letter_x = rect.right() - PAD_R - 8.0;
+    let decoration = fc.kind.decoration_color();
+    let name_g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG);
+    let name_w = name_g.size().x;
+    let nx = left + 38.5;
+    // Text stops before the inline actions / status letter.
+    let text_clip = Rect::from_min_max(egui::pos2(rect.left(), rect.top()), egui::pos2(letter_x - 14.0, rect.bottom()));
+    let tp = ui.painter_at(text_clip);
+    tp.galley(egui::pos2(nx, cy - name_g.size().y / 2.0), name_g, Palette::FG);
     if fc.kind.strikethrough() {
-        let y = cy;
-        p.line_segment(
-            [egui::pos2(name_pos.x, y), egui::pos2(name_pos.x + name_w, y)],
-            Stroke::new(1.0, fg),
-        );
+        tp.line_segment([egui::pos2(nx, cy + 0.5), egui::pos2(nx + name_w, cy + 0.5)], Stroke::new(1.0, Palette::FG));
     }
     if !parent.is_empty() {
-        p.text(egui::pos2(name_pos.x + name_w + 6.0, cy), Align2::LEFT_CENTER, &parent,
-            FontId::proportional(11.5), dim);
+        tp.text(egui::pos2(nx + name_w + 6.0, cy), Align2::LEFT_CENTER, parent, FontId::proportional(12.0), Palette::FG_DESCRIPTION);
     }
+    let _ = decoration;
+    p.text(egui::pos2(letter_x, cy), Align2::CENTER_CENTER, fc.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG, 0.75));
 
-    // Status letter on the right, tinted by decoration colour.
-    p.text(egui::pos2(rect.right() - 14.0, cy), Align2::RIGHT_CENTER, fc.kind.badge(),
-        FontId::proportional(12.0), with_alpha(fc.kind.decoration_color(), alpha));
-
-    // Hover inline actions (right-to-left): primary stage/unstage, discard.
-    let mut handled_action = false;
+    let mut acted = false;
     if hovered {
-        let mut x = rect.right() - 34.0;
-        // primary
-        let (pg, ptip) = if staged {
-            (icons::REMOVE, "Unstage Changes")
+        let root = repo.root.clone();
+        let rel = fc.rel.clone();
+        // Right to left: stage/unstage, discard, open file.
+        let mut actions: Vec<(&str, &str, ScmAction)> = Vec::new();
+        if staged {
+            actions.push(("remove", "Unstage Changes", ScmAction::Unstage { root: root.clone(), rel: rel.clone() }));
         } else {
-            (icons::ADD, "Stage Changes")
-        };
-        if hover_action(ui, resp.id.with("prim"), x, cy, pg, ptip) {
-            handled_action = true;
-            if staged {
-                out.unstage = Some((repo.root.clone(), fc.rel.clone()));
-            } else {
-                out.stage = Some((repo.root.clone(), fc.rel.clone()));
+            actions.push(("add", "Stage Changes", ScmAction::Stage { root: root.clone(), rel: rel.clone() }));
+            if kind != ResourceGroupKind::Merge {
+                actions.push(("discard", "Discard Changes", ScmAction::Discard { root: root.clone(), rel: rel.clone(), untracked }));
             }
         }
-        x -= 22.0;
-        if !staged {
-            if hover_action(ui, resp.id.with("disc"), x, cy, icons::DISCARD, "Discard Changes") {
-                handled_action = true;
-                out.discard = Some((repo.root.clone(), fc.rel.clone(), untracked));
+        actions.push(("go-to-file", "Open File", ScmAction::OpenFile { root, rel }));
+        let mut x = letter_x - 8.0 - 5.0 - 10.0;
+        for (i, (icon, tip, action)) in actions.into_iter().enumerate() {
+            if row_action(ui, ("file_act", &fc.rel, kind as u8, i), egui::pos2(x, cy), icon, tip) {
+                out.act(action);
+                acted = true;
             }
+            x -= 20.0;
         }
     }
-
-    if resp.clicked() && !handled_action {
-        // Default click → open the diff (openChange).
-        out.open_diff = Some((repo.root.clone(), fc.rel.clone(), staged));
+    if resp.clicked() && !acted {
+        out.act(ScmAction::OpenChange { root: repo.root.clone(), rel: fc.rel.clone(), staged });
     }
+    if resp.secondary_clicked() {
+        out.menu = Some((
+            ScmMenu::File { root: repo.root.clone(), rel: fc.rel.clone(), kind, untracked },
+            ui.ctx().pointer_interact_pos().unwrap_or(rect.center()),
+        ));
+    }
+    let tip = format!("{} • {}", repo.root.join(&fc.rel).display(), fc.kind_label());
+    resp.on_hover_text(tip);
 }
 
-fn hover_action(ui: &Ui, id: egui::Id, x: f32, cy: f32, glyph: char, tip: &str) -> bool {
-    let center = egui::pos2(x, cy);
-    let r = egui::Rect::from_center_size(center, egui::vec2(18.0, 18.0));
-    let resp = ui.interact(r, id, Sense::click());
+/// A 20px inline row action (`.actions .action-label { padding: 2px }`).
+fn row_action(ui: &mut Ui, id: impl std::hash::Hash, center: Pos2, icon: &str, tip: &str) -> bool {
+    let r = Rect::from_center_size(center, egui::vec2(20.0, 20.0));
+    let resp = ui.interact(r, ui.id().with(id), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     if resp.hovered() {
-        ui.painter().rect_filled(r, 3.0, Palette::SIDEBAR_BG);
+        ui.painter().rect_filled(r, egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
     }
-    let resp = resp.on_hover_text(tip);
-    ui.painter().text(center, Align2::CENTER_CENTER, glyph.to_string(),
-        codicon_font(13.0), Palette::FG_DESCRIPTION);
-    resp.clicked()
+    paint_codicon(ui.painter(), center, icon, 16.0, Palette::VSCE_ICON_2026_FG);
+    let clicked = resp.clicked();
+    resp.on_hover_text(tip);
+    clicked
 }
 
 // ── GRAPH ──────────────────────────────────────────────────────────────────
 
+/// `SWIMLANE_WIDTH` / `SWIMLANE_HEIGHT` / radii from scmHistory.ts.
 const LANE_W: f32 = 11.0;
-const GRAPH_ROW_H: f32 = 22.0;
+const CURVE_R: f32 = 5.0;
 const CIRCLE_R: f32 = 4.0;
 
-fn graph_section(
-    ui: &mut Ui,
-    history: &[GraphRow],
-    graph_root: Option<&std::path::Path>,
-    st: &mut ScmUiState,
-    out: &mut ScmOutput,
-) {
-    // Collapsible "GRAPH" header with the SCM-History toolbar
-    // (scmHistoryViewPane.ts: repository picker + reference picker "Auto" +
-    // fetch / pull / push + refresh).
-    let h = 22.0;
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), Sense::click());
-    let cy = rect.center().y;
-    {
-        let p = ui.painter();
-        let chev = if st.graph_open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-        p.text(egui::pos2(rect.left() + 12.0, cy), Align2::CENTER_CENTER, chev.to_string(),
-            codicon_font(12.0), Palette::FG_DESCRIPTION);
-        p.text(egui::pos2(rect.left() + 26.0, cy), Align2::LEFT_CENTER, "GRAPH",
-            FontId::proportional(11.0), Palette::FG_DESCRIPTION);
-    }
-    if resp.clicked() {
-        st.graph_open = !st.graph_open;
-    }
-    if !st.graph_open {
-        return;
-    }
-
-    // Toolbar row: repository picker + reference picker, then fetch/pull/push.
-    if let Some(root) = graph_root {
-        let (bar, _) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::hover());
-        let by = bar.center().y;
-        let repo_name = root.file_name().map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        {
-            let p = ui.painter();
-            // Repository picker: repo glyph + name.
-            p.text(egui::pos2(bar.left() + 14.0, by), Align2::LEFT_CENTER,
-                icons::REPO.to_string(), codicon_font(13.0), Palette::FG_DESCRIPTION);
-            let nx = bar.left() + 30.0;
-            let ng = p.layout_no_wrap(repo_name.clone(), FontId::proportional(12.0), Palette::FG);
-            let nw = ng.size().x;
-            p.galley(egui::pos2(nx, by - ng.size().y / 2.0), ng, Palette::FG);
-            // Reference picker: git-branch glyph + "Auto".
-            let rx = nx + nw + 14.0;
-            p.text(egui::pos2(rx, by), Align2::LEFT_CENTER,
-                icons::GIT_BRANCH.to_string(), codicon_font(12.0), Palette::FG_DESCRIPTION);
-            p.text(egui::pos2(rx + 16.0, by), Align2::LEFT_CENTER, "Auto",
-                FontId::proportional(12.0), Palette::FG_DESCRIPTION);
-        }
-        // Right cluster: fetch / pull / push (inert visual parity for now).
-        let mut x = bar.right() - 18.0;
-        for glyph in [icons::ARROW_UP, icons::ARROW_DOWN, icons::SYNC] {
-            ui.painter().text(egui::pos2(x, by), Align2::CENTER_CENTER, glyph.to_string(),
-                codicon_font(13.0), Palette::FG_DESCRIPTION);
-            x -= 24.0;
-        }
-    }
-
+fn graph_rows(ui: &mut Ui, history: &[GraphRow], root: Option<&Path>, st: &mut ScmUiState, out: &mut ScmOutput) {
     for row in history {
-        let clicked = graph_row(ui, row);
-        let expanded = st.expanded_commits.contains(&row.commit.id);
-        if clicked {
-            if expanded {
+        let open = st.expanded_commits.contains(&row.commit.id);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("commit:{}", row.commit.summary)));
+        let hovered = ui.rect_contains_pointer(rect);
+        let row_bg = if hovered {
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+            blend(Palette::SIDEBAR_BG, Palette::VSCE_LIST_HOVER_2026_BG)
+        } else {
+            Palette::SIDEBAR_BG
+        };
+        let graph_w = paint_graph(ui.painter(), rect, row, row_bg, open);
+        paint_history_label(ui, rect, graph_w, row);
+        if resp.clicked() {
+            if open {
                 st.expanded_commits.remove(&row.commit.id);
             } else {
                 st.expanded_commits.insert(row.commit.id.clone());
             }
         }
-        // Expanded → list the commit's changed files (vs first parent).
-        if (expanded || clicked && !expanded) && st.expanded_commits.contains(&row.commit.id) {
-            if let Some(root) = graph_root {
-                let files = crate::git::commit_changes(root, &row.commit);
-                let parent = row.commit.parents.first().cloned().unwrap_or_default();
-                for f in &files {
-                    if commit_file_row(ui, f) {
-                        out.open_commit_diff = Some((
-                            root.to_path_buf(),
-                            f.rel.clone(),
-                            parent.clone(),
-                            row.commit.id.clone(),
-                        ));
-                    }
-                }
+        if let (true, Some(root)) = (resp.secondary_clicked(), root) {
+            out.menu = Some((
+                ScmMenu::Commit {
+                    root: root.to_path_buf(),
+                    id: row.commit.id.clone(),
+                    summary: row.commit.summary.clone(),
+                    parents: row.commit.parents.clone(),
+                },
+                ui.ctx().pointer_interact_pos().unwrap_or(rect.center()),
+            ));
+        }
+        resp.on_hover_text(hover_text(row));
+        if open {
+            if let Some(root) = root {
+                commit_files(ui, root, row, st.graph_tree, out);
             }
         }
     }
 }
 
-/// One changed-file row under an expanded commit. Returns `true` on click.
-fn commit_file_row(ui: &mut Ui, f: &crate::git::CommitFile) -> bool {
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+/// The hover card text of a commit.
+fn hover_text(row: &GraphRow) -> String {
+    let c = &row.commit;
+    let when = c.time.map(relative_time).unwrap_or_default();
+    let mut s = format!("{}", c.author);
+    if !when.is_empty() {
+        s.push_str(&format!(", {when}"));
     }
-    let cy = rect.center().y;
-    let name = f.rel.rsplit('/').next().unwrap_or(&f.rel);
-    let parent: String = {
-        let mut it = f.rel.rsplitn(2, '/');
-        let _ = it.next();
-        it.next().unwrap_or("").to_string()
-    };
-    let p = ui.painter();
-    if let Some((glyph, color)) = crate::file_icons::icon_for(std::path::Path::new(&f.rel)) {
-        p.text(egui::pos2(rect.left() + 35.0, cy), Align2::LEFT_CENTER, glyph.to_string(),
-            crate::file_icons::seti_font(15.0), color);
-    } else {
-        p.text(egui::pos2(rect.left() + 34.0, cy), Align2::LEFT_CENTER, icons::FILE.to_string(),
-            codicon_font(14.0), Palette::FG_DESCRIPTION);
-    }
-    let np = egui::pos2(rect.left() + 54.0, cy);
-    let g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG);
-    let nw = g.size().x;
-    p.galley(egui::pos2(np.x, cy - g.size().y / 2.0), g, Palette::FG);
-    if f.kind.strikethrough() {
-        p.line_segment([egui::pos2(np.x, cy), egui::pos2(np.x + nw, cy)],
-            Stroke::new(1.0, Palette::FG));
-    }
-    if !parent.is_empty() {
-        p.text(egui::pos2(np.x + nw + 6.0, cy), Align2::LEFT_CENTER, &parent,
-            FontId::proportional(11.5), Palette::FG_DESCRIPTION);
-    }
-    p.text(egui::pos2(rect.right() - 14.0, cy), Align2::RIGHT_CENTER, f.kind.badge(),
-        FontId::proportional(12.0), f.kind.decoration_color());
-    resp.clicked()
+    s.push_str(&format!("\n\n{}\n\n{}", c.message.trim_end(), c.short_id));
+    s
 }
 
-fn lane_color(idx: usize) -> egui::Color32 {
-    // Sentinels ≥ 100 are reference colours (blue/purple/orange); the backbone
-    // lane carrying a branch ref uses these instead of the rotating palette.
-    match idx {
+/// "5 minutes ago" (`fromNow` with full words).
+pub fn relative_time(unix: i64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let s = (now - unix).max(0);
+    let units = [(60, 1, "second"), (3600, 60, "minute"), (86400, 3600, "hour"), (604800, 86400, "day"), (2592000, 604800, "week"), (31536000, 2592000, "month"), (i64::MAX, 31536000, "year")];
+    if s < 30 {
+        return "now".into();
+    }
+    for (limit, size, name) in units {
+        if s < limit {
+            let v = ((s as f64) / size as f64).round() as i64;
+            return format!("{v} {name}{} ago", if v == 1 { "" } else { "s" });
+        }
+    }
+    String::new()
+}
+
+/// Files a commit changed, under it: the graph's lanes continue on the left
+/// (`renderSCMHistoryGraphPlaceholder`), then the file.
+fn commit_files(ui: &mut Ui, root: &Path, row: &GraphRow, tree: bool, out: &mut ScmOutput) {
+    let files = crate::git::commit_changes(root, &row.commit);
+    let parent = row.commit.parents.first().cloned().unwrap_or_default();
+    let lanes = row.output.len().max(1);
+    let graph_w = LANE_W * (lanes as f32 + 1.0);
+    let mut entries: Vec<(usize, Option<&crate::git::CommitFile>, String)> = Vec::new();
+    if tree {
+        let mut last_dir = String::new();
+        let mut sorted: Vec<&crate::git::CommitFile> = files.iter().collect();
+        sorted.sort_by(|a, b| compare_paths(&a.rel, &b.rel));
+        for f in sorted {
+            let dir = f.rel.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+            if !dir.is_empty() && dir != last_dir {
+                entries.push((0, None, dir.clone()));
+            }
+            last_dir = dir.clone();
+            entries.push((if dir.is_empty() { 0 } else { 1 }, Some(f), String::new()));
+        }
+    } else {
+        entries = files.iter().map(|f| (0, Some(f), String::new())).collect();
+    }
+    for (depth, file, dir) in entries {
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+        if ui.rect_contains_pointer(rect) {
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+        }
+        let p = ui.painter();
+        for (i, lane) in row.output.iter().enumerate() {
+            let x = rect.left() + LANE_W * (i as f32 + 1.0);
+            let w = if i == row.circle_index { 3.0 } else { 1.0 };
+            p.vline(x, rect.y_range(), Stroke::new(w, lane_color(lane.color)));
+        }
+        let cy = rect.center().y;
+        let left = rect.left() + graph_w + 8.0 * depth as f32;
+        let Some(f) = file else {
+            paint_codicon(p, egui::pos2(left + 8.0, cy), "folder", 16.0, Palette::VSCE_ICON_2026_FG);
+            p.text(egui::pos2(left + 20.0, cy), Align2::LEFT_CENTER, &dir, FontId::proportional(13.0), Palette::FG);
+            continue;
+        };
+        let name = f.rel.rsplit('/').next().unwrap_or(&f.rel);
+        let folder = f.rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        match crate::file_icons::icon_for(Path::new(&f.rel)) {
+            Some((glyph, color)) => {
+                p.text(egui::pos2(left + 8.0, cy), Align2::CENTER_CENTER, glyph.to_string(), crate::file_icons::seti_font(20.0), color);
+            }
+            None => paint_codicon(p, egui::pos2(left + 8.0, cy), "file", 16.0, Palette::VSCE_ICON_2026_FG),
+        }
+        let g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG);
+        let nw = g.size().x;
+        let nx = left + 21.0;
+        p.galley(egui::pos2(nx, cy - g.size().y / 2.0), g, Palette::FG);
+        if f.kind.strikethrough() {
+            p.line_segment([egui::pos2(nx, cy + 0.5), egui::pos2(nx + nw, cy + 0.5)], Stroke::new(1.0, Palette::FG));
+        }
+        if !tree && !folder.is_empty() {
+            p.text(egui::pos2(nx + nw + 6.0, cy), Align2::LEFT_CENTER, folder, FontId::proportional(12.0), Palette::FG_DESCRIPTION);
+        }
+        p.text(egui::pos2(rect.right() - PAD_R - 8.0, cy), Align2::CENTER_CENTER, f.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG, 0.75));
+        if resp.clicked() {
+            out.act(ScmAction::OpenCommitDiff {
+                root: root.to_path_buf(),
+                rel: f.rel.clone(),
+                parent: parent.clone(),
+                commit: row.commit.id.clone(),
+            });
+        }
+    }
+}
+
+fn lane_color(c: usize) -> Color32 {
+    match c {
         crate::git::history::REF_COLOR_LOCAL => Palette::SCM_REF_LOCAL,
         crate::git::history::REF_COLOR_REMOTE => Palette::SCM_REF_REMOTE,
         crate::git::history::REF_COLOR_BASE => Palette::SCM_REF_BASE,
-        _ => Palette::SCM_GRAPH_LANES[idx % Palette::SCM_GRAPH_LANES.len()],
+        _ => Palette::SCM_GRAPH_LANES[c % Palette::SCM_GRAPH_LANES.len()],
     }
 }
 
-/// Render one commit row; returns `true` when clicked (toggle file list).
-fn graph_row(ui: &mut Ui, row: &GraphRow) -> bool {
-    let lanes = row.input.len().max(row.output.len()).max(1) + 1;
-    let graph_w = lanes as f32 * LANE_W;
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), GRAPH_ROW_H), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
-    }
-    let p = ui.painter();
-    let top = rect.top();
-    let mid = rect.center().y;
-    let bottom = rect.bottom();
-    let x = |i: usize| rect.left() + LANE_W * (i as f32 + 1.0);
-    let cx = x(row.circle_lane);
+/// Points on a circle arc from `a0` to `a1` (radians, y down).
+fn arc(center: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
+    let steps = 10;
+    (0..=steps)
+        .map(|i| {
+            let a = a0 + (a1 - a0) * i as f32 / steps as f32;
+            egui::pos2(center.x + r * a.cos(), center.y + r * a.sin())
+        })
+        .collect()
+}
 
-    // Swimlane strokes are 1px in VS Code (scmHistory.ts createPath default).
-    // Input lanes: top → mid (route the commit's own lane into the circle).
-    for (i, lane) in row.input.iter().enumerate() {
-        let col = lane_color(lane.color);
+/// `renderSCMHistoryItemGraph`: lanes, curves and the commit's circle.
+/// Returns the graph's width.
+fn paint_graph(p: &egui::Painter, rect: Rect, row: &GraphRow, row_bg: Color32, open: bool) -> f32 {
+    use std::f32::consts::FRAC_PI_2;
+    let o = rect.min;
+    let pt = |x: f32, y: f32| egui::pos2(o.x + x, o.y + y);
+    let w = LANE_W;
+    let h = ROW_H;
+    let line = |pts: Vec<Pos2>, c: Color32, width: f32| p.add(egui::Shape::line(pts, Stroke::new(width, c)));
+    let input = &row.input;
+    let output = &row.output;
+    let circle_index = row.circle_index;
+    let circle_color = lane_color(row.circle_color);
+
+    let mut out_idx = 0usize;
+    for (index, lane) in input.iter().enumerate() {
+        let color = lane_color(lane.color);
+        let xi = w * (index as f32 + 1.0);
         if lane.id == row.commit.id {
-            p.line_segment([egui::pos2(x(i), top), egui::pos2(cx, mid)], Stroke::new(1.0, col));
-        } else {
-            p.line_segment([egui::pos2(x(i), top), egui::pos2(x(i), mid)], Stroke::new(1.0, col));
+            if index != circle_index {
+                // "/" into the circle's lane, then "-".
+                let mut pts = arc(pt(w * index as f32, 0.0), w, 0.0, FRAC_PI_2);
+                pts.push(pt(w * (circle_index as f32 + 1.0), w));
+                line(pts, color, 1.0);
+            } else {
+                out_idx += 1;
+            }
+        } else if out_idx < output.len() && lane.id == output[out_idx].id {
+            if index == out_idx {
+                line(vec![pt(xi, 0.0), pt(xi, h)], color, 1.0);
+            } else {
+                let xo = w * (out_idx as f32 + 1.0);
+                let mut pts = vec![pt(xi, 0.0), pt(xi, 6.0)];
+                pts.extend(arc(pt(xi - CURVE_R, 6.0), CURVE_R, 0.0, FRAC_PI_2));
+                pts.push(pt(xo + CURVE_R, h / 2.0));
+                pts.extend(arc(pt(xo + CURVE_R, h / 2.0 + CURVE_R), CURVE_R, -FRAC_PI_2, -std::f32::consts::PI));
+                pts.push(pt(xo, h));
+                line(pts, color, 1.0);
+            }
+            out_idx += 1;
         }
     }
-    // Output lanes: mid → bottom (new/merge lanes fan out from the circle).
-    for (j, lane) in row.output.iter().enumerate() {
-        let col = lane_color(lane.color);
-        let carried = row.input.iter().enumerate().any(|(i, l)| l.id == lane.id && i == j && l.id != row.commit.id);
-        let from = if carried { egui::pos2(x(j), mid) } else { egui::pos2(cx, mid) };
-        p.line_segment([from, egui::pos2(x(j), bottom)], Stroke::new(1.0, col));
+    // Remaining parents: "-\" out of the circle.
+    for parent in row.commit.parents.iter().skip(1) {
+        let Some(pi) = output.iter().rposition(|l| &l.id == parent) else { continue };
+        let color = lane_color(output[pi].color);
+        let pts = arc(pt(w * pi as f32, h), w, -FRAC_PI_2, 0.0);
+        line(pts, color, 1.0);
+        line(vec![pt(w * pi as f32, h / 2.0), pt(w * (circle_index as f32 + 1.0), h / 2.0)], color, 1.0);
     }
-    // The commit circle. Geometry from scmHistory.ts: CIRCLE_RADIUS = 4, each
-    // circle carries a 2px stroke in the sidebar background so it reads clear
-    // of the lanes. A plain node is a filled disc (r ≈ 5); HEAD is a ring
-    // (filled disc with the centre punched back to the sidebar colour).
-    let ccol = lane_color(row.circle_color);
-    let halo = Palette::SIDEBAR_BG;
-    let is_head = row.commit.refs.iter().any(|r| r.kind == RefKind::Head);
-    let center = egui::pos2(cx, mid);
-    if is_head {
-        p.circle_filled(center, CIRCLE_R + 3.0, halo); // 2px sidebar ring
-        p.circle_filled(center, CIRCLE_R + 2.0, ccol); // outer colour
-        p.circle_filled(center, CIRCLE_R - 2.0, halo); // punched centre → ring
-    } else {
-        p.circle_filled(center, CIRCLE_R + 2.0, halo); // sidebar separation
-        p.circle_filled(center, CIRCLE_R + 1.0, ccol); // r ≈ 5 colour disc
+    let cx = w * (circle_index as f32 + 1.0);
+    let input_index = input.iter().position(|l| l.id == row.commit.id);
+    if let Some(ii) = input_index {
+        line(vec![pt(cx, 0.0), pt(cx, h / 2.0)], lane_color(input[ii].color), 1.0);
     }
-
-    // Right of the graph: ref badges + summary + author.
-    let mut tx = rect.left() + graph_w + 8.0;
-    for rf in &row.commit.refs {
-        let col = match rf.kind {
-            RefKind::Head | RefKind::Local => Palette::SCM_REF_LOCAL,
-            RefKind::Remote => Palette::SCM_REF_REMOTE,
-            RefKind::Tag => Palette::SCM_REF_BASE,
-        };
-        // The ref glyph must be drawn with the codicon font; a tag uses the
-        // tag glyph, branches/remotes the git-branch fork.
-        // Ref label geometry from scm.css: line-height 18, border-radius 10,
-        // font-size 12, git-branch codicon 12px. (.label-container gap 4px.)
-        let glyph = if rf.kind == RefKind::Tag { icons::TAG } else { icons::GIT_BRANCH };
-        let icon_font = codicon_font(12.0);
-        let name_font = FontId::proportional(12.0);
-        let icon_w = p.layout_no_wrap(glyph.to_string(), icon_font.clone(), col).size().x;
-        let name_g = p.layout_no_wrap(rf.name.clone(), name_font.clone(), col);
-        let pill_h = 18.0;
-        let w = 6.0 + icon_w + 3.0 + name_g.size().x + 6.0;
-        let pill = egui::Rect::from_min_size(egui::pos2(tx, mid - pill_h / 2.0), egui::vec2(w, pill_h));
-        p.rect_filled(pill, egui::CornerRadius::same(9), with_alpha(col, 0.18));
-        p.text(egui::pos2(tx + 6.0, mid), Align2::LEFT_CENTER, glyph.to_string(), icon_font, col);
-        p.text(egui::pos2(tx + 6.0 + icon_w + 3.0, mid), Align2::LEFT_CENTER, &rf.name, name_font, col);
-        tx += w + 4.0;
+    if !row.commit.parents.is_empty() {
+        // An expanded item's own lane is drawn thicker (scm.css).
+        line(vec![pt(cx, h / 2.0), pt(cx, h)], circle_color, if open { 3.0 } else { 1.0 });
     }
-    // Author, right-aligned; reserve its width so the subject can be clipped
-    // before it collides with it.
-    let author_font = FontId::proportional(11.0);
-    let author_w = p
-        .layout_no_wrap(row.commit.author.clone(), author_font.clone(), Palette::FG_DESCRIPTION)
-        .size()
-        .x;
-    p.text(egui::pos2(rect.right() - 10.0, mid), Align2::RIGHT_CENTER, &row.commit.author,
-        author_font, Palette::FG_DESCRIPTION);
-    // Subject, single line, ellipsised to the space left of the author column.
-    let avail = (rect.right() - 10.0 - author_w - 12.0 - tx).max(20.0);
-    let mut job = egui::text::LayoutJob::single_section(
-        row.commit.summary.clone(),
-        egui::text::TextFormat::simple(FontId::proportional(12.5), Palette::FG),
-    );
-    job.wrap = egui::text::TextWrapping {
-        max_width: avail,
-        max_rows: 1,
-        overflow_character: Some('…'),
-        ..Default::default()
-    };
-    let galley = p.layout_job(job);
-    p.galley(egui::pos2(tx, mid - galley.size().y * 0.5), galley, Palette::FG);
-
-    resp.clicked()
+    let c = pt(cx, w);
+    match row.kind {
+        NodeKind::Head => {
+            // r 7 (stroke 2 in the row colour), centre punched to the row.
+            p.circle_filled(c, CIRCLE_R + 4.0, row_bg);
+            p.circle_filled(c, CIRCLE_R + 2.0, circle_color);
+            p.circle_filled(c, CIRCLE_R, row_bg);
+        }
+        NodeKind::Node if row.commit.parents.len() > 1 => {
+            p.circle_filled(c, CIRCLE_R + 3.0, row_bg);
+            p.circle_filled(c, CIRCLE_R + 1.0, circle_color);
+            p.circle_filled(c, CIRCLE_R, row_bg);
+            p.circle_filled(c, CIRCLE_R - 2.0, circle_color);
+        }
+        NodeKind::Node => {
+            p.circle_filled(c, CIRCLE_R + 2.0, row_bg);
+            p.circle_filled(c, CIRCLE_R, circle_color);
+        }
+    }
+    w * (input.len().max(output.len()).max(1) as f32 + 1.0)
 }
 
-fn with_alpha(c: egui::Color32, a: f32) -> egui::Color32 {
+/// Subject (bold for HEAD), author as the description, then the reference
+/// badges at the right end.
+fn paint_history_label(ui: &Ui, rect: Rect, graph_w: f32, row: &GraphRow) {
+    let p = ui.painter();
+    let cy = rect.center().y;
+    let right = rect.right() - PAD_R;
+
+    // Badges, right to left.
+    let mut bx = right;
+    let mut badge_rects = Vec::new();
+    for b in row.badges.iter().rev() {
+        let bg = lane_color(b.color);
+        let fg = Palette::SIDEBAR_BG;
+        let desc = if b.show_description { Some(p.layout_no_wrap(b.name.clone(), FontId::proportional(12.0), fg)) } else { None };
+        let icon_w = if b.icon == "git-branch" { 18.0 } else { 18.0 };
+        let count = (b.count > 1).then(|| p.layout_no_wrap(b.count.to_string(), FontId::proportional(12.0), fg));
+        let w = icon_w + count.as_ref().map(|g| g.size().x + 4.0).unwrap_or(0.0) + desc.as_ref().map(|g| g.size().x.min(100.0) + 4.0).unwrap_or(0.0);
+        let r = Rect::from_min_max(egui::pos2(bx - w, cy - 9.0), egui::pos2(bx, cy + 9.0));
+        badge_rects.push((r, bg, fg, count, desc, b.icon));
+        bx -= w + 4.0;
+    }
+    for (r, bg, fg, count, desc, icon) in badge_rects {
+        p.rect_filled(r, egui::CornerRadius::same(9), bg);
+        let mut x = r.left();
+        if let Some(g) = count {
+            p.galley(egui::pos2(x + 4.0, cy - g.size().y / 2.0), g.clone(), fg);
+            x += g.size().x + 4.0;
+        }
+        let size = if icon == "git-branch" { 12.0 } else { 16.0 };
+        paint_codicon(p, egui::pos2(x + 9.0, cy), icon, size, fg);
+        x += 18.0;
+        if let Some(g) = desc {
+            let clip = Rect::from_min_max(egui::pos2(x, r.top()), egui::pos2(x + 100.0, r.bottom()));
+            p.with_clip_rect(clip.intersect(r)).galley(egui::pos2(x, cy - g.size().y / 2.0), g, fg);
+        }
+    }
+
+    // Subject + author, ellipsised before the badges.
+    let x = rect.left() + graph_w;
+    let avail = (bx - 4.0 - x).max(10.0);
+    let head = row.kind == NodeKind::Head;
+    let subject_font = if head { crate::ui_font::bold(13.0) } else { FontId::proportional(13.0) };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&row.commit.summary, 0.0, egui::text::TextFormat::simple(subject_font, Palette::FG));
+    job.append(
+        &row.commit.author,
+        6.5,
+        egui::text::TextFormat::simple(
+            FontId::proportional(11.7),
+            with_alpha(Palette::FG, 0.7),
+        ),
+    );
+    job.wrap = egui::text::TextWrapping { max_width: avail, max_rows: 1, overflow_character: Some('…'), ..Default::default() };
+    let g = p.layout_job(job);
+    p.galley(egui::pos2(x, cy - g.size().y / 2.0), g, Palette::FG);
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+fn paint_codicon(p: &egui::Painter, center: Pos2, name: &str, size: f32, color: Color32) {
+    if let Some(glyph) = codicon_by_name(name) {
+        p.text(center, Align2::CENTER_CENTER, glyph.to_string(), codicon_font(size), color);
+    }
+}
+
+fn blend(base: Color32, over: Color32) -> Color32 {
+    let a = over.a() as f32 / 255.0;
+    let [br, bg, bb, _] = base.to_array();
+    let [or, og, ob, _] = over.to_array();
+    // `over` is premultiplied.
+    let mix = |b: u8, o: u8| (o as f32 + b as f32 * (1.0 - a)).round().min(255.0) as u8;
+    Color32::from_rgb(mix(br, or), mix(bg, og), mix(bb, ob))
+}
+
+fn with_alpha(c: Color32, a: f32) -> Color32 {
     let [r, g, b, al] = c.to_array();
     let al = (al as f32 * a) as u8;
-    egui::Color32::from_rgba_premultiplied(
+    Color32::from_rgba_premultiplied(
         ((r as u16 * al as u16) / 255) as u8,
         ((g as u16 * al as u16) / 255) as u8,
         ((b as u16 * al as u16) / 255) as u8,
         al,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn changes_sort_like_vs_code() {
+        let mk = |rel: &str| FileChange { rel: rel.into(), ..FileChange::for_test(rel) };
+        let files = [mk("src/main.rs"), mk("todo.md"), mk("gone.txt"), mk("file10.txt"), mk("file9.txt")];
+        let mut v: Vec<&FileChange> = files.iter().collect();
+        sort_changes(&mut v);
+        let order: Vec<&str> = v.iter().map(|f| f.rel.as_str()).collect();
+        assert_eq!(order, ["file9.txt", "file10.txt", "gone.txt", "todo.md", "src/main.rs"]);
+    }
+
+    #[test]
+    fn relative_times_read_like_vs_code() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert_eq!(relative_time(now - 5), "now");
+        assert_eq!(relative_time(now - 120), "2 minutes ago");
+        assert_eq!(relative_time(now - 3 * 86400), "3 days ago");
+    }
 }

@@ -67,6 +67,34 @@ pub struct FileChange {
     pub staged: bool,
 }
 
+impl FileChange {
+    /// The status in a resource's tooltip (`Resource.tooltip` in the git
+    /// extension's repository.ts).
+    pub fn kind_label(&self) -> &'static str {
+        match (self.staged, self.kind) {
+            (true, ChangeKind::Modified) => "Index Modified",
+            (true, ChangeKind::Added) => "Index Added",
+            (true, ChangeKind::Deleted) => "Index Deleted",
+            (true, ChangeKind::Renamed) => "Index Renamed",
+            (true, ChangeKind::Copied) => "Index Copied",
+            (_, ChangeKind::Modified) => "Modified",
+            (_, ChangeKind::Added) => "Intent to Add",
+            (_, ChangeKind::Deleted) => "Deleted",
+            (_, ChangeKind::Renamed) => "Renamed",
+            (_, ChangeKind::Copied) => "Copied",
+            (_, ChangeKind::Untracked) => "Untracked",
+            (_, ChangeKind::Ignored) => "Ignored",
+            (_, ChangeKind::TypeChanged) => "Type Changed",
+            (_, ChangeKind::Conflicted) => "Conflict",
+        }
+    }
+
+    /// A modified, unstaged change at `rel` (tests).
+    pub fn for_test(rel: &str) -> Self {
+        Self { path: PathBuf::from(rel), rel: rel.to_string(), kind: ChangeKind::Modified, staged: false }
+    }
+}
+
 /// Aggregate working-tree state for the Source Control view.
 #[derive(Clone, Debug, Default)]
 pub struct RepoStatus {
