@@ -241,11 +241,11 @@ mod tests {
     #[test]
     fn evaluates_like_vs_code() {
         let mut k = BTreeMap::new();
-        k.insert("claude-code:doesNotSupportSecondarySidebar".to_string(), Value::Bool(false));
+        k.insert("sample-ext:doesNotSupportSecondarySidebar".to_string(), Value::Bool(false));
         k.insert("view".to_string(), Value::String("explorer".into()));
         k.insert("count".to_string(), serde_json::json!(3));
-        assert!(!eval("claude-code:doesNotSupportSecondarySidebar", &k));
-        assert!(eval("!claude-code:doesNotSupportSecondarySidebar", &k));
+        assert!(!eval("sample-ext:doesNotSupportSecondarySidebar", &k));
+        assert!(eval("!sample-ext:doesNotSupportSecondarySidebar", &k));
         assert!(eval("view == explorer && count > 2", &k));
         assert!(eval("view == 'other' || (count >= 3 && !missing)", &k));
         assert!(!eval("missing", &k));
