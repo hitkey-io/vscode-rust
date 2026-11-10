@@ -27,6 +27,7 @@ pub struct MenuIds {
     pub go_to_file: MenuId,
     pub welcome: MenuId,
     pub color_theme: MenuId,
+    pub open_settings: MenuId,
 }
 
 pub struct InstalledMenu {
@@ -41,6 +42,8 @@ pub fn install() -> InstalledMenu {
     // Code ▸ Settings ▸ Themes ▸ Color Theme (⌘K ⌘T is a chord, which a
     // native menu can't show, as in VS Code).
     let color_theme = MenuItem::new("Color Theme", true, None);
+    // Code ▸ Settings ▸ Settings (⌘,).
+    let open_settings = MenuItem::new("Settings", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
 
     // macOS application submenu — Apple, About, Services, Hide/Show, Quit
     #[cfg(target_os = "macos")]
@@ -49,7 +52,7 @@ pub fn install() -> InstalledMenu {
         let themes_m = Submenu::new("Themes", true);
         let _ = themes_m.append(&color_theme);
         let settings_m = Submenu::new("Settings", true);
-        let _ = settings_m.append(&themes_m);
+        let _ = settings_m.append_items(&[&open_settings, &PredefinedMenuItem::separator(), &themes_m]);
         let _ = menu.append(&app_m);
         let _ = app_m.append_items(&[
             &PredefinedMenuItem::about(Some("About vscode-rust"), None),
@@ -206,6 +209,7 @@ pub fn install() -> InstalledMenu {
         go_to_file: go_to_file.id().clone(),
         welcome: welcome.id().clone(),
         color_theme: color_theme.id().clone(),
+        open_settings: open_settings.id().clone(),
     };
 
     InstalledMenu { ids, menu }

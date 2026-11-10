@@ -5,10 +5,8 @@
 //! at the requested pixel size and memoises the result so subsequent frames
 //! reuse the same GPU texture.
 
-use std::sync::Mutex;
 
 use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions};
-use once_cell::sync::Lazy;
 
 /// Editor "letterpress" watermark (260×260 SVG, opacity 0.3).
 /// Source: `vscode-original/src/vs/workbench/browser/parts/editor/media/letterpress-dark.svg`
@@ -21,11 +19,16 @@ pub const LETTERPRESS_LIGHT: &[u8] = include_bytes!("../assets/letterpress/light
 /// Source: `vscode-original/src/vs/sessions/browser/media/vscode-icon.svg`
 pub const VSCODE_LOGO: &[u8] = include_bytes!("../assets/vscode-logo.svg");
 
-/// Memoisation key: (asset id, requested width in pixels).
-type Key = (&'static str, u32);
+/// Memoisation key: (asset id, requested width in pixels, recoloured white).
+type Key = (&'static str, u32, bool);
 
-static CACHE: Lazy<Mutex<std::collections::HashMap<Key, TextureHandle>>> =
-    Lazy::new(|| Mutex::new(Default::default()));
+/// Rasterised SVGs of one egui context (textures belong to the context
+/// that made them, so they're kept in its memory, not in a global).
+type Cache = std::collections::HashMap<Key, TextureHandle>;
+
+fn cache_id() -> egui::Id {
+    egui::Id::new("assets::svg-cache")
+}
 
 /// Rasterise an SVG to a texture at the requested target width (height
 /// follows the source aspect ratio). The result is cached by `id + width`.
@@ -60,8 +63,8 @@ fn rasterise(
     target_width_px: u32,
     white: bool,
 ) -> Option<TextureHandle> {
-    let key = (id, target_width_px);
-    if let Some(tex) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
+    let key = (id, target_width_px, white);
+    if let Some(tex) = ctx.data(|d| d.get_temp::<Cache>(cache_id()).and_then(|c| c.get(&key).cloned())) {
         return Some(tex);
     }
 
@@ -90,9 +93,7 @@ fn rasterise(
         TextureOptions::LINEAR,
     );
 
-    if let Ok(mut cache) = CACHE.lock() {
-        cache.insert(key, tex.clone());
-    }
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Cache>(cache_id()).insert(key, tex.clone()));
     Some(tex)
 }
 

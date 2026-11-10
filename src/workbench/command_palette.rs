@@ -36,6 +36,9 @@ pub enum CommandId {
     QuickOpen,
     Quit,
     SelectColorTheme,
+    OpenSettings,
+    OpenUserSettingsJson,
+    OpenWorkspaceSettings,
 }
 
 pub struct CommandEntry {
@@ -72,6 +75,9 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: CommandId::QuickOpen,     title: "Go to File…",             category: "",     shortcut: Some("⌘P") },
     CommandEntry { id: CommandId::Quit,          title: "Quit",                    category: "File", shortcut: Some("⌘Q") },
     CommandEntry { id: CommandId::SelectColorTheme, title: "Color Theme",          category: "Preferences", shortcut: Some("⌘K ⌘T") },
+    CommandEntry { id: CommandId::OpenSettings,  title: "Open Settings (UI)",      category: "Preferences", shortcut: Some("⌘,") },
+    CommandEntry { id: CommandId::OpenUserSettingsJson, title: "Open User Settings (JSON)", category: "Preferences", shortcut: None },
+    CommandEntry { id: CommandId::OpenWorkspaceSettings, title: "Open Workspace Settings", category: "Preferences", shortcut: None },
 ];
 
 /// What the user picked in the Quick Access popup.

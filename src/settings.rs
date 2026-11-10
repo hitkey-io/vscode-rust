@@ -32,7 +32,11 @@ impl Settings {
     /// Reads `<user_data_dir>/User/settings.json` (missing or broken files
     /// read as empty, like VS Code).
     pub fn load(user_data_dir: &Path) -> Self {
-        let path = user_data_dir.join("User").join("settings.json");
+        Self::load_file(user_data_dir.join("User").join("settings.json"))
+    }
+
+    /// Reads one settings file (a folder's `.vscode/settings.json`).
+    pub fn load_file(path: PathBuf) -> Self {
         let values = std::fs::read_to_string(&path)
             .ok()
             .and_then(|t| crate::jsonc::parse(&t))
@@ -81,9 +85,7 @@ impl Settings {
     /// Re-reads the file (after it was edited in an editor tab).
     pub fn reload(&mut self) {
         if let Some(path) = &self.path {
-            if let Some(dir) = path.parent().and_then(Path::parent) {
-                self.values = Settings::load(dir).values;
-            }
+            self.values = Settings::load_file(path.clone()).values;
         }
     }
 

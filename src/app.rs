@@ -35,6 +35,13 @@ pub struct App {
     settings: crate::settings::Settings,
     /// The Color Theme picker while it's open.
     theme_pick: Option<ThemePick>,
+    /// The Settings editor (⌘,) while it's open, in its modal.
+    settings_editor: Option<(crate::workbench::settings_editor::SettingsEditorState, crate::workbench::modal::ModalState)>,
+    /// The open folder's `.vscode/settings.json`.
+    workspace_settings: Option<crate::settings::Settings>,
+    /// A Settings editor menu asked for during the frame.
+    pending_settings_menu: Option<SettingsMenu>,
+    settings_menu_actions: Vec<(muda::MenuId, SettingsMenuAction)>,
     /// `theme::generation()` the egui visuals were last built for.
     visuals_generation: u32,
     /// ⌘K was pressed: the second key of a chord (⌘K ⌘T) may follow.
@@ -125,6 +132,22 @@ pub struct App {
 }
 
 use crate::workbench::source_control::ScmAction;
+
+/// A Settings editor menu waiting for the window (native menus need it).
+enum SettingsMenu {
+    /// The gear of a setting row.
+    Gear { key: String, pos: egui::Pos2, configured: bool, target: crate::workbench::settings_editor::Target },
+    /// Filter Settings.
+    Filter { pos: egui::Pos2 },
+}
+
+#[derive(Clone, Debug)]
+enum SettingsMenuAction {
+    Reset(crate::workbench::settings_editor::Target, String),
+    CopyId(String),
+    CopyJson(String),
+    Filter(&'static str),
+}
 
 /// An entry of a native menu built for the Source Control view.
 /// The editor title's "More Actions..." menu (MenuId.EditorTitle, the
@@ -376,6 +399,10 @@ impl App {
             scm_menu_actions: Vec::new(),
             pending_editor_menu: None,
             editor_menu_actions: Vec::new(),
+            settings_editor: None,
+            workspace_settings: None,
+            pending_settings_menu: None,
+            settings_menu_actions: Vec::new(),
             git_prompt: None,
             smart_commit: false,
             next_internal_handle: crate::workbench::webviews::INTERNAL_HANDLE_BASE,
@@ -429,6 +456,8 @@ impl App {
             None
         } else if id == &ids.color_theme {
             Some(CommandId::SelectColorTheme)
+        } else if id == &ids.open_settings {
+            Some(CommandId::OpenSettings)
         } else {
             None
         };
@@ -1760,6 +1789,17 @@ impl App {
     }
 
     /// Pre-fill the Search view with a query and run it once on startup.
+    /// Opens the Settings editor, optionally with a search query (like
+    /// `workbench.action.openSettings` with a query).
+    pub fn bootstrap_settings(&mut self, query: Option<&str>) {
+        self.open_settings_editor(query);
+    }
+
+    /// A value from user settings (`None` when it isn't set).
+    pub fn user_setting(&self, key: &str) -> Option<serde_json::Value> {
+        self.settings.get(key).cloned()
+    }
+
     pub fn bootstrap_search(&mut self, query: String) {
         self.show_view(ActivityView::Search);
         self.search.query = query;
@@ -1784,6 +1824,7 @@ impl App {
     fn set_workspace(&mut self, path: PathBuf) {
         self.add_recent_folder(path.clone());
         self.workspace_root = Some(path.clone());
+        self.workspace_settings = Some(crate::settings::Settings::load_file(path.join(".vscode").join("settings.json")));
         self.file_tree = Some(FileNode::root(path.clone()));
         self.set_status(format!("Opened folder: {}", path.display()));
         self.git_watcher = crate::git::Watcher::new(&path);
@@ -3227,6 +3268,12 @@ impl App {
             self.settings.reload();
             self.apply_theme_settings();
         }
+        if let Some(ws) = self.workspace_settings.as_mut().filter(|w| w.path() == Some(path)) {
+            ws.reload();
+        }
+        if let Some((st, _)) = self.settings_editor.as_mut() {
+            st.reset_inputs();
+        }
     }
 
     fn save_all(&mut self) {
@@ -3753,6 +3800,16 @@ impl App {
             CommandId::QuickOpen => self.open_quick_open(),
             CommandId::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             CommandId::SelectColorTheme => self.open_color_theme_picker(),
+            CommandId::OpenSettings => self.open_settings_editor(None),
+            CommandId::OpenUserSettingsJson => self.open_settings_json(crate::workbench::settings_editor::Target::User, None),
+            CommandId::OpenWorkspaceSettings => {
+                self.open_settings_editor(None);
+                if self.workspace_root.is_some() {
+                    if let Some((st, _)) = self.settings_editor.as_mut() {
+                        st.target = crate::workbench::settings_editor::Target::Workspace;
+                    }
+                }
+            }
         }
     }
 
@@ -4147,6 +4204,10 @@ impl App {
         while let Some(ev) = crate::menubar::poll_event() {
             if let Some((_, id, action)) = self.ext_menu_actions.iter().find(|(m, ..)| m == &ev.id).cloned() {
                 self.extension_page_action(&id, action);
+                continue;
+            }
+            if let Some((_, action)) = self.settings_menu_actions.iter().find(|(m, _)| m == &ev.id).cloned() {
+                self.settings_menu_action(ctx, action);
                 continue;
             }
             if let Some((_, action)) = self.editor_menu_actions.iter().find(|(m, _)| m == &ev.id).map(|(m, a)| (m.clone(), *a)) {
@@ -4625,6 +4686,8 @@ impl App {
             }
         }
 
+        self.settings_modal(ctx);
+
         self.track_recent_active();
         if self.palette.visible {
             self.palette.set_extension_commands(self.extensions.palette_commands());
@@ -4639,11 +4702,253 @@ impl App {
         // Native web views sit above everything egui draws; hide them while a
         // popup would overlap them.
         self.webview_host.suppressed = self.palette.visible
-            || self.tab_menu.is_some();
+            || self.tab_menu.is_some()
+            || self.settings_editor.is_some();
         self.language_widgets(ctx);
 
         for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
             self.extensions.close_notification(d.id, d.action);
+        }
+    }
+}
+
+impl App {
+    /// Preferences: Open Settings (UI) (⌘,): the Settings editor in its
+    /// modal, the search box focused.
+    fn open_settings_editor(&mut self, query: Option<&str>) {
+        use crate::workbench::{modal::ModalState, settings_editor::SettingsEditorState};
+        if self.workspace_settings.is_none() {
+            if let Some(root) = &self.workspace_root {
+                self.workspace_settings = Some(crate::settings::Settings::load_file(root.join(".vscode").join("settings.json")));
+            }
+        }
+        match self.settings_editor.as_mut() {
+            Some((st, _)) => {
+                st.focus_search = true;
+                if let Some(q) = query {
+                    st.query = q.to_string();
+                }
+            }
+            None => {
+                let st = query.map(SettingsEditorState::with_query).unwrap_or_else(SettingsEditorState::new);
+                self.settings_editor = Some((st, ModalState::default()));
+            }
+        }
+        self.palette.visible = false;
+    }
+
+    /// The settings file of a target, created as `{}` when missing (as VS
+    /// Code does before opening it).
+    fn settings_file(&mut self, target: crate::workbench::settings_editor::Target) -> Option<PathBuf> {
+        use crate::workbench::settings_editor::Target;
+        let path = match target {
+            Target::User => self.settings.path().map(PathBuf::from),
+            Target::Workspace => self.workspace_settings.as_ref().and_then(|w| w.path()).map(PathBuf::from),
+        }?;
+        if !path.exists() {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, "{\n}\n");
+        }
+        Some(path)
+    }
+
+    /// Writes (or with `None` resets) a setting in a target. Choosing the
+    /// default in User settings removes it (`updateChangedSetting`).
+    fn write_setting(&mut self, target: crate::workbench::settings_editor::Target, key: &str, value: Option<serde_json::Value>) {
+        use crate::workbench::settings_editor::{model, Target};
+        let value = match (target, value) {
+            (Target::User, Some(v)) if !v.is_object() && !v.is_array() && model::find(key).is_some_and(|i| model::settings()[i].default == v) => None,
+            (_, v) => v,
+        };
+        let result = match target {
+            Target::User => self.settings.update(key, value),
+            Target::Workspace => match self.workspace_settings.as_mut() {
+                Some(ws) => ws.update(key, value),
+                None => Ok(()),
+            },
+        };
+        if let Err(e) = result {
+            let which = if target == Target::User { "user" } else { "workspace" };
+            self.set_status(format!("Unable to write into {which} settings: {e}"));
+        }
+        if key.starts_with("workbench.color") {
+            self.apply_theme_settings();
+        }
+    }
+
+    /// "Edit in settings.json" / Open User Settings (JSON): the file in an
+    /// editor, with the setting added at its current value and the cursor
+    /// on it.
+    fn open_settings_json(&mut self, target: crate::workbench::settings_editor::Target, key: Option<&str>) {
+        use crate::workbench::settings_editor::{model, Target};
+        let Some(path) = self.settings_file(target) else {
+            self.set_status("Settings are not saved in this window");
+            return;
+        };
+        if let Some(key) = key {
+            let set = match target {
+                Target::User => self.settings.get(key).is_some(),
+                Target::Workspace => self.workspace_settings.as_ref().is_some_and(|w| w.get(key).is_some()),
+            };
+            if !set {
+                if let Some(i) = model::find(key) {
+                    let default = model::settings()[i].default.clone();
+                    let _ = match target {
+                        Target::User => self.settings.update(key, Some(default)),
+                        Target::Workspace => self.workspace_settings.as_mut().map(|w| w.update(key, Some(default))).unwrap_or(Ok(())),
+                    };
+                }
+            }
+        }
+        self.settings_editor = None;
+        // Re-read an open editor of the file so it shows the new text.
+        if let Some(i) = self.documents.iter().position(|d| d.path == path && !d.dirty) {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                self.documents[i].text = text;
+            }
+        }
+        self.open_file(path);
+        if let (Some(key), Some(doc)) = (key, self.active_doc.and_then(|i| self.documents.get_mut(i))) {
+            let needle = format!("\"{key}\"");
+            if let Some(byte) = doc.text.find(&needle) {
+                let line = doc.text[..byte].matches('\n').count() + 1;
+                let line_start = doc.text[..byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                doc.pending_nav = Some((line, byte - line_start));
+            }
+        }
+    }
+
+    /// Draws the Settings editor modal and acts on what was done in it.
+    fn settings_modal(&mut self, ctx: &Context) {
+        use crate::workbench::{modal, settings_editor};
+        let Some((mut st, mut modal_state)) = self.settings_editor.take() else { return };
+        let header = modal::ModalHeader {
+            icon: crate::icons::codicon_by_name("settings").unwrap_or('*'),
+            title: "Settings",
+            actions: &[("go-to-file", "Open Settings (JSON)")],
+        };
+        let mut out = settings_editor::SettingsEditorOutput::default();
+        let action = {
+            let values = settings_editor::Values {
+                user: self.settings.values(),
+                workspace: self.workspace_settings.as_ref().map(|w| w.values()),
+            };
+            modal::show(ctx, egui::Id::new("settings-modal"), &modal_state, &header, 35.0, |ui| {
+                let rect = ui.max_rect();
+                out = settings_editor::show(ui, rect, &mut st, &values);
+            })
+        };
+        let target = st.target;
+        let mut keep = true;
+        match action {
+            Some(modal::ModalAction::Close) => keep = false,
+            Some(modal::ModalAction::ToggleMaximized) => modal_state.maximized = !modal_state.maximized,
+            Some(modal::ModalAction::OpenInMainWindow) => {
+                // The Settings editor only lives in its modal here.
+                modal_state.maximized = true;
+            }
+            Some(modal::ModalAction::Editor(_)) => {
+                self.settings_editor = Some((st, modal_state));
+                self.open_settings_json(target, None);
+                return;
+            }
+            None => {}
+        }
+        if out.escape {
+            keep = false;
+        }
+        if let Some((t, key, value)) = out.set.take() {
+            self.write_setting(t, &key, value);
+        }
+        if let Some(url) = out.open_url.take() {
+            let _ = std::process::Command::new("open").arg(&url).spawn();
+        }
+        if let Some((key, pos, configured)) = out.gear_menu.take() {
+            self.pending_settings_menu = Some(SettingsMenu::Gear { key, pos, configured, target });
+        }
+        if let Some(pos) = out.filter_menu.take() {
+            self.pending_settings_menu = Some(SettingsMenu::Filter { pos });
+        }
+        if out.backup_and_sync {
+            self.set_status("Settings Sync is not available");
+        }
+        if let Some((t, key)) = out.edit_in_json.take() {
+            self.settings_editor = Some((st, modal_state));
+            self.open_settings_json(t, Some(&key));
+            return;
+        }
+        if keep {
+            self.settings_editor = Some((st, modal_state));
+        }
+    }
+
+    fn show_pending_settings_menu(&mut self, frame: &eframe::Frame) {
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use muda::ContextMenu;
+        let Some(menu) = self.pending_settings_menu.take() else { return };
+        let root = muda::Menu::new();
+        let mut actions = Vec::new();
+        let pos = match menu {
+            SettingsMenu::Gear { key, pos, configured, target } => {
+                let reset = muda::MenuItem::new("Reset Setting", configured, None);
+                let copy_id = muda::MenuItem::new("Copy Setting ID", true, None);
+                let copy_json = muda::MenuItem::new("Copy Setting as JSON", true, None);
+                actions.push((reset.id().clone(), SettingsMenuAction::Reset(target, key.clone())));
+                actions.push((copy_id.id().clone(), SettingsMenuAction::CopyId(key.clone())));
+                actions.push((copy_json.id().clone(), SettingsMenuAction::CopyJson(key)));
+                let _ = root.append_items(&[&reset, &muda::PredefinedMenuItem::separator(), &copy_id, &copy_json]);
+                pos
+            }
+            SettingsMenu::Filter { pos } => {
+                for f in crate::workbench::settings_editor::FILTERS {
+                    let item = muda::MenuItem::new(*f, true, None);
+                    actions.push((item.id().clone(), SettingsMenuAction::Filter(f)));
+                    let _ = root.append(&item);
+                }
+                pos
+            }
+        };
+        self.settings_menu_actions = actions;
+        let Ok(handle) = frame.window_handle() else { return };
+        if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+            let y = self.viewport_height - pos.y;
+            // SAFETY: the view belongs to the live editor window.
+            unsafe {
+                root.show_context_menu_for_nsview(
+                    appkit.ns_view.as_ptr() as *const std::ffi::c_void,
+                    Some(muda::dpi::Position::Logical(muda::dpi::LogicalPosition::new(pos.x as f64, y as f64))),
+                );
+            }
+        }
+    }
+
+    fn settings_menu_action(&mut self, ctx: &Context, action: SettingsMenuAction) {
+        use crate::workbench::settings_editor::model;
+        match action {
+            SettingsMenuAction::Reset(target, key) => {
+                self.write_setting(target, &key, None);
+                if let Some((st, _)) = self.settings_editor.as_mut() {
+                    st.reset_inputs();
+                }
+            }
+            SettingsMenuAction::CopyId(key) => ctx.copy_text(key),
+            SettingsMenuAction::CopyJson(key) => {
+                let value = self
+                    .settings
+                    .get(&key)
+                    .cloned()
+                    .or_else(|| model::find(&key).map(|i| model::settings()[i].default.clone()))
+                    .unwrap_or(serde_json::Value::Null);
+                let text = serde_json::to_string_pretty(&value).unwrap_or_default().replace("  ", "\t");
+                ctx.copy_text(format!("\"{key}\": {text}"));
+            }
+            SettingsMenuAction::Filter(f) => {
+                if let Some((st, _)) = self.settings_editor.as_mut() {
+                    st.add_filter(f);
+                }
+            }
         }
     }
 }
@@ -4662,6 +4967,7 @@ impl eframe::App for App {
         self.show_pending_extension_menu(frame);
         self.show_pending_scm_menu(frame);
         self.show_pending_editor_menu(frame);
+        self.show_pending_settings_menu(frame);
         self.webview_host.sync(frame, &mut self.extensions);
         if !self.extensions.webviews.is_empty() || !self.ext_pages.is_empty() {
             // Page messages arrive between frames.

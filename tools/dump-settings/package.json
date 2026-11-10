@@ -1,0 +1,10 @@
+{
+  "name": "dump-settings",
+  "publisher": "local",
+  "version": "0.0.1",
+  "description": "Writes VS Code's settings schema, raw default settings and default keybindings to a folder.",
+  "engines": { "vscode": "^1.80.0" },
+  "activationEvents": ["*"],
+  "main": "./extension.js",
+  "capabilities": { "untrustedWorkspaces": { "supported": true }, "virtualWorkspaces": true }
+}

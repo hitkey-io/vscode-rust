@@ -427,3 +427,57 @@ fn extension_completions_open_while_typing_and_insert_on_enter() {
 fn workspace_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workspace")
 }
+
+/// Like [`launch`], then opens the Settings editor with `query`.
+fn launch_settings(query: Option<&'static str>) -> (Harness<'static>, std::rc::Rc<std::cell::RefCell<Option<serde_json::Value>>>) {
+    let mut app: Option<App> = None;
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let seen_in = seen.clone();
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            let mut a = App::for_testing(ctx);
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_settings(query);
+            app = Some(a);
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        a.render(ctx);
+        *seen_in.borrow_mut() = a.user_setting("editor.formatOnSave");
+    };
+    let harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    (harness, seen)
+}
+
+#[test]
+fn settings_editor_shows_toc_and_writes_values() {
+    let (mut harness, seen) = launch_settings(None);
+    harness.run();
+    harness.run();
+    let _search = harness.get_by_label("Search settings");
+    for entry in ["Commonly Used", "Text Editor", "Workbench", "Window", "Features", "Application", "Security", "Extensions"] {
+        let _ = harness.get_by_label(&format!("toc:{entry}"));
+    }
+    harness.snapshot("interaction_settings_editor");
+
+    // Format On Save is a checkbox in Commonly Used; ticking it writes true.
+    harness.get_by_label("editor.formatOnSave").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), Some(serde_json::json!(true)));
+    // Unticking returns to the default, which removes the value.
+    harness.get_by_label("editor.formatOnSave").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), None);
+}
+
+#[test]
+fn settings_editor_search_filters() {
+    let (mut harness, _) = launch_settings(Some("word wrap"));
+    harness.run();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("setting:editor.wordWrap");
+    assert!(harness.query_by_label("setting:editor.fontSize").is_none());
+}

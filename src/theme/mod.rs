@@ -374,6 +374,38 @@ palette! {
     VSCE_TABLE_COLUMN_BORDER = Id("tree.tableColumnsBorder");
     VSCE_TABLE_ODD_ROW_BG = Id("tree.tableOddRowsBackground");
     VSCE_WIDGET_SHADOW = Id("widget.shadow");
+
+    // ── Settings editor (settingsEditorColorRegistry.ts) ──────────────────
+    SETTINGS_HEADER_FG = Id("settings.headerForeground");
+    SETTINGS_HEADER_HOVER_FG = Id("settings.settingsHeaderHoverForeground");
+    SETTINGS_MODIFIED_INDICATOR = Id("settings.modifiedItemIndicator");
+    SETTINGS_SASH_BORDER = Id("settings.sashBorder");
+    SETTINGS_DROPDOWN_BG = Id("settings.dropdownBackground");
+    SETTINGS_DROPDOWN_FG = Id("settings.dropdownForeground");
+    SETTINGS_DROPDOWN_BORDER = Id("settings.dropdownBorder");
+    SETTINGS_DROPDOWN_LIST_BORDER = Id("settings.dropdownListBorder");
+    SETTINGS_CHECKBOX_BG = Id("settings.checkboxBackground");
+    SETTINGS_CHECKBOX_FG = Id("settings.checkboxForeground");
+    SETTINGS_CHECKBOX_BORDER = Id("settings.checkboxBorder");
+    SETTINGS_TEXT_INPUT_BG = Id("settings.textInputBackground");
+    SETTINGS_TEXT_INPUT_FG = Id("settings.textInputForeground");
+    SETTINGS_TEXT_INPUT_BORDER = Id("settings.textInputBorder");
+    SETTINGS_NUMBER_INPUT_BG = Id("settings.numberInputBackground");
+    SETTINGS_NUMBER_INPUT_FG = Id("settings.numberInputForeground");
+    SETTINGS_NUMBER_INPUT_BORDER = Id("settings.numberInputBorder");
+    SETTINGS_FOCUSED_ROW_BG = Id("settings.focusedRowBackground");
+    SETTINGS_FOCUSED_ROW_BORDER = Id("settings.focusedRowBorder");
+    SETTINGS_ROW_HOVER_BG = Id("settings.rowHoverBackground");
+    TEXT_PREFORMAT_FG = Id("textPreformat.foreground");
+    TEXT_PREFORMAT_BG = Id("textPreformat.background");
+    TEXT_PREFORMAT_BORDER = Id("textPreformat.border");
+    MODERN_TAB_ACTIVE_BG = Id("modernTab.activeBackground");
+    MODERN_TAB_ACTIVE_FG = Id("modernTab.activeForeground");
+    MODERN_TAB_HOVER_BG = Id("modernTab.hoverBackground");
+    MODERN_TAB_HOVER_FG = Id("modernTab.hoverForeground");
+    INPUT_PLACEHOLDER_FG = Id("input.placeholderForeground");
+    INPUT_VALIDATION_ERROR_BG = Id("inputValidation.errorBackground");
+    LIST_ACTIVE_SELECTION_FG = OneOf(&["list.activeSelectionForeground", "foreground"]);
 }
 
 impl Palette {
