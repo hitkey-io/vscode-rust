@@ -318,6 +318,11 @@ fn extension_runs_from_view_status_bar_and_palette() {
     let _ = harness.get_by_label("POPULAR");
     let _ = harness.get_by_label("Refresh");
 
+    // Clicking an extension opens its page in an editor tab.
+    harness.get_by_label("Hello World Sample, sample, Activated").click();
+    harness.run_steps(3);
+    let _ = harness.get_by_label("tab:Extension: Hello World Sample");
+
     // Its contributed command runs from the command palette; the
     // notification names the extension.
     use egui::{Key, Modifiers};

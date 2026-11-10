@@ -35,7 +35,11 @@ pub struct ExtensionsViewOutput {
     pub install: Option<GalleryExtension>,
     pub uninstall: Option<String>,
     pub refresh: bool,
+    /// A row was clicked: open that extension's page.
+    pub open: Option<OpenDetails>,
 }
+
+pub use super::extension_details::OpenTarget as OpenDetails;
 
 /// Which sections are collapsed (kept across frames by egui memory).
 #[derive(Clone, Default)]
@@ -281,8 +285,8 @@ struct RowText<'a> {
 }
 
 fn row_frame(ui: &mut Ui, a11y: String) -> (egui::Rect, egui::Response) {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::hover());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, a11y.clone()));
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.clone()));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
     }
@@ -404,6 +408,13 @@ fn row_button(ui: &mut Ui, rect: egui::Rect, label: &str, id: egui::Id, enabled:
 fn gallery_row(ui: &mut Ui, service: &mut ExtensionService, ext: &GalleryExtension, out: &mut ExtensionsViewOutput) {
     let id = ext.id();
     let (rect, resp) = row_frame(ui, format!("{}, {}", ext.display_name, ext.namespace));
+    if resp.clicked() {
+        out.open = Some(if service.is_installed(&id) {
+            OpenDetails::Installed(service.extensions.iter().find(|e| e.id.eq_ignore_ascii_case(&id)).map(|e| e.id.clone()).unwrap_or(id.clone()))
+        } else {
+            OpenDetails::Gallery(ext.clone())
+        });
+    }
     let tooltip = format!("{id}\n{}", ext.description);
     resp.on_hover_text(tooltip);
     if !ui.is_rect_visible(rect) {
@@ -456,6 +467,9 @@ fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, o
         Activation::NeedsNode => "Needs Node.js",
     };
     let (rect, resp) = row_frame(ui, format!("{}, {}, {}", ext.display_name, ext.publisher, status));
+    if resp.clicked() {
+        out.open = Some(OpenDetails::Installed(ext.id.clone()));
+    }
     let hovered = resp.hovered();
     let tooltip = match &state {
         Activation::Failed(e) => format!("{}\n{e}", ext.id),

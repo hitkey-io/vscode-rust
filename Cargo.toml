@@ -44,6 +44,8 @@ notify = "6"
 skrifa = "0.40"
 # Extension webviews (WKWebView on macOS), embedded in the window.
 wry = "0.57"
+# Extension README / CHANGELOG pages.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 # Marketplace extension icons.
 image = { version = "0.25", default-features = false, features = ["png"] }
 

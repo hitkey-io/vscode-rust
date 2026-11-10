@@ -1,6 +1,7 @@
 pub mod activity_bar;
 pub mod breadcrumbs;
 pub mod command_palette;
+pub mod extension_details;
 pub mod extensions_view;
 pub mod language_ui;
 pub mod notifications;

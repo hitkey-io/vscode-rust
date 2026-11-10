@@ -47,7 +47,16 @@ pub struct WebviewHost {
     slots: Vec<(u64, egui::Rect)>,
     /// Hide every web view (a popup is over them: they'd cover it).
     pub suppressed: bool,
+    /// The editor's own pages (extension details…): handle → (html,
+    /// resource roots, version).
+    internal: HashMap<u64, (String, Vec<PathBuf>, u64)>,
+    /// Messages from the editor's own pages, for the app.
+    internal_messages: Vec<(u64, serde_json::Value)>,
 }
+
+/// Handles at or above this are the editor's own pages; below are
+/// extension webviews.
+pub const INTERNAL_HANDLE_BASE: u64 = 1 << 40;
 
 impl Default for WebviewHost {
     fn default() -> Self {
@@ -59,6 +68,8 @@ impl Default for WebviewHost {
             ipc_rx,
             slots: Vec::new(),
             suppressed: false,
+            internal: HashMap::new(),
+            internal_messages: Vec::new(),
         }
     }
 }
@@ -80,12 +91,40 @@ impl WebviewHost {
         self.slots.iter().any(|(h, _)| *h == handle)
     }
 
-    /// Messages the pages posted, forwarded to their extensions.
+    /// Show (or update) one of the editor's own pages under `handle`.
+    pub fn set_internal_page(&mut self, handle: u64, html: String, roots: Vec<PathBuf>) {
+        let entry = self.internal.entry(handle).or_insert_with(|| (String::new(), Vec::new(), 0));
+        if entry.0 != html || entry.1 != roots {
+            entry.0 = html;
+            entry.1 = roots;
+            entry.2 += 1;
+        }
+    }
+
+    /// Forget one of the editor's own pages (its tab closed).
+    pub fn remove_internal_page(&mut self, handle: u64) {
+        self.internal.remove(&handle);
+        self.live.remove(&handle);
+    }
+
+    /// Messages the editor's own pages posted since the last call.
+    pub fn take_internal_messages(&mut self) -> Vec<(u64, serde_json::Value)> {
+        std::mem::take(&mut self.internal_messages)
+    }
+
+    /// Messages the pages posted, forwarded to their extensions (or kept
+    /// for the app, for its own pages).
     pub fn forward_page_messages(&mut self, service: &mut ExtensionService) {
         while let Ok((handle, raw)) = self.ipc_rx.try_recv() {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else { continue };
-            if v.get("kind").and_then(|k| k.as_str()) == Some("message") {
-                service.webview_message(handle, v.get("data").cloned().unwrap_or(serde_json::Value::Null));
+            if v.get("kind").and_then(|k| k.as_str()) != Some("message") {
+                continue;
+            }
+            let data = v.get("data").cloned().unwrap_or(serde_json::Value::Null);
+            if handle >= INTERNAL_HANDLE_BASE {
+                self.internal_messages.push((handle, data));
+            } else {
+                service.webview_message(handle, data);
             }
         }
     }
@@ -97,20 +136,29 @@ impl WebviewHost {
         // Pages for the resource handler.
         {
             let mut pages = self.pages.lock().unwrap();
-            pages.retain(|h, _| service.webviews.contains_key(h));
+            pages.retain(|h, _| service.webviews.contains_key(h) || self.internal.contains_key(h));
             for (h, w) in &service.webviews {
                 let page = pages.entry(*h).or_default();
                 page.html.clone_from(&w.html);
                 page.roots.clone_from(&w.roots);
             }
+            for (h, (html, roots, _)) in &self.internal {
+                let page = pages.entry(*h).or_default();
+                page.html.clone_from(html);
+                page.roots.clone_from(roots);
+            }
         }
         // Gone webviews.
-        self.live.retain(|h, _| service.webviews.contains_key(h));
+        let internal = &self.internal;
+        self.live.retain(|h, _| service.webviews.contains_key(h) || internal.contains_key(h));
 
         let slots = self.slots.clone();
         for (handle, rect) in &slots {
-            let Some(state) = service.webviews.get(handle) else { continue };
-            let version = state.html_version;
+            let version = match (service.webviews.get(handle), self.internal.get(handle)) {
+                (Some(state), _) => state.html_version,
+                (None, Some((_, _, v))) => *v,
+                (None, None) => continue,
+            };
             if !self.live.contains_key(handle) {
                 match self.create(window, *handle, *rect) {
                     Ok(view) => {
@@ -141,6 +189,9 @@ impl WebviewHost {
                     let _ = live.view.focus_parent();
                 }
             }
+            if *handle >= INTERNAL_HANDLE_BASE {
+                continue;
+            }
             for msg in service.take_page_messages(*handle) {
                 let _ = live
                     .view
@@ -156,7 +207,9 @@ impl WebviewHost {
                     let _ = live.view.set_visible(false);
                     let _ = live.view.focus_parent();
                 }
-                service.set_webview_visible(*handle, false);
+                if *handle < INTERNAL_HANDLE_BASE {
+                    service.set_webview_visible(*handle, false);
+                }
             }
         }
     }
@@ -177,7 +230,14 @@ impl WebviewHost {
             .with_ipc_handler(move |request| {
                 let _ = ipc.send((handle, request.body().clone()));
             })
-            .with_navigation_handler(|url| url.starts_with(SCHEME) || url == "about:blank")
+            .with_navigation_handler(|url| {
+                // Links out of the page open in the browser, as in VS Code.
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    let _ = std::process::Command::new("open").arg(&url).spawn();
+                    return false;
+                }
+                url.starts_with(SCHEME) || url == "about:blank"
+            })
             .with_url(format!("{SCHEME}://w{handle}/index.html?v=0"))
             .build_as_child(window)
     }

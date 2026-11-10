@@ -112,7 +112,21 @@ pub enum List {
     Recommended,
 }
 
+/// What the extension page shows for a catalogue extension.
+#[derive(Clone, Debug, Default)]
+pub struct GalleryDetails {
+    /// `/api/{namespace}/{name}` answer.
+    pub json: Value,
+    pub readme: Option<String>,
+    pub changelog: Option<String>,
+    /// Folder of the README file, for its relative links and images.
+    pub base_url: Option<String>,
+    /// The extension's `package.json` (for its commands and settings).
+    pub manifest: Option<Value>,
+}
+
 enum Job {
+    Details(String, Result<GalleryDetails, String>),
     List(List, Result<Vec<GalleryExtension>, String>),
     Icon(String, Option<Vec<u8>>),
     Installed(String, Result<PathBuf, String>),
@@ -153,6 +167,9 @@ pub struct Marketplace {
     pub just_installed: Vec<String>,
     /// Install and uninstall failures, for a notification.
     pub errors: Vec<String>,
+    /// Extension pages' data by id, once fetched (or the error).
+    pub details: std::collections::HashMap<String, Result<GalleryDetails, String>>,
+    details_loading: BTreeSet<String>,
     tx: Sender<Job>,
     rx: Receiver<Job>,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -180,6 +197,8 @@ impl Default for Marketplace {
             installing: BTreeSet::new(),
             just_installed: Vec::new(),
             errors: Vec::new(),
+            details: Default::default(),
+            details_loading: BTreeSet::new(),
             tx,
             rx,
             wake: Arc::new(|| {}),
@@ -250,7 +269,7 @@ impl Marketplace {
                 }
             }
         }
-        self.lists.values().any(|l| l.loading) || !self.installing.is_empty()
+        self.lists.values().any(|l| l.loading) || !self.installing.is_empty() || !self.details_loading.is_empty()
     }
 
     /// Start downloading `url` as an icon (once).
@@ -263,6 +282,40 @@ impl Marketplace {
         std::thread::spawn(move || {
             let bytes = cached_download(&url);
             let _ = tx.send(Job::Icon(url, bytes));
+            wake();
+        });
+    }
+
+    /// Fetch what the extension page shows (README, changelog, metadata)
+    /// for `namespace.name`, once.
+    pub fn request_details(&mut self, namespace: &str, name: &str) {
+        let id = format!("{namespace}.{name}");
+        if !self.enabled || self.details.contains_key(&id) || !self.details_loading.insert(id.clone()) {
+            return;
+        }
+        let (tx, wake, gallery) = (self.tx.clone(), self.wake.clone(), self.gallery.clone());
+        let (ns, nm) = (namespace.to_string(), name.to_string());
+        std::thread::spawn(move || {
+            let result = (|| {
+                let body = http_get(&format!("{gallery}/api/{ns}/{nm}"))?;
+                let json: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+                if let Some(e) = json.get("error").and_then(Value::as_str) {
+                    return Err(e.to_string());
+                }
+                let text = |key: &str| {
+                    json.pointer(&format!("/files/{key}"))
+                        .and_then(Value::as_str)
+                        .and_then(|u| http_get(u).ok())
+                        .map(|b| String::from_utf8_lossy(&b).into_owned())
+                };
+                let base_url = json
+                    .pointer("/files/readme")
+                    .and_then(Value::as_str)
+                    .and_then(|u| u.rfind('/').map(|i| u[..=i].to_string()));
+                let manifest = text("manifest").and_then(|m| serde_json::from_str(&m).ok());
+                Ok(GalleryDetails { readme: text("readme"), changelog: text("changelog"), base_url, manifest, json })
+            })();
+            let _ = tx.send(Job::Details(id, result));
             wake();
         });
     }
@@ -308,6 +361,10 @@ impl Marketplace {
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok(job) = self.rx.try_recv() {
             match job {
+                Job::Details(id, result) => {
+                    self.details_loading.remove(&id);
+                    self.details.insert(id, result);
+                }
                 Job::List(list, result) => {
                     let state = match result {
                         Ok(items) => ListState { loading: false, items, error: None },

@@ -85,6 +85,23 @@ pub struct App {
     /// The extension container showing when the view is
     /// `ActivityView::ExtensionContainer`.
     ext_container: Option<String>,
+    /// Open extension pages (editor tabs).
+    ext_pages: Vec<ExtensionPage>,
+    next_internal_handle: u64,
+}
+
+/// An extension's page in an editor tab.
+struct ExtensionPage {
+    handle: u64,
+    /// `publisher.name`.
+    id: String,
+    /// Set when it was opened from the catalogue.
+    gallery: Option<crate::extensions::marketplace::GalleryExtension>,
+    /// README / CHANGELOG of the installed copy, read once.
+    local_readme: Option<String>,
+    local_changelog: Option<String>,
+    /// What the page shows now (rebuilt only when this changes).
+    shown: Option<crate::workbench::extension_details::DetailsData>,
 }
 
 /// Completion, hover and go-to-definition requests and what they show.
@@ -163,6 +180,8 @@ impl App {
             lang: LanguageState::default(),
             webview_host: Default::default(),
             ext_container: None,
+            ext_pages: Vec::new(),
+            next_internal_handle: crate::workbench::webviews::INTERNAL_HANDLE_BASE,
         }
     }
 
@@ -753,6 +772,169 @@ impl App {
         }
         if let Some(i) = reveal {
             self.active_doc = Some(i);
+        }
+    }
+
+    /// Open (or focus) an extension's page in an editor tab, as clicking an
+    /// extension in VS Code's Extensions view does.
+    fn open_extension_page(&mut self, target: crate::workbench::extension_details::OpenTarget) {
+        use crate::workbench::extension_details::OpenTarget;
+        let (id, gallery) = match target {
+            OpenTarget::Installed(id) => (id, None),
+            OpenTarget::Gallery(g) => (g.id(), Some(g)),
+        };
+        if let Some(page) = self.ext_pages.iter().find(|p| p.id.eq_ignore_ascii_case(&id)) {
+            let handle = page.handle;
+            if let Some(i) = self.documents.iter().position(|d| d.webview == Some(handle)) {
+                self.active_doc = Some(i);
+                return;
+            }
+        }
+        let installed = self.extensions.extensions.iter().find(|e| e.id.eq_ignore_ascii_case(&id)).cloned();
+        let read = |names: &[&str]| -> Option<String> {
+            let dir = &installed.as_ref()?.path;
+            std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                names.contains(&n.as_str()).then(|| std::fs::read_to_string(e.path()).ok()).flatten()
+            })
+        };
+        let title = installed
+            .as_ref()
+            .map(|e| e.display_name.clone())
+            .or_else(|| gallery.as_ref().map(|g| g.display_name.clone()))
+            .unwrap_or_else(|| id.clone());
+        let handle = self.next_internal_handle;
+        self.next_internal_handle += 1;
+        self.ext_pages.push(ExtensionPage {
+            handle,
+            id: id.clone(),
+            gallery,
+            local_readme: read(&["readme.md", "readme.markdown", "readme.txt", "readme"]),
+            local_changelog: read(&["changelog.md", "changelog.markdown", "changelog.txt", "changelog"]),
+            shown: None,
+        });
+        if self.marketplace_allowed && !self.extensions.marketplace.enabled {
+            // The page shows install counts and ratings from the catalogue.
+            // (Wake-ups come from the repaint after messages.)
+            self.extensions.marketplace.enable(|| {});
+        }
+        if let Some((ns, name)) = id.split_once('.') {
+            self.extensions.marketplace.request_details(ns, name);
+        }
+        self.documents.push(crate::editor::Document::webview(handle, format!("Extension: {title}")));
+        self.active_doc = Some(self.documents.len() - 1);
+        self.show_welcome = false;
+    }
+
+    /// Rebuild open extension pages whose data changed; drop pages whose
+    /// tab closed.
+    fn refresh_extension_pages(&mut self) {
+        use crate::workbench::extension_details::DetailsData;
+        let open: std::collections::BTreeSet<u64> = self.documents.iter().filter_map(|d| d.webview).collect();
+        let closed: Vec<u64> = self.ext_pages.iter().map(|p| p.handle).filter(|h| !open.contains(h)).collect();
+        for h in closed {
+            self.webview_host.remove_internal_page(h);
+            self.ext_pages.retain(|p| p.handle != h);
+        }
+        for i in 0..self.ext_pages.len() {
+            let page = &self.ext_pages[i];
+            let handle = page.handle;
+            let installed = self.extensions.extensions.iter().find(|e| e.id.eq_ignore_ascii_case(&page.id));
+            let remote = self.extensions.marketplace.details.get(&page.id).and_then(|r| r.as_ref().ok());
+            let remote_json = remote.map(|r| &r.json);
+            let jstr = |k: &str| remote_json.and_then(|j| j.get(k)).and_then(|v| v.as_str()).map(str::to_string);
+            let mut d = DetailsData { id: page.id.clone(), ..Default::default() };
+            let mut roots = Vec::new();
+            if let Some(e) = installed {
+                d.name = e.display_name.clone();
+                d.publisher = jstr("namespaceDisplayName").unwrap_or_else(|| e.publisher.clone());
+                d.version = e.version.clone();
+                d.description = e.description.clone();
+                d.installed = true;
+                d.can_uninstall = self.extensions.can_uninstall(&e.id);
+                d.status = match self.extensions.activation.get(&e.id) {
+                    Some(crate::extensions::Activation::Active) => Some("Activated".into()),
+                    Some(crate::extensions::Activation::Failed(err)) => Some(format!("Activation failed: {err}")),
+                    Some(crate::extensions::Activation::NeedsNode) => Some("Needs Node.js".into()),
+                    _ if e.main.is_none() => None,
+                    _ => Some("Not activated".into()),
+                };
+                d.icon = e
+                    .manifest
+                    .get("icon")
+                    .and_then(|i| i.as_str())
+                    .map(|rel| format!("vscode-resource://w{handle}{}", e.path.join(rel).display()));
+                d.readme = page.local_readme.clone();
+                d.changelog = page.local_changelog.clone();
+                d.base_url = Some(format!("vscode-resource://w{handle}{}/", e.path.display()));
+                d.read_features(&e.manifest);
+                roots.push(e.path.clone());
+            } else if let Some(g) = &page.gallery {
+                d.name = g.display_name.clone();
+                d.publisher = jstr("namespaceDisplayName").unwrap_or_else(|| g.namespace.clone());
+                d.version = g.version.clone();
+                d.description = g.description.clone();
+                d.icon = g.icon_url.clone();
+                d.installing = self.extensions.marketplace.installing.contains(&g.id());
+                d.readme = remote.and_then(|r| r.readme.clone());
+                d.changelog = remote.and_then(|r| r.changelog.clone());
+                d.base_url = remote.and_then(|r| r.base_url.clone());
+                d.loading = remote.is_none() && self.extensions.marketplace.enabled
+                    && !self.extensions.marketplace.details.contains_key(&page.id);
+                if let Some(m) = remote.and_then(|r| r.manifest.as_ref()) {
+                    d.read_features(m);
+                }
+            }
+            if let Some(g) = &page.gallery {
+                d.downloads = Some(g.downloads);
+                d.rating = g.rating;
+                d.verified = g.verified;
+            }
+            if let Some(j) = remote_json {
+                d.downloads = j.get("downloadCount").and_then(|v| v.as_u64()).or(d.downloads);
+                d.rating = j.get("averageRating").and_then(|v| v.as_f64()).map(|r| r as f32).or(d.rating);
+                d.review_count = j.get("reviewCount").and_then(|v| v.as_u64());
+                d.verified = j.get("verified").and_then(|v| v.as_bool()).unwrap_or(d.verified);
+                d.license = jstr("license").or(d.license.take());
+                d.last_updated = jstr("timestamp").map(|t| t.chars().take(10).collect());
+                d.repository = jstr("repository").or(d.repository.take());
+                if d.categories.is_empty() {
+                    d.categories = j
+                        .get("categories")
+                        .and_then(|c| c.as_array())
+                        .map(|a| a.iter().filter_map(|c| c.as_str()).map(str::to_string).collect())
+                        .unwrap_or_default();
+                }
+            }
+            if self.ext_pages[i].shown.as_ref() != Some(&d) {
+                let html = crate::workbench::extension_details::page_html(&d);
+                self.webview_host.set_internal_page(handle, html, roots);
+                self.ext_pages[i].shown = Some(d);
+            }
+        }
+    }
+
+    /// A button or link on an extension page.
+    fn extension_page_message(&mut self, handle: u64, msg: serde_json::Value) {
+        let Some(page) = self.ext_pages.iter().find(|p| p.handle == handle) else { return };
+        match msg.get("command").and_then(|c| c.as_str()) {
+            Some("install") => {
+                if let Some(g) = page.gallery.clone() {
+                    self.extensions.marketplace.install(&g);
+                }
+            }
+            Some("uninstall") => {
+                let id = page.id.clone();
+                self.extensions.uninstall(&id);
+            }
+            Some("openLink") => {
+                if let Some(url) = msg.get("url").and_then(|u| u.as_str()) {
+                    if url.starts_with("http://") || url.starts_with("https://") {
+                        let _ = std::process::Command::new("open").arg(url).spawn();
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1929,6 +2111,7 @@ impl App {
     fn render_impl(&mut self, ctx: &Context) {
         self.webview_host.begin_frame();
         self.sync_webview_tabs();
+        self.refresh_extension_pages();
         // Drain any native-menu events from the previous frame.
         while let Some(ev) = crate::menubar::poll_event() {
             self.dispatch_menu_event(ctx, &ev.id);
@@ -2105,6 +2288,9 @@ impl App {
                             }
                             if view.refresh {
                                 self.extensions.marketplace.lists.clear();
+                            }
+                            if let Some(target) = view.open {
+                                self.open_extension_page(target);
                             }
                             return SidebarOutput::default();
                         }
@@ -2336,6 +2522,9 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         self.render(ctx);
         self.webview_host.forward_page_messages(&mut self.extensions);
+        for (handle, msg) in self.webview_host.take_internal_messages() {
+            self.extension_page_message(handle, msg);
+        }
         self.webview_host.sync(frame, &mut self.extensions);
         if !self.extensions.webviews.is_empty() {
             // Page messages arrive between frames.
