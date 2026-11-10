@@ -1764,12 +1764,7 @@ impl App {
         self.show_view(ActivityView::Search);
         self.search.query = query;
         if let Some(root) = &self.workspace_root {
-            let q = crate::search::engine::SearchQuery {
-                text: self.search.query.clone(),
-                match_case: self.search.match_case,
-                whole_word: self.search.whole_word,
-                regex: self.search.regex,
-            };
+            let q = self.search.engine_query(None);
             self.search.outcome = Some(crate::search::engine::run(root, &q));
         }
     }
@@ -3601,6 +3596,138 @@ impl App {
         self.open_file(path);
     }
 
+    /// Search view requests: replace in files, open the search editor.
+    fn dispatch_search(&mut self, out: crate::search::ui::SearchOutput) {
+        if out.replace_all {
+            self.search_replace(None);
+        }
+        if let Some((path, hit)) = out.replace {
+            self.search_replace(Some((path, hit)));
+        }
+        if out.open_search_editor {
+            self.open_search_editor();
+        }
+    }
+
+    /// Replaces results with the Replace text: all of them, one file's
+    /// (`hit` None) or one match. Open editors are edited in place (and
+    /// left dirty, as VS Code does); other files are written.
+    fn search_replace(&mut self, target: Option<(PathBuf, Option<(usize, usize)>)>) {
+        let Some(outcome) = self.search.outcome.take() else { return };
+        let replacement = self.search.replace.clone();
+        let regex = self.search.regex;
+        let pattern = if regex {
+            regex::RegexBuilder::new(&self.search.query).case_insensitive(!self.search.match_case).build().ok()
+        } else {
+            None
+        };
+        let mut replaced = 0usize;
+        for file in &outcome.results {
+            if target.as_ref().is_some_and(|(p, _)| p != &file.path) {
+                continue;
+            }
+            let hits: Vec<_> = file
+                .hits
+                .iter()
+                .filter(|h| !self.search.dismissed.contains(&(file.path.clone(), h.line, h.byte_start)))
+                .filter(|h| match &target {
+                    Some((_, Some((line, byte)))) => h.line == *line && h.byte_start == *byte,
+                    _ => true,
+                })
+                .collect();
+            if hits.is_empty() {
+                continue;
+            }
+            let open = self.documents.iter().position(|d| d.path == file.path && !d.read_only);
+            let text = match open {
+                Some(i) => self.documents[i].text.clone(),
+                None => match std::fs::read_to_string(&file.path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+            };
+            // Line start byte offsets.
+            let mut starts = vec![0usize];
+            for (i, b) in text.bytes().enumerate() {
+                if b == b'\n' {
+                    starts.push(i + 1);
+                }
+            }
+            let mut edits: Vec<(usize, usize, String)> = hits
+                .iter()
+                .filter_map(|h| {
+                    let s = starts.get(h.line - 1)? + h.byte_start;
+                    let e = s + h.match_len;
+                    let matched = text.get(s..e)?;
+                    let new = match &pattern {
+                        Some(re) => re.replace(matched, replacement.as_str()).into_owned(),
+                        None if self.search.preserve_case => preserve_case(matched, &replacement),
+                        None => replacement.clone(),
+                    };
+                    Some((s, e, new))
+                })
+                .collect();
+            edits.sort_by(|a, b| b.0.cmp(&a.0));
+            let mut new_text = text.clone();
+            for (s, e, r) in &edits {
+                new_text.replace_range(*s..*e, r);
+            }
+            replaced += edits.len();
+            match open {
+                Some(i) => {
+                    self.documents[i].text = new_text;
+                    self.documents[i].check_dirty();
+                }
+                None => {
+                    let _ = std::fs::write(&file.path, new_text);
+                }
+            }
+        }
+        self.set_status(format!("Replaced {replaced} occurrence{}", if replaced == 1 { "" } else { "s" }));
+        // Search again: the results now show what's left.
+        if let Some(root) = self.workspace_root.clone() {
+            self.search.outcome = Some(crate::search::engine::run(&root, &self.search.engine_query(None)));
+        }
+    }
+
+    /// "Open in editor" / New Search Editor: the results as a search editor
+    /// (`# Query:` header, then each file and its matching lines).
+    fn open_search_editor(&mut self) {
+        let mut text = format!("# Query: {}\n", self.search.query);
+        if self.search.match_case || self.search.regex || self.search.whole_word {
+            let mut flags = Vec::new();
+            if self.search.regex { flags.push("RegExp"); }
+            if self.search.match_case { flags.push("CaseSensitive"); }
+            if self.search.whole_word { flags.push("WordMatch"); }
+            text.push_str(&format!("# Flags: {}\n", flags.join(" ")));
+        }
+        if !self.search.include.is_empty() {
+            text.push_str(&format!("# Including: {}\n", self.search.include));
+        }
+        if !self.search.exclude.is_empty() {
+            text.push_str(&format!("# Excluding: {}\n", self.search.exclude));
+        }
+        text.push('\n');
+        if let (Some(o), Some(root)) = (&self.search.outcome, &self.workspace_root) {
+            text.push_str(&format!("{} result{} - {} file{}\n", o.total_hits, if o.total_hits == 1 { "" } else { "s" }, o.results.len(), if o.results.len() == 1 { "" } else { "s" }));
+            for f in &o.results {
+                let rel = f.path.strip_prefix(root).unwrap_or(&f.path).display();
+                text.push_str(&format!("\n{rel}:\n"));
+                let mut seen = std::collections::BTreeSet::new();
+                for h in &f.hits {
+                    if seen.insert(h.line) {
+                        let line = std::fs::read_to_string(&f.path).ok().and_then(|t| t.lines().nth(h.line - 1).map(str::to_string)).unwrap_or_default();
+                        text.push_str(&format!("  {}: {}\n", h.line, line));
+                    }
+                }
+            }
+        }
+        let title = if self.search.query.is_empty() { "Search".to_string() } else { format!("Search: {}", self.search.query) };
+        let mut doc = Document::read_only(PathBuf::from(format!("{title}.code-search")), text, title);
+        doc.read_only = false;
+        self.open_tab(doc, true);
+    }
+
     /// Put the cursor at the start of 1-based `line` in the active editor,
     /// clamped to the document length.
     fn go_to_line(&mut self, line: usize) {
@@ -4242,6 +4369,10 @@ impl App {
                             return SidebarOutput::default();
                         }
                         let graph_root = self.active_repo_root();
+                        let search_scope = crate::search::ui::SearchScope {
+                            open_editors: self.documents.iter().filter(|d| !d.read_only && !d.untitled && d.webview.is_none()).map(|d| d.path.clone()).collect(),
+                            changed_files: self.git_decorations.keys().cloned().collect(),
+                        };
                         let active_file: Option<PathBuf> = self
                             .active_doc
                             .and_then(|i| self.documents.get(i))
@@ -4260,6 +4391,7 @@ impl App {
                             active_file.as_deref(),
                             &mut self.outline_expanded,
                             &mut self.timeline_expanded,
+                            &search_scope,
                         )
                     });
                 sidebar_output = resp.inner;
@@ -4288,6 +4420,7 @@ impl App {
                 self.navigate_to(path, line, col);
             }
             self.dispatch_scm(sidebar_output.scm);
+            self.dispatch_search(sidebar_output.search);
         }
 
         let mut editor_output: Option<crate::editor::view::EditorOutput> = None;
@@ -4662,5 +4795,20 @@ mod tests {
         let mut dark = vec!["Dark+", "Abyss", "Dark Modern", "Dark (Visual Studio)", "Kimbie Dark"];
         dark.sort_by(|a, b| locale_compare(a, b));
         assert_eq!(dark, ["Abyss", "Dark (Visual Studio)", "Dark Modern", "Dark+", "Kimbie Dark"]);
+    }
+}
+
+/// Search's Preserve Case: the replacement takes the matched text's case
+/// shape (all upper, all lower, capitalised).
+fn preserve_case(matched: &str, replacement: &str) -> String {
+    if matched.chars().all(|c| !c.is_lowercase()) && matched.chars().any(|c| c.is_uppercase()) {
+        replacement.to_uppercase()
+    } else if matched.chars().all(|c| !c.is_uppercase()) {
+        replacement.to_lowercase()
+    } else if matched.chars().next().is_some_and(|c| c.is_uppercase()) {
+        let mut cs = replacement.chars();
+        cs.next().map(|f| f.to_uppercase().collect::<String>() + cs.as_str()).unwrap_or_default()
+    } else {
+        replacement.to_string()
     }
 }

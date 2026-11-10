@@ -1,10 +1,21 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Default)]
 pub struct SearchQuery {
     pub text: String,
     pub match_case: bool,
     pub whole_word: bool,
     pub regex: bool,
+    /// "files to include" (empty = everything).
+    pub include: super::glob::GlobSet,
+    /// "files to exclude".
+    pub exclude: super::glob::GlobSet,
+    /// "Use Exclude Settings and Ignore Files" (default on): `files.exclude`,
+    /// `search.exclude` defaults and the folder's `.gitignore`.
+    pub use_excludes: bool,
+    /// Only these files ("Search only in Open Editors" / "in Changed
+    /// Files"), when set.
+    pub only: Option<Vec<PathBuf>>,
 }
 
 pub struct SearchHit {
@@ -89,8 +100,27 @@ pub fn run(root: &Path, query: &SearchQuery) -> SearchOutcome {
         }
     };
 
-    walk(root, &matcher, &mut outcome);
+    walk(root, query, &matcher, &mut outcome);
     outcome
+}
+
+/// `files.exclude` defaults (always applied, as VS Code's file service
+/// does) and `search.exclude` defaults (`**/node_modules`,
+/// `**/bower_components`, `**/*.code-search`).
+const FILES_EXCLUDE: &str = "**/.git,**/.svn,**/.hg,**/.DS_Store,**/Thumbs.db";
+const SEARCH_EXCLUDE: &str = "**/node_modules,**/bower_components,**/*.code-search";
+
+/// The folder's `.gitignore` as globs (`search.useIgnoreFiles`), simplified:
+/// negations aren't supported.
+fn gitignore(root: &Path) -> super::glob::GlobSet {
+    let text = std::fs::read_to_string(root.join(".gitignore")).unwrap_or_default();
+    let lines: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('!') && !l.contains(','))
+        .map(str::to_string)
+        .collect();
+    super::glob::GlobSet::parse(&lines.join(","))
 }
 
 enum Matcher {
@@ -181,11 +211,22 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn walk(root: &Path, matcher: &Matcher, outcome: &mut SearchOutcome) {
+fn walk(root: &Path, query: &SearchQuery, matcher: &Matcher, outcome: &mut SearchOutcome) {
+    let always = super::glob::GlobSet::parse(FILES_EXCLUDE);
+    let defaults = super::glob::GlobSet::parse(SEARCH_EXCLUDE);
+    let ignored = if query.use_excludes { gitignore(root) } else { Default::default() };
+    let relative = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    let excluded = |rel: &str| {
+        !rel.is_empty()
+            && (always.matches(rel)
+                || query.exclude.matches(rel)
+                || (query.use_excludes && (defaults.matches(rel) || ignored.matches(rel))))
+    };
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
+        .sort_by_file_name()
         .into_iter()
-        .filter_entry(|e| accept_entry(e))
+        .filter_entry(|e| !excluded(&relative(e.path())))
     {
         if outcome.results.len() >= MAX_FILES_MATCHED
             || outcome.total_hits >= MAX_TOTAL_HITS
@@ -205,9 +246,14 @@ fn walk(root: &Path, matcher: &Matcher, outcome: &mut SearchOutcome) {
             Some(n) => n,
             None => continue,
         };
-        if SKIP_FILENAMES.contains(&name) {
+        let rel = relative(path);
+        if !query.include.is_empty() && !query.include.matches(&rel) {
             continue;
         }
+        if query.only.as_ref().is_some_and(|only| !only.iter().any(|p| p == path)) {
+            continue;
+        }
+        let _ = name;
         let meta = match path.metadata() {
             Ok(m) => m,
             Err(_) => continue,

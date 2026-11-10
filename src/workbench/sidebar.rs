@@ -19,6 +19,8 @@ pub struct SidebarOutput {
     pub navigate_to: Option<(PathBuf, usize, usize)>,
     /// Source Control events (multi-repo). Default = no-op.
     pub scm: super::source_control::ScmOutput,
+    /// Search view requests (replace, search editor).
+    pub search: crate::search::ui::SearchOutput,
 }
 
 pub fn show(
@@ -35,6 +37,7 @@ pub fn show(
     active_file: Option<&std::path::Path>,
     outline_expanded: &mut bool,
     timeline_expanded: &mut bool,
+    search_scope: &crate::search::ui::SearchScope,
 ) -> SidebarOutput {
     let mut out = SidebarOutput {
         file_to_open: None,
@@ -42,6 +45,7 @@ pub fn show(
         open_folder_requested: false,
         navigate_to: None,
         scm: super::source_control::ScmOutput::default(),
+        search: Default::default(),
     };
 
     let rect = ui.max_rect();
@@ -51,8 +55,9 @@ pub fn show(
         ui.spacing_mut().item_spacing.y = 0.0;
         // The SCM view draws its own "SOURCE CONTROL" title; others get the
         // sidebar section header here.
+        let mut title = egui::Rect::NOTHING;
         if view != ActivityView::SourceControl {
-            header(ui, view);
+            title = header(ui, view);
         }
 
         match view {
@@ -63,8 +68,8 @@ pub fn show(
                 );
             }
             ActivityView::Search => {
-                let search_out = crate::search::ui::show(ui, workspace_root, search);
-                out.navigate_to = search_out.navigate_to;
+                out.search = crate::search::ui::show(ui, workspace_root, search, title, search_scope);
+                out.navigate_to = out.search.navigate_to.take();
             }
             ActivityView::SourceControl => {
                 out.scm = super::source_control::show(
@@ -83,7 +88,7 @@ pub fn show(
     out
 }
 
-fn header(ui: &mut Ui, view: ActivityView) {
+fn header(ui: &mut Ui, view: ActivityView) -> egui::Rect {
     let more = view == ActivityView::Explorer;
     let title = match view {
         ActivityView::Explorer => "Explorer",
@@ -110,6 +115,7 @@ fn header(ui: &mut Ui, view: ActivityView) {
         );
         resp.on_hover_text("Views and More Actions...");
     }
+    rect
 }
 
 /// The view title row ("Explorer", "Extensions"…) as Modern UI draws it:

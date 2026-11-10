@@ -185,6 +185,7 @@ fn sidebar_explorer_with_tree() {
                     None,
                     &mut false,
                     &mut false,
+                    &Default::default(),
                 );
             });
     });
@@ -220,6 +221,7 @@ fn sidebar_explorer_no_workspace() {
                     None,
                     &mut false,
                     &mut false,
+                    &Default::default(),
                 );
             });
     });
@@ -389,6 +391,7 @@ fn full_app_welcome() {
                     None,
                     &mut false,
                     &mut false,
+                    &Default::default(),
                 );
             });
 
@@ -468,7 +471,7 @@ fn full_app_with_doc_and_palette() {
             .default_width(260.0)
             .frame(Frame::default().fill(theme::Palette::SIDEBAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                let _ = sidebar::show(ui, active_view, &workspace, &mut tree, &mut search, &vscode_rust::git::Model::default(), &[], None, &mut vscode_rust::workbench::source_control::ScmUiState::default(), &std::collections::BTreeMap::new(), None, &mut false, &mut false);
+                let _ = sidebar::show(ui, active_view, &workspace, &mut tree, &mut search, &vscode_rust::git::Model::default(), &[], None, &mut vscode_rust::workbench::source_control::ScmUiState::default(), &std::collections::BTreeMap::new(), None, &mut false, &mut false, &Default::default());
             });
 
         egui::CentralPanel::default()
