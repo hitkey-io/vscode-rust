@@ -105,7 +105,7 @@ fn inline_block(text: &str, style: Style, _indent: f32) -> Block {
     let link_fmt = fmt(FontId::proportional(style.size), Palette::TEXT_LINK_FG());
     // Reserves the code's width; the text itself is painted over its box
     // (egui can't align a smaller font on the baseline).
-    let code = fmt(crate::icons::editor_mono_font(11.0), Color32::TRANSPARENT);
+    let code = fmt(crate::ui_font::mono(11.0), Color32::TRANSPARENT);
     let mut chars = text.char_indices().peekable();
     let mut buf = String::new();
     let push = |job: &mut LayoutJob, buf: &mut String, f: &TextFormat| {

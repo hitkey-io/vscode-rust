@@ -430,6 +430,11 @@ fn workspace_path() -> PathBuf {
 
 /// Like [`launch`], then opens the Settings editor with `query`.
 fn launch_settings(query: Option<&'static str>) -> (Harness<'static>, std::rc::Rc<std::cell::RefCell<Option<serde_json::Value>>>) {
+    launch_settings_watching(query, "editor.formatOnSave")
+}
+
+/// [`launch_settings`], reporting the user value of `key` after each frame.
+fn launch_settings_watching(query: Option<&'static str>, key: &'static str) -> (Harness<'static>, std::rc::Rc<std::cell::RefCell<Option<serde_json::Value>>>) {
     let mut app: Option<App> = None;
     let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
     let seen_in = seen.clone();
@@ -443,7 +448,7 @@ fn launch_settings(query: Option<&'static str>) -> (Harness<'static>, std::rc::R
         }
         let a = app.as_mut().unwrap();
         a.render(ctx);
-        *seen_in.borrow_mut() = a.user_setting("editor.formatOnSave");
+        *seen_in.borrow_mut() = a.user_setting(key);
     };
     let harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
     (harness, seen)
@@ -480,4 +485,28 @@ fn settings_editor_search_filters() {
     harness.run();
     let _ = harness.get_by_label("setting:editor.wordWrap");
     assert!(harness.query_by_label("setting:editor.fontSize").is_none());
+}
+
+#[test]
+fn settings_editor_exclude_list_adds_and_removes_patterns() {
+    let (mut harness, seen) = launch_settings_watching(Some("files.exclude"), "files.exclude");
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("item:**/.git");
+    harness.get_all_by_label("Add Pattern").next().unwrap().click();
+    harness.run();
+    harness.get_by_label("Exclude Pattern...").type_text("**/dist");
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), Some(serde_json::json!({"**/dist": true})));
+    // Removing a default pattern overrides it with `false`.
+    harness.get_by_label("item:**/.svn").hover();
+    harness.run();
+    harness.get_by_label("Remove Exclude Item").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), Some(serde_json::json!({"**/.svn": false, "**/dist": true})));
+    assert!(harness.query_by_label("item:**/.svn").is_none());
 }

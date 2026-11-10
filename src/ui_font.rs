@@ -21,6 +21,9 @@ use skrifa::{instance::Size, raw::TableProvider, GlyphId, MetadataProvider};
 const SYSTEM_UI_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
 /// Its italic companion (preview tab titles).
 const SYSTEM_UI_ITALIC: &str = "/System/Library/Fonts/SFNSItalic.ttf";
+const SYSTEM_MONO_FONT: &str = "/System/Library/Fonts/SFNSMono.ttf";
+const MONO: &str = "SF-Mono";
+const MONO_FAMILY: &str = "ui-mono";
 const ITALIC: &str = "SF-Italic";
 /// Family for italic UI text (`font-style: italic`).
 const ITALIC_FAMILY: &str = "ui-italic";
@@ -54,6 +57,13 @@ pub fn semibold(size: f32) -> FontId {
 /// e.g. the Welcome page's "Visual Studio Code".
 pub fn heading(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(HEADING_FAMILY.into()))
+}
+
+/// Code in the UI (`--monaco-monospace-font`: SF Mono on macOS), e.g.
+/// glob patterns and inline code in the Settings editor. Falls back to the
+/// editor's Menlo where SF Mono isn't available.
+pub fn mono(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(MONO_FAMILY.into()))
 }
 
 /// Italic UI text at `size`, e.g. a preview editor's tab title.
@@ -114,6 +124,20 @@ pub fn register(fonts: &mut FontDefinitions) {
     fonts
         .families
         .insert(FontFamily::Name(HEADING_FAMILY.into()), heading_family);
+
+    let mut mono_family = vec![];
+    if let Some(mono) = std::fs::read(SYSTEM_MONO_FONT).ok().and_then(|b| {
+        let data = with_advances_at(&b, &[("wght", 400.0)])?;
+        Some(FontData::from_owned(data).tweak(FontTweak {
+            coords: egui::epaint::text::VariationCoords::new([(b"wght", 400.0)]),
+            ..Default::default()
+        }))
+    }) {
+        fonts.font_data.insert(MONO.to_owned(), std::sync::Arc::new(mono));
+        mono_family.push(MONO.to_owned());
+    }
+    mono_family.extend(fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default());
+    fonts.families.insert(FontFamily::Name(MONO_FAMILY.into()), mono_family);
 }
 
 /// SF at `weight` and the Text optical size: outlines through the tweak's

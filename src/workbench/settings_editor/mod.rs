@@ -19,6 +19,7 @@
 //!   radius 6; the modified bar 2px wide 5px in; the gear 22px left of the
 //!   row on hover.
 
+pub mod list;
 pub mod markdown;
 pub mod model;
 
@@ -44,9 +45,11 @@ const GROUP_ROW: f32 = 41.0;
 const ITEM_PAD_X: f32 = 14.0;
 const TITLE_CENTRE: f32 = 21.1;
 const DESC_TOP: f32 = 36.0;
-const CONTROL_GAP: f32 = 9.0;
+pub(crate) const CONTROL_GAP: f32 = 9.0;
 const PAD_BOTTOM: f32 = 18.0;
 const PAD_BOTTOM_BOOL: f32 = 26.0;
+/// Under list widgets (`.setting-item-list` padding-bottom).
+const PAD_BOTTOM_LIST: f32 = 26.0;
 const INPUT_H: f32 = 25.0;
 const SELECT_H: f32 = 26.0;
 
@@ -134,6 +137,8 @@ pub struct SettingsEditorState {
     /// Text typed into number / text inputs, by setting key.
     inputs: HashMap<String, String>,
     dropdown: Option<(String, Rect)>,
+    /// A list item being added or changed.
+    list_edit: Option<list::Edit>,
     /// Scroll to this setting (or group) on the next frame.
     reveal: Option<String>,
     values_generation: u64,
@@ -373,43 +378,59 @@ fn relayout(ui: &Ui, state: &mut SettingsEditorState, values: &Values<'_>, width
     let configured = |k: &str| configured_in(values, target, k);
     let query = model::Query::parse(&state.query);
     let searching = !query.is_empty();
-    let tree = if searching {
-        model::build_tree(&|i| query.matches(i, &configured) && (!model::settings()[i].has_tag("advanced") || query.tags.iter().any(|t| t == "advanced")))
-    } else {
-        model::build_tree(&|i| !model::hidden_by_default(i, &configured))
+    let advanced = query.tags.iter().any(|t| t == "advanced");
+    let candidate = |i: usize| query.passes_filters(i, &configured) && (!model::settings()[i].has_tag("advanced") || advanced);
+    // Search: rank the candidates (table-of-contents order) by the text.
+    let ranked: Option<Vec<(usize, String)>> = searching.then(|| {
+        let full = model::build_tree(&candidate);
+        let mut order: Vec<(usize, String)> = Vec::new();
+        fn walk(node: &TocNode, out: &mut Vec<(usize, String)>) {
+            for &s in &node.settings {
+                if !out.iter().any(|(i, _)| *i == s) {
+                    out.push((s, node.id.clone()));
+                }
+            }
+            for c in &node.children {
+                walk(c, out);
+            }
+        }
+        for c in full.children.iter().filter(|c| c.id != "commonlyUsed") {
+            walk(c, &mut order);
+        }
+        let indexes: Vec<usize> = order.iter().map(|(i, _)| *i).collect();
+        model::rank(&query.text, &indexes)
+            .into_iter()
+            .map(|i| (i, order.iter().find(|(j, _)| *j == i).map(|(_, t)| t.clone()).unwrap_or_default()))
+            .collect()
+    });
+    let tree = match &ranked {
+        Some(found) => {
+            let set: HashSet<usize> = found.iter().map(|(i, _)| *i).collect();
+            model::build_tree(&|i| set.contains(&i))
+        }
+        None => model::build_tree(&|i| !model::hidden_by_default(i, &configured)),
     };
     let content_w = (width - 2.0 * PAD_X).min(1400.0 - 2.0 * PAD_X) - 2.0 * ITEM_PAD_X;
     let mut rows = Vec::new();
     let mut y = 0.0;
-    let mut seen = HashSet::new();
     let mut push_setting = |rows: &mut Vec<Row>, y: &mut f32, index: usize, group: &str, toc: &str| {
-        let h = setting_height(ui, &model::settings()[index], group, content_w);
+        let s = &model::settings()[index];
+        let items = if list::is_list(s.value_type) { list::items(s, values.of(target).and_then(|m| m.get(&s.key))).len() } else { 0 };
+        let h = setting_height(ui, s, items, content_w);
         rows.push(Row { kind: RowKind::Setting { index, group: group.to_string(), toc: toc.to_string() }, y: *y, h });
         *y += h;
     };
-    if searching {
-        // Results in table-of-contents order, without group titles.
-        fn walk(node: &TocNode, f: &mut dyn FnMut(usize, &str)) {
-            for &s in &node.settings {
-                f(s, &node.id);
-            }
-            for c in &node.children {
-                walk(c, f);
-            }
-        }
-        let mut found = 0;
-        for c in &tree.children {
-            walk(c, &mut |s, group| {
-                if c.id != "commonlyUsed" && seen.insert(s) {
-                    push_setting(&mut rows, &mut y, s, group, group);
-                    found += 1;
-                }
-            });
+    if let Some(found) = ranked {
+        // Results by relevance, without group titles; labels keep their
+        // whole category (the search root isn't a group).
+        for (i, toc) in &found {
+            push_setting(&mut rows, &mut y, *i, "", toc);
         }
         if rows.is_empty() {
             rows.push(Row { kind: RowKind::NoResults, y: 0.0, h: 40.0 });
             y = 40.0;
         }
+        let found = found.len();
         state.layout.found = Some(found);
     } else {
         fn walk(node: &TocNode, level: u8, rows: &mut Vec<Row>, y: &mut f32, push: &mut dyn FnMut(&mut Vec<Row>, &mut f32, usize, &str, &str)) {
@@ -460,9 +481,10 @@ fn blocks_height(ui: &Ui, blocks: &[Block], width: f32) -> f32 {
     h
 }
 
-fn setting_height(ui: &Ui, s: &SettingDef, _group: &str, width: f32) -> f32 {
+fn setting_height(ui: &Ui, s: &SettingDef, list_items: usize, width: f32) -> f32 {
     let blocks = description_blocks(s);
     match s.value_type {
+        vt if list::is_list(vt) => DESC_TOP + blocks_height(ui, &blocks, width) + list::control_height(list_items) + PAD_BOTTOM_LIST,
         ValueType::Boolean => DESC_TOP + blocks_height(ui, &blocks, width - 27.0).max(18.0) + PAD_BOTTOM_BOOL,
         vt => {
             let desc = blocks_height(ui, &blocks, width);
@@ -512,7 +534,8 @@ fn toc(ui: &mut Ui, rect: Rect, state: &mut SettingsEditorState, id: egui::Id) {
         for c in &node.children {
             if searching && counts.get(&c.id).copied().unwrap_or(0) == 0 && !counts.keys().any(|k| k.starts_with(&format!("{}/", c.id))) {
                 // Extension groups use their own ids: count their settings.
-                if c.count() == 0 || c.id == "commonlyUsed" {
+                // Commonly Used keeps its count (its rows aren't repeated).
+                if c.count() == 0 {
                     continue;
                 }
             }
@@ -756,7 +779,7 @@ fn setting_row(
 
     // Modified indicator.
     if configured {
-        let bottom = if s.value_type == ValueType::Boolean { 23.0 } else { 18.0 };
+        let bottom = if s.value_type == ValueType::Boolean || list::is_list(s.value_type) { 23.0 } else { 18.0 };
         painter.rect_filled(
             Rect::from_min_max(Pos2::new(row.left() + 5.0, row.top() + 15.0), Pos2::new(row.left() + 7.0, row.bottom() - bottom)),
             0.0,
@@ -908,6 +931,13 @@ fn setting_row(
                 painter.galley(br.min + Vec2::splat(5.0), g, Color32::PLACEHOLDER);
             }
         }
+        vt if list::is_list(vt) => {
+            let configured_value = values.of(target).and_then(|m| m.get(&key));
+            if let Some(change) = list::show(ui, painter, s, configured_value, &mut state.list_edit, left, width, desc_top + desc_h, id.with(("list", &key)), clip) {
+                out.set = Some((target, key.clone(), change));
+                state.focused_row = Some(key.clone());
+            }
+        }
         _ => {
             // Edit in settings.json
             let g = painter.layout_no_wrap("Edit in settings.json".into(), FontId::proportional(13.0), Palette::TEXT_LINK_FG());
@@ -996,7 +1026,7 @@ fn paint_code_box(painter: &egui::Painter, galley: &egui::Galley, origin: Pos2, 
         let n = (start..range.end).take_while(|&i| galley.pos_from_cursor(CCursor::new(i)).center().y - cy < 1.0).count();
         let part: String = text[start.min(text.len())..(start + n).min(text.len())].iter().collect();
         start += n;
-        painter.text(Pos2::new(origin.x + x0 - 1.0, r.center().y + 0.5), Align2::LEFT_CENTER, part, crate::icons::editor_mono_font(11.0), Palette::TEXT_PREFORMAT_FG());
+        painter.text(Pos2::new(origin.x + x0 - 1.0, r.center().y + 0.5), Align2::LEFT_CENTER, part, crate::ui_font::mono(11.0), Palette::TEXT_PREFORMAT_FG());
     }
 }
 

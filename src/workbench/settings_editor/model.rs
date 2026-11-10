@@ -673,11 +673,12 @@ pub fn display_format(setting: &SettingDef, group_id: &str) -> (String, String) 
 
 // ── Search ────────────────────────────────────────────────────────────────
 
-/// What the search box asks for: words plus `@` filters
-/// (preferencesSearch.ts / settingsEditor2.ts `parseQuery`).
+/// What the search box asks for: `@` filters plus text
+/// (settingsEditor2.ts `parseQuery`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Query {
-    pub words: Vec<String>,
+    /// The text without filters, cleaned like `cleanFilter`.
+    pub text: String,
     pub modified: bool,
     pub tags: Vec<String>,
     pub ids: Vec<String>,
@@ -685,24 +686,183 @@ pub struct Query {
     pub features: Vec<String>,
 }
 
+/// `SettingMatchType` (preferences.ts): bigger is better.
+pub mod match_type {
+    pub const LANGUAGE_TAG: u32 = 1 << 0;
+    pub const NON_CONTIGUOUS_QUERY_IN_ID: u32 = 1 << 2;
+    pub const DESCRIPTION_OR_VALUE: u32 = 1 << 3;
+    pub const NON_CONTIGUOUS_WORDS_IN_LABEL: u32 = 1 << 4;
+    pub const CONTIGUOUS_WORDS_IN_LABEL: u32 = 1 << 5;
+    pub const CONTIGUOUS_QUERY_IN_ID: u32 = 1 << 6;
+    pub const ALL_WORDS_IN_LABEL: u32 = 1 << 7;
+    pub const EXACT: u32 = 1 << 8;
+    pub const KEY_TYPES: u32 = ALL_WORDS_IN_LABEL | CONTIGUOUS_WORDS_IN_LABEL | NON_CONTIGUOUS_WORDS_IN_LABEL | NON_CONTIGUOUS_QUERY_IN_ID | CONTIGUOUS_QUERY_IN_ID;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingMatch {
+    pub match_type: u32,
+    pub key_score: usize,
+}
+
+fn is_separator(c: char) -> bool {
+    c.is_whitespace() || "()[]{}<>`'\"-/;:,.?!".contains(c)
+}
+
+/// filters.ts `nextWord`.
+fn next_word(t: &[char], start: usize) -> usize {
+    (start..t.len()).find(|&i| is_separator(t[i]) || (i > 0 && is_separator(t[i - 1]))).unwrap_or(t.len())
+}
+
+/// filters.ts `matchesWords`: the word's characters at word starts of the
+/// target (only consecutive ones when `contiguous`), separators matching
+/// each other.
+pub fn matches_words(word: &str, target: &str, contiguous: bool) -> bool {
+    let w: Vec<char> = word.to_lowercase().chars().collect();
+    let t: Vec<char> = target.to_lowercase().chars().collect();
+    if t.is_empty() {
+        return false;
+    }
+    fn go(w: &[char], t: &[char], wi: usize, ti: usize, contiguous: bool, memo: &mut HashSet<(usize, usize)>) -> bool {
+        if wi == w.len() {
+            return true;
+        }
+        if ti == t.len() || memo.contains(&(wi, ti)) {
+            return false;
+        }
+        let ok = (w[wi] == t[ti] || (is_separator(w[wi]) && is_separator(t[ti]))) && {
+            let mut next = ti + 1;
+            let mut found = go(w, t, wi + 1, next, contiguous, memo);
+            if !contiguous {
+                while !found {
+                    next = next_word(t, next);
+                    if next >= t.len() {
+                        break;
+                    }
+                    found = go(w, t, wi + 1, next, contiguous, memo);
+                    next += 1;
+                }
+            }
+            found
+        };
+        if !ok {
+            memo.insert((wi, ti));
+        }
+        ok
+    }
+    let mut memo = HashSet::new();
+    let mut ti = 0;
+    while ti < t.len() {
+        if go(&w, &t, 0, ti, contiguous, &mut memo) {
+            return true;
+        }
+        ti = next_word(&t, ti + 1);
+    }
+    false
+}
+
+/// `SettingMatches._keyToLabel`: `editor.formatOnSave` → `editor format on save`.
+fn key_to_label(key: &str) -> String {
+    static CAMEL: OnceLock<Regex> = OnceLock::new();
+    static LETTER_DIGIT: OnceLock<Regex> = OnceLock::new();
+    static DIGIT_LETTER: OnceLock<Regex> = OnceLock::new();
+    let s: String = key.chars().map(|c| if matches!(c, '-' | '.' | '_') { ' ' } else { c }).collect();
+    let s = regex(&CAMEL, r"([a-z]+)([A-Z])").replace_all(&s, "$1 $2");
+    let s = regex(&LETTER_DIGIT, r"([A-Za-z]+)(\d+)").replace_all(&s, "$1 $2");
+    let s = regex(&DIGIT_LETTER, r"(\d+)([A-Za-z]+)").replace_all(&s, "$1 $2");
+    s.to_lowercase()
+}
+
+fn alphanumeric(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+fn is_subsequence(word: &str, target: &str) -> bool {
+    let mut t = target.chars();
+    word.chars().all(|c| t.any(|x| x == c))
+}
+
+/// preferencesSearch.ts `SettingMatches` (with the description searched):
+/// how well `text` matches a setting, if at all.
+pub fn setting_match(text: &str, s: &SettingDef) -> Option<SettingMatch> {
+    use match_type::*;
+    let words: Vec<&str> = {
+        let mut seen = Vec::new();
+        for w in text.split(' ') {
+            if !seen.contains(&w) {
+                seen.push(w);
+            }
+        }
+        seen
+    };
+    let label = key_to_label(&s.key);
+    let mut mt = 0;
+    let mut score = 0;
+    let key_words = words.iter().filter(|w| matches_words(w, &label, true)).count();
+    if key_words == words.len() {
+        mt |= ALL_WORDS_IN_LABEL;
+    } else if key_words >= 2 {
+        mt |= CONTIGUOUS_WORDS_IN_LABEL;
+        score = key_words;
+    }
+    let (q_alnum, key_alnum) = (alphanumeric(text), alphanumeric(&s.key));
+    if q_alnum.len() <= key_alnum.len() && key_alnum.contains(&q_alnum) {
+        mt |= CONTIGUOUS_QUERY_IN_ID;
+    }
+    if mt == 0 {
+        let key_words = words.iter().filter(|w| matches_words(w, &label, false)).count();
+        if key_words >= 2 || (key_words == 1 && words.len() == 1) {
+            mt |= NON_CONTIGUOUS_WORDS_IN_LABEL;
+            score = key_words;
+        } else if q_alnum.len() <= key_alnum.len() && is_subsequence(&q_alnum, &key_alnum) {
+            mt |= NON_CONTIGUOUS_QUERY_IN_ID;
+        }
+    }
+    if mt < CONTIGUOUS_WORDS_IN_LABEL {
+        // Every word somewhere in the description (or keywords).
+        let mut lines: Vec<String> = s.description.split('\n').map(str::to_lowercase).collect();
+        if !s.keywords.is_empty() {
+            lines.push(s.keywords.join(" ").to_lowercase());
+        }
+        if words.iter().all(|w| lines.iter().any(|l| l.contains(&w.to_lowercase()))) {
+            mt |= DESCRIPTION_OR_VALUE;
+        }
+        // Or every word in one of the enum's string values.
+        if s.enum_values.iter().filter_map(Value::as_str).any(|o| words.iter().all(|w| o.to_lowercase().contains(&w.to_lowercase()))) {
+            mt |= DESCRIPTION_OR_VALUE;
+        }
+    }
+    if mt == 0 {
+        return None;
+    }
+    if text.eq_ignore_ascii_case(&s.key) {
+        mt = EXACT;
+    }
+    Some(SettingMatch { match_type: mt, key_score: score })
+}
+
 impl Query {
     pub fn parse(text: &str) -> Query {
         let mut q = Query::default();
+        let mut rest = Vec::new();
         for token in text.split_whitespace() {
             if token == "@modified" {
                 q.modified = true;
             } else if let Some(t) = token.strip_prefix("@tag:") {
                 q.tags.push(t.to_lowercase());
             } else if let Some(t) = token.strip_prefix("@id:") {
-                q.ids.extend(t.split(',').map(str::to_string));
+                q.ids.extend(t.split(',').filter(|s| !s.is_empty()).map(str::to_string));
             } else if let Some(t) = token.strip_prefix("@ext:") {
                 q.extensions.push(t.to_lowercase());
             } else if let Some(t) = token.strip_prefix("@feature:") {
                 q.features.push(t.to_lowercase());
             } else {
-                q.words.push(token.to_lowercase());
+                rest.push(token);
             }
         }
+        // `cleanFilter`: `"` and `:` (pasted with setting names) are spaces.
+        let cleaned: String = rest.join(" ").chars().map(|c| if c == '"' || c == ':' { ' ' } else { c }).collect();
+        q.text = cleaned.replace("  ", " ").trim().to_string();
         q
     }
 
@@ -710,9 +870,8 @@ impl Query {
         *self == Query::default()
     }
 
-    /// Whether a setting answers the query; `configured` says whether the
-    /// active target sets it.
-    pub fn matches(&self, i: usize, configured: &dyn Fn(&str) -> bool) -> bool {
+    /// The `@` filters only.
+    pub fn passes_filters(&self, i: usize, configured: &dyn Fn(&str) -> bool) -> bool {
         let s = &settings()[i];
         if self.modified && !configured(&s.key) {
             return false;
@@ -723,30 +882,47 @@ impl Query {
         if !self.ids.is_empty() && !self.ids.iter().any(|id| *id == s.key) {
             return false;
         }
-        if !self.extensions.is_empty()
-            && !s.source.as_ref().is_some_and(|src| self.extensions.iter().any(|e| src.id.to_lowercase() == *e))
-        {
+        if !self.extensions.is_empty() && !s.source.as_ref().is_some_and(|src| self.extensions.iter().any(|e| src.id.to_lowercase() == *e)) {
             return false;
         }
         if !self.features.is_empty() && !self.features.iter().any(|f| s.key.to_lowercase().starts_with(&format!("{f}."))) {
             return false;
         }
-        if self.words.is_empty() {
-            return true;
-        }
-        let (category, label) = display_format(s, "");
-        let haystack = format!(
-            "{}\n{}: {}\n{}\n{}\n{}",
-            s.key,
-            category,
-            label,
-            s.description,
-            s.keywords.join(" "),
-            s.enum_values.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")
-        )
-        .to_lowercase();
-        self.words.iter().all(|w| haystack.contains(w.as_str()))
+        true
     }
+
+    /// Filters and text together (no ranking).
+    pub fn matches(&self, i: usize, configured: &dyn Fn(&str) -> bool) -> bool {
+        self.passes_filters(i, configured) && (self.text.is_empty() || setting_match(&self.text, &settings()[i]).is_some())
+    }
+}
+
+/// `LocalSearchProvider.searchModel` + `SearchResultModel.sortResults`:
+/// the settings (given in table-of-contents order) that answer the
+/// query's text, best first.
+pub fn rank(text: &str, toc_order: &[usize]) -> Vec<usize> {
+    use match_type::*;
+    if text.is_empty() {
+        return toc_order.to_vec();
+    }
+    let all = settings();
+    let matched: Vec<(usize, usize, SettingMatch)> =
+        toc_order.iter().enumerate().filter_map(|(pos, &i)| setting_match(text, &all[i]).map(|m| (pos, i, m))).collect();
+    let top = matched.iter().map(|(_, _, m)| m.match_type & KEY_TYPES).max().unwrap_or(0);
+    let mut kept: Vec<(usize, usize, SettingMatch)> = matched
+        .into_iter()
+        .filter(|(_, _, m)| m.match_type & top != 0 || m.match_type & (DESCRIPTION_OR_VALUE | LANGUAGE_TAG) != 0 || m.match_type == EXACT)
+        .collect();
+    kept.sort_by(|a, b| {
+        if a.2.match_type != b.2.match_type {
+            b.2.match_type.cmp(&a.2.match_type)
+        } else if a.2.match_type & (NON_CONTIGUOUS_WORDS_IN_LABEL | CONTIGUOUS_WORDS_IN_LABEL) != 0 {
+            b.2.key_score.cmp(&a.2.key_score).then(a.0.cmp(&b.0))
+        } else {
+            a.0.cmp(&b.0)
+        }
+    });
+    kept.into_iter().map(|(_, i, _)| i).collect()
 }
 
 /// Settings hidden unless asked for (`ADVANCED_SETTING_TAG`), and
@@ -812,6 +988,13 @@ mod tests {
         let q = Query::parse("font size");
         assert!(q.matches(find("editor.fontSize").unwrap(), &|_| false));
         assert!(!q.matches(find("files.autoSave").unwrap(), &|_| false));
+        assert!(matches_words("format", "editor format on save", true));
+        assert!(matches_words("edit format", "editor format on save", false));
+        // "files.exclude" finds the files' exclude settings first (VS Code: 5).
+        let order: Vec<usize> = (0..settings().len()).collect();
+        let found: Vec<&str> = rank("files.exclude", &order).iter().map(|&i| settings()[i].key.as_str()).collect();
+        assert_eq!(found[0], "files.exclude", "{found:?}");
+        assert!(found.contains(&"files.watcherExclude") && found.contains(&"search.exclude"), "{found:?}");
         let m = Query::parse("@modified");
         assert!(m.matches(find("files.autoSave").unwrap(), &|k| k == "files.autoSave"));
         assert!(!m.matches(find("editor.fontSize").unwrap(), &|k| k == "files.autoSave"));
