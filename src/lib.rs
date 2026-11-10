@@ -14,3 +14,4 @@ pub mod settings;
 pub mod theme;
 pub mod workbench;
 pub mod ui_font;
+pub mod workspace_trust;

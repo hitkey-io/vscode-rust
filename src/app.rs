@@ -35,6 +35,10 @@ pub struct App {
     settings: crate::settings::Settings,
     /// The Color Theme picker while it's open.
     theme_pick: Option<ThemePick>,
+    /// Trusted folders and dismissed banners (Workspace Trust).
+    trust: crate::workspace_trust::TrustStore,
+    /// The Workspace Trust editor while it's open, in its modal.
+    trust_editor: Option<(crate::workbench::workspace_trust_editor::TrustEditorState, crate::workbench::modal::ModalState)>,
     /// The Settings editor (⌘,) while it's open, in its modal.
     settings_editor: Option<(crate::workbench::settings_editor::SettingsEditorState, crate::workbench::modal::ModalState)>,
     /// The open folder's `.vscode/settings.json`.
@@ -400,6 +404,8 @@ impl App {
             pending_editor_menu: None,
             editor_menu_actions: Vec::new(),
             settings_editor: None,
+            trust: crate::workspace_trust::TrustStore::in_memory(),
+            trust_editor: None,
             workspace_settings: None,
             pending_settings_menu: None,
             settings_menu_actions: Vec::new(),
@@ -2490,6 +2496,7 @@ impl App {
                 dirty = false;
                 self.scm_ui.graph_tree = tree;
             }
+            ScmAction::ManageWorkspaceTrust => self.open_trust_editor(),
             ScmAction::InitRepository => {
                 if let Some(root) = self.workspace_root.clone() {
                     if self.git(&root, &["init"]).is_some() {
@@ -3415,6 +3422,7 @@ impl App {
     /// (`--user-data-dir`, like VS Code).
     pub fn bootstrap_user_data(&mut self, dir: PathBuf) {
         self.settings = crate::settings::Settings::load(&dir);
+        self.trust = crate::workspace_trust::TrustStore::load(&dir);
         self.recent_folders = std::fs::read_to_string(Self::recent_folders_file(&dir))
             .ok()
             .and_then(|t| serde_json::from_str::<Vec<PathBuf>>(&t).ok())
@@ -3801,6 +3809,7 @@ impl App {
             CommandId::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             CommandId::SelectColorTheme => self.open_color_theme_picker(),
             CommandId::OpenSettings => self.open_settings_editor(None),
+            CommandId::ManageWorkspaceTrust => self.open_trust_editor(),
             CommandId::OpenUserSettingsJson => self.open_settings_json(crate::workbench::settings_editor::Target::User, None),
             CommandId::OpenWorkspaceSettings => {
                 self.open_settings_editor(None);
@@ -4248,6 +4257,8 @@ impl App {
             .rect_filled(ctx.content_rect(), 0.0, Palette::SHELL_BG());
 
         self.title_bar(ctx);
+        self.restricted_mode_banner(ctx);
+        self.scm_ui.restricted = !self.workspace_trusted();
 
         // Modern UI status bar: 24px items with 2px / 12px padding
         // (floatingPanels.css `.part.statusbar`).
@@ -4265,9 +4276,12 @@ impl App {
                 let has_workspace = self.workspace_root.is_some();
                 // Status bar reflects the active repository.
                 let active_root = self.active_repo_root();
+                // In Restricted Mode git doesn't run: no branch item.
+                let trusted = self.workspace_trusted();
                 let repo = active_root
                     .as_ref()
-                    .and_then(|r| self.git_model.repo_for(r));
+                    .and_then(|r| self.git_model.repo_for(r))
+                    .filter(|_| trusted);
                 // The git extension's branch item: `main*+` (working tree
                 // changes, staged changes, merge changes).
                 let branch_label = repo.and_then(|r| {
@@ -4313,7 +4327,11 @@ impl App {
                     has_upstream,
                     &extension_items,
                     self.extensions.problem_counts(),
+                    !self.workspace_trusted(),
                 );
+                if sb.manage_trust {
+                    self.open_trust_editor();
+                }
                 if let Some((command, args)) = sb.extension_command.clone() {
                     self.extensions.execute(&command, args);
                 }
@@ -4687,6 +4705,7 @@ impl App {
         }
 
         self.settings_modal(ctx);
+        self.trust_modal(ctx);
 
         self.track_recent_active();
         if self.palette.visible {
@@ -4703,11 +4722,161 @@ impl App {
         // popup would overlap them.
         self.webview_host.suppressed = self.palette.visible
             || self.tab_menu.is_some()
-            || self.settings_editor.is_some();
+            || self.settings_editor.is_some()
+            || self.trust_editor.is_some();
         self.language_widgets(ctx);
 
         for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
             self.extensions.close_notification(d.id, d.action);
+        }
+    }
+}
+
+impl App {
+    /// Whether the window is trusted (`security.workspace.trust.*`).
+    fn workspace_trusted(&self) -> bool {
+        let enabled = self.settings.get_bool("security.workspace.trust.enabled").unwrap_or(true);
+        let empty = self.settings.get_bool("security.workspace.trust.emptyWindow").unwrap_or(true);
+        crate::workspace_trust::is_trusted(&self.trust, self.workspace_root.as_deref(), enabled, empty)
+    }
+
+    /// Whether the Restricted Mode banner is up (`security.workspace.trust.banner`).
+    fn banner_visible(&self) -> bool {
+        if self.workspace_trusted() {
+            return false;
+        }
+        match self.settings.get_str("security.workspace.trust.banner").unwrap_or("untilDismissed") {
+            "never" => false,
+            "always" => true,
+            _ => !self.workspace_root.as_deref().is_some_and(|f| self.trust.banner_dismissed(f)),
+        }
+    }
+
+    /// Where the modal editor part may start: under the title bar and the
+    /// banner (`mainContainerOffset.top`).
+    fn title_bar_offset(&self) -> f32 {
+        35.0 + if self.banner_visible() { crate::workbench::banner::HEIGHT } else { 0.0 }
+    }
+
+    fn restricted_mode_banner(&mut self, ctx: &Context) {
+        if !self.banner_visible() {
+            return;
+        }
+        let message = crate::workbench::banner::restricted_message(self.workspace_root.is_some());
+        let out = TopBottomPanel::top("banner")
+            .exact_height(crate::workbench::banner::HEIGHT)
+            .show_separator_line(false)
+            .frame(Frame::NONE)
+            .show(ctx, |ui| crate::workbench::banner::show(ui, message))
+            .inner;
+        if out.manage {
+            self.open_trust_editor();
+        }
+        if out.learn_more {
+            let _ = std::process::Command::new("open").arg("https://aka.ms/vscode-workspace-trust").spawn();
+        }
+        if out.close {
+            if let Some(folder) = self.workspace_root.clone() {
+                self.trust.dismiss_banner(&folder);
+            }
+        }
+    }
+
+    /// Workspaces: Manage Workspace Trust.
+    fn open_trust_editor(&mut self) {
+        if self.trust_editor.is_none() {
+            self.trust_editor = Some((Default::default(), Default::default()));
+        }
+        self.settings_editor = None;
+        self.palette.visible = false;
+    }
+
+    /// Extensions with code that don't declare full support for untrusted
+    /// workspaces (`getExtensionUntrustedWorkspaceSupportType` ≠ true).
+    fn untrusted_unsupported_extensions(&self) -> usize {
+        self.extensions
+            .installed()
+            .filter(|e| e.main.is_some())
+            .filter(|e| {
+                let manifest = std::fs::read_to_string(e.path.join("package.json")).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+                let supported = manifest.as_ref().and_then(|m| m.pointer("/capabilities/untrustedWorkspaces/supported")).cloned();
+                supported != Some(serde_json::Value::Bool(true))
+            })
+            .count()
+    }
+
+    fn trust_modal(&mut self, ctx: &Context) {
+        use crate::workbench::{modal, workspace_trust_editor as editor};
+        let Some((mut st, mut modal_state)) = self.trust_editor.take() else { return };
+        let header = modal::ModalHeader {
+            icon: crate::icons::codicon_by_name("shield").unwrap_or('!'),
+            title: "Workspace Trust",
+            actions: &[],
+        };
+        let unsupported = self.untrusted_unsupported_extensions();
+        let trusted = self.workspace_trusted();
+        let mut out = editor::TrustEditorOutput::default();
+        let action = {
+            let view = editor::TrustView {
+                trusted,
+                folder: self.workspace_root.as_deref(),
+                trusted_folders: self.trust.trusted_folders(),
+                restricted_settings: crate::workbench::settings_editor::model::restricted_workspace_setting_count(),
+                unsupported_extensions: unsupported,
+            };
+            modal::show(ctx, egui::Id::new("trust-modal"), &modal_state, &header, self.title_bar_offset(), |ui| {
+                let rect = ui.max_rect();
+                out = editor::show(ui, rect, &mut st, &view);
+            })
+        };
+        let mut keep = true;
+        match action {
+            Some(modal::ModalAction::Close) => keep = false,
+            Some(modal::ModalAction::ToggleMaximized) | Some(modal::ModalAction::OpenInMainWindow) => modal_state.maximized = !modal_state.maximized,
+            _ => {}
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            keep = false;
+        }
+        if out.trust {
+            if let Some(folder) = self.workspace_root.clone() {
+                self.trust.trust(&folder);
+                self.refresh_git();
+            }
+        }
+        if out.dont_trust {
+            if let Some(folder) = self.workspace_root.clone() {
+                self.trust.untrust(&folder);
+            }
+        }
+        if let Some(entry) = out.remove {
+            self.trust.remove(&entry);
+        }
+        if out.add_folder {
+            if let Some(path) = rfd::FileDialog::new().set_title("Select Folder To Trust").pick_folder() {
+                self.trust.trust(&path);
+            }
+        }
+        if let Some(url) = out.open_url {
+            let _ = std::process::Command::new("open").arg(&url).spawn();
+        }
+        if out.configure_settings {
+            self.trust_editor = None;
+            self.open_settings_editor(Some("@tag:workspaceTrust"));
+            return;
+        }
+        if out.show_untrusted_settings {
+            self.trust_editor = None;
+            self.open_settings_editor(Some("@tag:requireTrustedWorkspace"));
+            return;
+        }
+        if out.show_unsupported_extensions {
+            self.trust_editor = None;
+            self.show_view(ActivityView::Extensions);
+            return;
+        }
+        if keep {
+            self.trust_editor = Some((st, modal_state));
         }
     }
 }
@@ -4835,7 +5004,7 @@ impl App {
                 user: self.settings.values(),
                 workspace: self.workspace_settings.as_ref().map(|w| w.values()),
             };
-            modal::show(ctx, egui::Id::new("settings-modal"), &modal_state, &header, 35.0, |ui| {
+            modal::show(ctx, egui::Id::new("settings-modal"), &modal_state, &header, self.title_bar_offset(), |ui| {
                 let rect = ui.max_rect();
                 out = settings_editor::show(ui, rect, &mut st, &values);
             })

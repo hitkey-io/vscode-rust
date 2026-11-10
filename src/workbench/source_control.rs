@@ -30,6 +30,8 @@ const PAD_R: f32 = 12.0;
 
 /// Caller-owned UI state for the SCM view.
 pub struct ScmUiState {
+    /// The window isn't trusted: no provider runs (Restricted Mode).
+    pub restricted: bool,
     pub commit_messages: HashMap<PathBuf, String>,
     /// Repositories expanded in a multi-repository workspace.
     pub expanded: HashSet<PathBuf>,
@@ -69,6 +71,7 @@ pub struct ScmUiState {
 impl Default for ScmUiState {
     fn default() -> Self {
         Self {
+            restricted: false,
             commit_messages: HashMap::new(),
             expanded: HashSet::new(),
             changes_open: true,
@@ -122,6 +125,8 @@ impl GraphFilter {
 /// What a click in the view asks for (run by the app).
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScmAction {
+    /// Restricted Mode's "Manage Workspace Trust" button.
+    ManageWorkspaceTrust,
     /// Open the diff of a changed file (`git.openChange`).
     /// One click opens a preview editor, a double click (`pinned`) keeps it.
     OpenChange { root: PathBuf, rel: String, staged: bool, kind: ChangeKind, pinned: bool },
@@ -246,7 +251,7 @@ pub fn show(
         out.menu = Some((ScmMenu::Views, pos));
     }
 
-    if model.repos.is_empty() {
+    if model.repos.is_empty() || st.restricted {
         welcome(ui, st, &mut out);
         return out;
     }
@@ -490,7 +495,10 @@ fn graph_header_actions(ui: &mut Ui, rect: Rect, root: &Path, repo: Option<&Repo
 /// `viewsWelcome` of the git extension: what the view says without a
 /// repository.
 fn welcome(ui: &mut Ui, st: &ScmUiState, out: &mut ScmOutput) {
-    let (texts, button, after): (&[&str], (&str, ScmAction), &str) = if !st.parent_repos.is_empty() {
+    let (texts, button, after): (&[&str], (&str, ScmAction), &str) = if st.restricted {
+        // The SCM view's own welcome in Restricted Mode (scm.contribution.ts).
+        (&["None of the registered source control providers work in Restricted Mode."], ("Manage Workspace Trust", ScmAction::ManageWorkspaceTrust), "")
+    } else if !st.parent_repos.is_empty() {
         (
             &["A Git repository was found in the parent folders of the workspace or the open file(s)."],
             ("Open Repository", ScmAction::OpenParentRepositories),
@@ -544,10 +552,12 @@ fn welcome(ui: &mut Ui, st: &ScmUiState, out: &mut ScmOutput) {
         ui.add_space(13.0);
     };
     button_row(ui, button.0, button.1);
-    if !st.folder_open {
+    if !st.folder_open && !st.restricted {
         button_row(ui, "Clone Repository", ScmAction::CloneRepository);
     }
-    para(ui, after);
+    if !after.is_empty() {
+        para(ui, after);
+    }
 }
 
 // ── CHANGES ────────────────────────────────────────────────────────────────

@@ -39,6 +39,7 @@ pub enum CommandId {
     OpenSettings,
     OpenUserSettingsJson,
     OpenWorkspaceSettings,
+    ManageWorkspaceTrust,
 }
 
 pub struct CommandEntry {
@@ -78,6 +79,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: CommandId::OpenSettings,  title: "Open Settings (UI)",      category: "Preferences", shortcut: Some("⌘,") },
     CommandEntry { id: CommandId::OpenUserSettingsJson, title: "Open User Settings (JSON)", category: "Preferences", shortcut: None },
     CommandEntry { id: CommandId::OpenWorkspaceSettings, title: "Open Workspace Settings", category: "Preferences", shortcut: None },
+    CommandEntry { id: CommandId::ManageWorkspaceTrust, title: "Manage Workspace Trust", category: "Workspaces", shortcut: None },
 ];
 
 /// What the user picked in the Quick Access popup.

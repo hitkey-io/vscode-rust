@@ -14,6 +14,8 @@ pub mod status_bar;
 pub mod tabs;
 pub mod webviews;
 pub mod welcome;
+pub mod banner;
+pub mod workspace_trust_editor;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ActivityView {

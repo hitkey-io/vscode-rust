@@ -876,7 +876,8 @@ impl Query {
         if self.modified && !configured(&s.key) {
             return false;
         }
-        if !self.tags.iter().all(|t| s.tags.iter().any(|st| st.to_lowercase() == *t)) {
+        // `requireTrustedWorkspace` is every restricted setting.
+        if !self.tags.iter().all(|t| s.tags.iter().any(|st| st.to_lowercase() == *t) || (t == "requiretrustedworkspace" && s.restricted)) {
             return false;
         }
         if !self.ids.is_empty() && !self.ids.iter().any(|id| *id == s.key) {
@@ -932,6 +933,13 @@ pub fn hidden_by_default(i: usize, configured: &dyn Fn(&str) -> bool) -> bool {
     (s.has_tag("advanced")) || (s.deprecation.is_some() && !s.deprecation_show_in_settings && !configured(&s.key))
 }
 
+/// Settings that need a trusted workspace and could be set in one
+/// (workspaceTrustEditor.ts: restricted, not application / machine
+/// scoped, deprecated ones left out).
+pub fn restricted_workspace_setting_count() -> usize {
+    settings().iter().filter(|s| s.restricted && !matches!(s.scope, Some(1) | Some(2) | Some(3)) && s.deprecation.is_none()).count()
+}
+
 /// Keys of every setting (for tests and `@id:` completion).
 pub fn keys() -> HashSet<&'static str> {
     settings().iter().map(|s| s.key.as_str()).collect()
@@ -981,6 +989,8 @@ mod tests {
         assert_eq!(subs, ["Cursor", "Find", "Font", "Formatting", "Diff Editor", "Multi-File Diff Editor", "Minimap", "Suggestions", "Files"]);
         let ext: Vec<&str> = tree.children[8].children.iter().map(|c| c.label.as_str()).collect();
         assert!(ext.contains(&"Git"), "{ext:?}");
+        // "98 workspace settings are not applied" in 1.145.2.
+        assert_eq!(restricted_workspace_setting_count(), 98);
     }
 
     #[test]

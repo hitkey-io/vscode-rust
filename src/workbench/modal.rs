@@ -106,8 +106,10 @@ pub fn show(
                 ),
                 (71.0, "open-in-product", "Open Modal Editor in Main Window".into(), ModalAction::OpenInMainWindow),
             ];
-            let sep_x = head.right() - 86.5;
-            painter.vline(sep_x, (cy - 8.0)..=(cy + 8.0), Stroke::new(1.0, Palette::TITLE_BAR_FG().gamma_multiply(0.3)));
+            if !header.actions.is_empty() {
+                let sep_x = head.right() - 86.5;
+                painter.vline(sep_x, (cy - 8.0)..=(cy + 8.0), Stroke::new(1.0, Palette::TITLE_BAR_FG().gamma_multiply(0.3)));
+            }
             for (i, (name, tip)) in header.actions.iter().rev().enumerate() {
                 buttons.push((103.5 + 26.0 * i as f32, name, tip.to_string(), ModalAction::Editor(header.actions.len() - 1 - i)));
             }

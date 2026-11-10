@@ -405,6 +405,14 @@ palette! {
     MODERN_TAB_HOVER_FG = Id("modernTab.hoverForeground");
     INPUT_PLACEHOLDER_FG = Id("input.placeholderForeground");
     INPUT_VALIDATION_ERROR_BG = Id("inputValidation.errorBackground");
+    STATUS_BAR_PROMINENT_BG = Id("statusBarItem.prominentBackground");
+    STATUS_BAR_PROMINENT_FG = Id("statusBarItem.prominentForeground");
+    STATUS_BAR_PROMINENT_HOVER_BG = Id("statusBarItem.prominentHoverBackground");
+    BANNER_BG = Id("banner.background");
+    BANNER_FG = Id("banner.foreground");
+    BANNER_ICON_FG = Id("banner.iconForeground");
+    DEBUG_ICON_START_FG = Id("debugIcon.startForeground");
+    EDITOR_ERROR_FG = Id("editorError.foreground");
     LIST_ACTIVE_SELECTION_FG = OneOf(&["list.activeSelectionForeground", "foreground"]);
 }
 

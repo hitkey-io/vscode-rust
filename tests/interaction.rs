@@ -510,3 +510,24 @@ fn settings_editor_exclude_list_adds_and_removes_patterns() {
     assert_eq!(*seen.borrow(), Some(serde_json::json!({"**/.svn": false, "**/dist": true})));
     assert!(harness.query_by_label("item:**/.svn").is_none());
 }
+
+#[test]
+fn restricted_mode_until_the_folder_is_trusted() {
+    let mut harness = launch(Some(workspace_path()), vec![], None);
+    harness.run();
+    harness.run();
+    // VS Code 1.145 opens untrusted folders in Restricted Mode, no dialog.
+    let _ = harness.get_by_label("Learn More");
+    harness.get_by_label("Restricted Mode").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("98 workspace settings");
+    harness.snapshot("interaction_workspace_trust_editor");
+    harness.get_by_label("Trust").click();
+    harness.run();
+    harness.run();
+    // Trusted: no banner, no status item, the editor says so.
+    assert!(harness.query_by_label("Restricted Mode").is_none());
+    assert!(harness.query_by_label("Learn More").is_none());
+    let _ = harness.get_by_label("Don't Trust");
+}

@@ -136,6 +136,30 @@ pub struct StatusBarOutput {
     /// An extension's status bar item was clicked: its command and
     /// arguments.
     pub extension_command: Option<(String, serde_json::Value)>,
+    /// The Restricted Mode item was clicked (Manage Workspace Trust).
+    pub manage_trust: bool,
+}
+
+/// A `kind: 'prominent'` item (Restricted Mode): `$(icon) text` on
+/// `statusBarItem.prominentBackground`, 8px padding, 4px icon gap
+/// (measured against 1.145.2).
+fn prominent_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Response {
+    let icon_font = codicon_font(14.0);
+    let text_font = FontId::proportional(12.0);
+    let fg = Palette::STATUS_BAR_PROMINENT_FG();
+    let ig = ui.painter().layout_no_wrap(glyph.to_string(), icon_font, fg);
+    let tg = ui.painter().layout_no_wrap(text.to_string(), text_font, fg);
+    let (pad, gap) = (8.0, 4.0);
+    let w = pad + ig.size().x + gap + tg.size().x + pad;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    let bg = if resp.hovered() { Palette::STATUS_BAR_PROMINENT_HOVER_BG() } else { Palette::STATUS_BAR_PROMINENT_BG() };
+    ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, bg);
+    let (isz, tsz) = (ig.size(), tg.size());
+    ui.painter().galley(egui::pos2(rect.left() + pad, rect.center().y - isz.y / 2.0), ig, fg);
+    ui.painter().galley(egui::pos2(rect.left() + pad + isz.x + gap, rect.center().y - tsz.y / 2.0), tg, fg);
+    let label = text.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    resp.on_hover_text(tip)
 }
 
 /// An extension status bar item (`window.createStatusBarItem`): text with
@@ -187,7 +211,7 @@ pub fn show(
 ) -> StatusBarOutput {
     show_with_extensions(
         ui, active, message, has_workspace, git_branch, "git-branch", git_changes, git_ahead_behind,
-        git_has_upstream, &[], (0, 0),
+        git_has_upstream, &[], (0, 0), false,
     )
 }
 
@@ -208,6 +232,8 @@ pub fn show_with_extensions(
     git_has_upstream: bool,
     extension_items: &[crate::extensions::StatusItem],
     problems: (usize, usize),
+    // Restricted Mode: the window isn't trusted (workspace trust).
+    restricted_mode: bool,
 ) -> StatusBarOutput {
     let by_priority = |right: bool| {
         let mut v: Vec<&crate::extensions::StatusItem> =
@@ -229,6 +255,16 @@ pub fn show_with_extensions(
                 out.palette_requested = true;
             }
             ui.add_space(2.0);
+            // Restricted Mode, right of the remote indicator (`status.host`).
+            if restricted_mode {
+                // 2px after the remote indicator, not the item spacing too.
+                ui.add_space(-ui.spacing().item_spacing.x);
+                let shield = icons::codicon_by_name("shield").unwrap_or('!');
+                let tip = "Running in Restricted Mode\n\nSome features are disabled because this folder is not trusted.";
+                if prominent_segment(ui, shield, "Restricted Mode", tip).clicked() {
+                    out.manage_trust = true;
+                }
+            }
             // Left cluster: clickable Git branch (with a "*N" change counter)
             // + a sync segment, then any transient action message.
             if let Some(branch) = git_branch {
