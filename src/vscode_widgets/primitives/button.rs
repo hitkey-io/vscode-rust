@@ -2,13 +2,13 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-button/vscode-button.ts
 //! Docs:     https://vscode-elements.github.io/components/button/
 //! VS Code analogue: src/vs/base/browser/ui/button/button.ts
-//! Tokens:   --vscode-button-background → Palette::VSCE_BUTTON_BG
-//!           --vscode-button-foreground → Palette::VSCE_BUTTON_FG
-//!           --vscode-button-hoverBackground → Palette::VSCE_BUTTON_HOVER_BG
-//!           --vscode-button-secondaryBackground → Palette::VSCE_BUTTON_SECONDARY_BG
-//!           --vscode-button-secondaryForeground → Palette::VSCE_BUTTON_SECONDARY_FG
-//!           --vscode-button-secondaryHoverBackground → Palette::VSCE_BUTTON_SECONDARY_HOVER_BG
-//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER
+//! Tokens:   --vscode-button-background → Palette::VSCE_BUTTON_BG()
+//!           --vscode-button-foreground → Palette::VSCE_BUTTON_FG()
+//!           --vscode-button-hoverBackground → Palette::VSCE_BUTTON_HOVER_BG()
+//!           --vscode-button-secondaryBackground → Palette::VSCE_BUTTON_SECONDARY_BG()
+//!           --vscode-button-secondaryForeground → Palette::VSCE_BUTTON_SECONDARY_FG()
+//!           --vscode-button-secondaryHoverBackground → Palette::VSCE_BUTTON_SECONDARY_HOVER_BG()
+//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER()
 //!
 //! Rectangular button. Padding 4×8, border-radius 4, font-size 12, line-height 16.
 //! Supports primary/secondary variants, icon-before/icon-after, focus ring,
@@ -156,13 +156,13 @@ pub fn button(ui: &mut Ui, props: &ButtonProps<'_>) -> Response {
 
     let hovered = response.hovered() && !props.disabled;
     let (bg, fg) = match (props.variant, hovered) {
-        (ButtonVariant::Primary, true) => (tokens::BUTTON_HOVER_BG, tokens::BUTTON_FG),
-        (ButtonVariant::Primary, false) => (tokens::BUTTON_BG, tokens::BUTTON_FG),
+        (ButtonVariant::Primary, true) => (tokens::BUTTON_HOVER_BG(), tokens::BUTTON_FG()),
+        (ButtonVariant::Primary, false) => (tokens::BUTTON_BG(), tokens::BUTTON_FG()),
         (ButtonVariant::Secondary, true) => {
-            (tokens::BUTTON_SECONDARY_HOVER_BG, tokens::BUTTON_SECONDARY_FG)
+            (tokens::BUTTON_SECONDARY_HOVER_BG(), tokens::BUTTON_SECONDARY_FG())
         }
         (ButtonVariant::Secondary, false) => {
-            (tokens::BUTTON_SECONDARY_BG, tokens::BUTTON_SECONDARY_FG)
+            (tokens::BUTTON_SECONDARY_BG(), tokens::BUTTON_SECONDARY_FG())
         }
     };
 
@@ -177,7 +177,7 @@ pub fn button(ui: &mut Ui, props: &ButtonProps<'_>) -> Response {
         painter.rect_stroke(
             rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, with_alpha(tokens::BUTTON_BORDER, alpha)),
+            Stroke::new(1.0, with_alpha(tokens::BUTTON_BORDER(), alpha)),
             StrokeKind::Inside,
         );
     }
@@ -187,7 +187,7 @@ pub fn button(ui: &mut Ui, props: &ButtonProps<'_>) -> Response {
         painter.rect_stroke(
             outer,
             CornerRadius::same(5),
-            Stroke::new(1.0, tokens::FOCUS_BORDER),
+            Stroke::new(1.0, tokens::FOCUS_BORDER()),
             StrokeKind::Outside,
         );
     }

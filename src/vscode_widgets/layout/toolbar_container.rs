@@ -2,8 +2,8 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-toolbar-container/
 //! Docs:     https://vscode-elements.github.io/components/toolbar-container/
 //! VS Code analogue: src/vs/base/browser/ui/toolbar/toolbar.ts
-//! Tokens:   --vscode-icon-foreground → Palette::VSCE_ICON_FG
-//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG
+//! Tokens:   --vscode-icon-foreground → Palette::VSCE_ICON_FG()
+//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG()
 //!
 //! Container that lays out a row of action icons. Callers compose buttons
 //! inside the closure via `vscode_widgets::primitives::icon_button`. This
@@ -60,7 +60,7 @@ pub fn toolbar_container<R>(
         if let Some(title) = props.title {
             ui.label(
                 RichText::new(title.to_uppercase())
-                    .color(tokens::SECTION_HEADER_FG)
+                    .color(tokens::SECTION_HEADER_FG())
                     .font(FontId::proportional(11.0))
                     .strong(),
             );
@@ -77,7 +77,7 @@ pub fn toolbar_container<R>(
         }
         // `tokens` import is needed to keep the doc-comment cross-reference
         // exact even when the row is empty.
-        let _ = tokens::ICON_FG;
+        let _ = tokens::ICON_FG();
         let _ = Color32::TRANSPARENT;
     })
     .response

@@ -406,19 +406,19 @@ fn pane_header(ui: &mut Ui, rect: Rect, title: &str, open: bool, border: bool) -
     let resp = ui.interact(rect, ui.id().with(("pane_header", title)), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_BG);
+    p.rect_filled(rect, 0.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_BG());
     if border {
-        p.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_BORDER));
+        p.hline(rect.x_range(), rect.top() + 0.5, Stroke::new(1.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_BORDER()));
     }
     let cy = rect.center().y;
     let chev = if open { "chevron-down" } else { "chevron-right" };
-    paint_codicon(p, egui::pos2(rect.left() + 10.0, cy), chev, 16.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_FG);
+    paint_codicon(p, egui::pos2(rect.left() + 10.0, cy), chev, 16.0, Palette::VSCE_SIDEBAR_SECTION_HEADER_FG());
     p.text(
         egui::pos2(rect.left() + 20.0, cy),
         Align2::LEFT_CENTER,
         title,
         crate::ui_font::bold(11.0),
-        Palette::VSCE_SIDEBAR_SECTION_HEADER_FG,
+        Palette::VSCE_SIDEBAR_SECTION_HEADER_FG(),
     );
     resp.clicked()
 }
@@ -430,9 +430,9 @@ fn header_action(ui: &mut Ui, id: impl std::hash::Hash, center: Pos2, icon: &str
     let resp = ui.interact(r, ui.id().with(id), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     if resp.hovered() {
-        ui.painter().rect_filled(r.shrink(1.0), egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+        ui.painter().rect_filled(r.shrink(1.0), egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG());
     }
-    paint_codicon(ui.painter(), center, icon, 16.0, Palette::VSCE_ICON_2026_FG);
+    paint_codicon(ui.painter(), center, icon, 16.0, Palette::VSCE_ICON_2026_FG());
     let clicked = resp.clicked();
     resp.on_hover_text(tip);
     clicked.then(|| r.left_bottom())
@@ -472,14 +472,14 @@ fn graph_header_actions(ui: &mut Ui, rect: Rect, root: &Path, repo: Option<&Repo
     // The reference picker: git-branch icon + its label.
     let label = st.graph_filter.label();
     let font = FontId::proportional(13.0);
-    let w = ui.painter().layout_no_wrap(label.clone(), font.clone(), Palette::FG).size().x + 16.0 + 6.0;
+    let w = ui.painter().layout_no_wrap(label.clone(), font.clone(), Palette::FG()).size().x + 16.0 + 6.0;
     let r = Rect::from_min_max(egui::pos2(x - w, rect.top() + 2.0), egui::pos2(x, rect.bottom() - 2.0));
     let resp = ui.interact(r, ui.id().with("scm_graph_ref_picker"), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(r, egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+        ui.painter().rect_filled(r, egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG());
     }
-    paint_codicon(ui.painter(), egui::pos2(r.left() + 3.0 + 8.0, rect.center().y), "git-branch", 16.0, Palette::VSCE_ICON_2026_FG);
-    ui.painter().text(egui::pos2(r.left() + 3.0 + 16.0 + 1.0, rect.center().y), Align2::LEFT_CENTER, &label, font, Palette::VSCE_ICON_2026_FG);
+    paint_codicon(ui.painter(), egui::pos2(r.left() + 3.0 + 8.0, rect.center().y), "git-branch", 16.0, Palette::VSCE_ICON_2026_FG());
+    ui.painter().text(egui::pos2(r.left() + 3.0 + 16.0 + 1.0, rect.center().y), Align2::LEFT_CENTER, &label, font, Palette::VSCE_ICON_2026_FG());
     if resp.on_hover_text("History Item Reference Picker").clicked() {
         out.act(ScmAction::GraphFilterPick(root));
     }
@@ -517,7 +517,7 @@ fn welcome(ui: &mut Ui, st: &ScmUiState, out: &mut ScmOutput) {
                 ui.set_width(w);
                 let mut job = egui::text::LayoutJob::single_section(
                     text.to_string(),
-                    egui::text::TextFormat { font_id: FontId::proportional(13.0), color: Palette::FG, line_height: Some(18.0), ..Default::default() },
+                    egui::text::TextFormat { font_id: FontId::proportional(13.0), color: Palette::FG(), line_height: Some(18.0), ..Default::default() },
                 );
                 job.wrap.max_width = w;
                 ui.label(job);
@@ -533,7 +533,7 @@ fn welcome(ui: &mut Ui, st: &ScmUiState, out: &mut ScmOutput) {
         ui.horizontal(|ui| {
             ui.add_space(20.0);
             let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), Sense::click());
-            let bg = if resp.hovered() { Palette::BUTTON_HOVER } else { Palette::BUTTON_BG };
+            let bg = if resp.hovered() { Palette::BUTTON_HOVER() } else { Palette::BUTTON_BG() };
             ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
             ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), Color32::WHITE);
             resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
@@ -558,19 +558,19 @@ fn repo_row(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut ScmOu
     let expanded = st.expanded.contains(&repo.root);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG());
     }
     let p = ui.painter();
     let cy = rect.center().y;
-    paint_codicon(p, egui::pos2(rect.left() + 18.0, cy), if expanded { "chevron-down" } else { "chevron-right" }, 16.0, Palette::VSCE_ICON_2026_FG);
-    paint_codicon(p, egui::pos2(rect.left() + 36.0, cy), "repo", 16.0, Palette::VSCE_ICON_2026_FG);
-    let name = p.layout_no_wrap(repo.name.clone(), crate::ui_font::bold(13.0), Palette::FG);
+    paint_codicon(p, egui::pos2(rect.left() + 18.0, cy), if expanded { "chevron-down" } else { "chevron-right" }, 16.0, Palette::VSCE_ICON_2026_FG());
+    paint_codicon(p, egui::pos2(rect.left() + 36.0, cy), "repo", 16.0, Palette::VSCE_ICON_2026_FG());
+    let name = p.layout_no_wrap(repo.name.clone(), crate::ui_font::bold(13.0), Palette::FG());
     let nw = name.size().x;
-    p.galley(egui::pos2(rect.left() + 46.0, cy - name.size().y / 2.0), name, Palette::FG);
+    p.galley(egui::pos2(rect.left() + 46.0, cy - name.size().y / 2.0), name, Palette::FG());
     if let Some(b) = &repo.branch {
         let x = rect.left() + 46.0 + nw + 6.0;
-        paint_codicon(p, egui::pos2(x + 8.0, cy), "git-branch", 16.0, Palette::VSCE_ICON_2026_FG);
-        p.text(egui::pos2(x + 18.0, cy), Align2::LEFT_CENTER, b, FontId::proportional(13.0), Palette::FG_DESCRIPTION);
+        paint_codicon(p, egui::pos2(x + 8.0, cy), "git-branch", 16.0, Palette::VSCE_ICON_2026_FG());
+        p.text(egui::pos2(x + 18.0, cy), Align2::LEFT_CENTER, b, FontId::proportional(13.0), Palette::FG_DESCRIPTION());
     }
     if resp.clicked() {
         if expanded {
@@ -593,7 +593,7 @@ fn commit_input(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut S
     ui.add_space(4.0);
     let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
     let rect = Rect::from_min_max(egui::pos2(row.left() + 19.0 + indent, row.top()), egui::pos2(row.right() - PAD_R, row.bottom()));
-    ui.painter().rect_filled(rect, egui::CornerRadius::same(4), Palette::VSCE_INPUT_2026_BG);
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(4), Palette::VSCE_INPUT_2026_BG());
     let msg = st.commit_messages.entry(repo.root.clone()).or_default();
     let inner = Rect::from_min_max(egui::pos2(rect.left() + 7.0, rect.top() + 4.0), egui::pos2(rect.right() - 7.0, rect.bottom() - 4.0));
     let id = egui::Id::new(("scm_commit_input", &repo.root));
@@ -604,15 +604,15 @@ fn commit_input(ui: &mut Ui, repo: &Repository, st: &mut ScmUiState, out: &mut S
             .id(id)
             .frame(egui::Frame::NONE)
             .desired_width(f32::INFINITY)
-            .hint_text(egui::RichText::new(&placeholder).color(Palette::VSCE_INPUT_2026_PLACEHOLDER_FG))
+            .hint_text(egui::RichText::new(&placeholder).color(Palette::VSCE_INPUT_2026_PLACEHOLDER_FG()))
             .font(FontId::proportional(13.0))
-            .text_color(Palette::FG),
+            .text_color(Palette::FG()),
     );
     if st.focus_input {
         st.focus_input = false;
         resp.request_focus();
     }
-    let border = if resp.has_focus() { Palette::FOCUS_BORDER } else { Palette::INPUT_BORDER };
+    let border = if resp.has_focus() { Palette::FOCUS_BORDER() } else { Palette::INPUT_BORDER() };
     ui.painter().rect_stroke(rect, egui::CornerRadius::same(4), Stroke::new(1.0, border), egui::StrokeKind::Inside);
     if resp.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
         out.act(ScmAction::Commit { root: repo.root.clone(), mode: CommitMode::Plain, scope: CommitScope::Default, amend: false, signoff: false });
@@ -634,12 +634,12 @@ fn commit_button(ui: &mut Ui, repo: &Repository, out: &mut ScmOutput, indent: f3
     main_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Commit"));
     let p = ui.painter();
     let alpha = if enabled { 1.0 } else { 0.4 };
-    p.rect_filled(rect, egui::CornerRadius::same(4), with_alpha(Palette::BUTTON_BG, alpha));
+    p.rect_filled(rect, egui::CornerRadius::same(4), with_alpha(Palette::BUTTON_BG(), alpha));
     if enabled && main_resp.hovered() {
-        p.rect_filled(main, egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }, Palette::BUTTON_HOVER);
+        p.rect_filled(main, egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }, Palette::BUTTON_HOVER());
     }
     if enabled && drop_resp.hovered() {
-        p.rect_filled(drop, egui::CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, Palette::BUTTON_HOVER);
+        p.rect_filled(drop, egui::CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, Palette::BUTTON_HOVER());
     }
     let fg = with_alpha(Color32::WHITE, if enabled { 1.0 } else { 0.6 });
     p.vline(drop.left(), drop.y_range().shrink(4.0), Stroke::new(1.0, with_alpha(Color32::WHITE, 0.4 * alpha)));
@@ -733,20 +733,20 @@ fn group(
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, kind.label()));
     let hovered = ui.rect_contains_pointer(rect);
     if hovered {
-        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG());
     }
     let cy = rect.center().y;
     let left = rect.left() + indent;
-    paint_codicon(ui.painter(), egui::pos2(left + 18.5, cy), if open { "chevron-down" } else { "chevron-right" }, 16.0, Palette::VSCE_ICON_2026_FG);
-    ui.painter().text(egui::pos2(left + 30.5, cy), Align2::LEFT_CENTER, kind.label(), FontId::proportional(13.0), Palette::FG);
+    paint_codicon(ui.painter(), egui::pos2(left + 18.5, cy), if open { "chevron-down" } else { "chevron-right" }, 16.0, Palette::VSCE_ICON_2026_FG());
+    ui.painter().text(egui::pos2(left + 30.5, cy), Align2::LEFT_CENTER, kind.label(), FontId::proportional(13.0), Palette::FG());
 
     // Count badge (`CountBadge`): 18px round, badge colours.
     let count = files.len().to_string();
-    let g = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), Palette::VSCE_BADGE_2026_FG);
+    let g = ui.painter().layout_no_wrap(count, FontId::proportional(11.0), Palette::VSCE_BADGE_2026_FG());
     let bw = (g.size().x + 12.0).max(18.0);
     let badge = Rect::from_center_size(egui::pos2(rect.right() - PAD_R - bw / 2.0, cy), egui::vec2(bw, 18.0));
-    ui.painter().rect_filled(badge, egui::CornerRadius::same(9), Palette::VSCE_BADGE_2026_BG);
-    ui.painter().galley(badge.center() - g.size() / 2.0, g, Palette::VSCE_BADGE_2026_FG);
+    ui.painter().rect_filled(badge, egui::CornerRadius::same(9), Palette::VSCE_BADGE_2026_BG());
+    ui.painter().galley(badge.center() - g.size() / 2.0, g, Palette::VSCE_BADGE_2026_FG());
 
     let mut acted = false;
     if hovered {
@@ -813,13 +813,13 @@ fn file_row(
         // list.activeSelectionBackground + focusOutline while the list has
         // the focus, list.inactiveSelectionBackground otherwise.
         if st.list_focused {
-            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_ACTIVE_SELECTION_2026_BG);
-            ui.painter().rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, Palette::VSCE_LIST_FOCUS_OUTLINE_2026), egui::StrokeKind::Inside);
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_ACTIVE_SELECTION_2026_BG());
+            ui.painter().rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, Palette::VSCE_LIST_FOCUS_OUTLINE_2026()), egui::StrokeKind::Inside);
         } else {
-            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_INACTIVE_SELECTION_2026_BG);
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_INACTIVE_SELECTION_2026_BG());
         }
     } else if hovered {
-        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG());
     }
     let p = ui.painter();
     let cy = rect.center().y;
@@ -831,25 +831,25 @@ fn file_row(
         Some((glyph, color)) => {
             p.text(egui::pos2(left + 25.5, cy), Align2::CENTER_CENTER, glyph.to_string(), crate::file_icons::seti_font(20.0), color);
         }
-        None => paint_codicon(p, egui::pos2(left + 25.5, cy), "file", 16.0, Palette::VSCE_ICON_2026_FG),
+        None => paint_codicon(p, egui::pos2(left + 25.5, cy), "file", 16.0, Palette::VSCE_ICON_2026_FG()),
     }
     let letter_x = rect.right() - PAD_R - 8.0;
     let decoration = fc.kind.decoration_color();
-    let name_g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG);
+    let name_g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG());
     let name_w = name_g.size().x;
     let nx = left + 38.5;
     // Text stops before the inline actions / status letter.
     let text_clip = Rect::from_min_max(egui::pos2(rect.left(), rect.top()), egui::pos2(letter_x - 14.0, rect.bottom()));
     let tp = ui.painter_at(text_clip);
-    tp.galley(egui::pos2(nx, cy - name_g.size().y / 2.0), name_g, Palette::FG);
+    tp.galley(egui::pos2(nx, cy - name_g.size().y / 2.0), name_g, Palette::FG());
     if fc.kind.strikethrough() {
-        tp.line_segment([egui::pos2(nx, cy + 0.5), egui::pos2(nx + name_w, cy + 0.5)], Stroke::new(1.0, Palette::FG));
+        tp.line_segment([egui::pos2(nx, cy + 0.5), egui::pos2(nx + name_w, cy + 0.5)], Stroke::new(1.0, Palette::FG()));
     }
     if !parent.is_empty() {
-        tp.text(egui::pos2(nx + name_w + 6.0, cy), Align2::LEFT_CENTER, parent, FontId::proportional(12.0), Palette::FG_DESCRIPTION);
+        tp.text(egui::pos2(nx + name_w + 6.0, cy), Align2::LEFT_CENTER, parent, FontId::proportional(12.0), Palette::FG_DESCRIPTION());
     }
     let _ = decoration;
-    p.text(egui::pos2(letter_x, cy), Align2::CENTER_CENTER, fc.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG, 0.75));
+    p.text(egui::pos2(letter_x, cy), Align2::CENTER_CENTER, fc.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG(), 0.75));
 
     let mut acted = false;
     if hovered {
@@ -906,9 +906,9 @@ fn row_action(ui: &mut Ui, id: impl std::hash::Hash, center: Pos2, icon: &str, t
     let resp = ui.interact(r, ui.id().with(id), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     if resp.hovered() {
-        ui.painter().rect_filled(r, egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+        ui.painter().rect_filled(r, egui::CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG());
     }
-    paint_codicon(ui.painter(), center, icon, 16.0, Palette::VSCE_ICON_2026_FG);
+    paint_codicon(ui.painter(), center, icon, 16.0, Palette::VSCE_ICON_2026_FG());
     let clicked = resp.clicked();
     resp.on_hover_text(tip);
     clicked
@@ -928,10 +928,10 @@ fn graph_rows(ui: &mut Ui, history: &[GraphRow], root: Option<&Path>, st: &mut S
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("commit:{}", row.commit.summary)));
         let hovered = ui.rect_contains_pointer(rect);
         let row_bg = if hovered {
-            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
-            blend(Palette::SIDEBAR_BG, Palette::VSCE_LIST_HOVER_2026_BG)
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG());
+            blend(Palette::SIDEBAR_BG(), Palette::VSCE_LIST_HOVER_2026_BG())
         } else {
-            Palette::SIDEBAR_BG
+            Palette::SIDEBAR_BG()
         };
         let graph_w = paint_graph(ui.painter(), rect, row, row_bg, open);
         paint_history_label(ui, rect, graph_w, row);
@@ -1017,7 +1017,7 @@ fn commit_files(ui: &mut Ui, root: &Path, row: &GraphRow, tree: bool, out: &mut 
     for (depth, file, dir) in entries {
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
         if ui.rect_contains_pointer(rect) {
-            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG());
         }
         let p = ui.painter();
         for (i, lane) in row.output.iter().enumerate() {
@@ -1028,8 +1028,8 @@ fn commit_files(ui: &mut Ui, root: &Path, row: &GraphRow, tree: bool, out: &mut 
         let cy = rect.center().y;
         let left = rect.left() + graph_w + 8.0 * depth as f32;
         let Some(f) = file else {
-            paint_codicon(p, egui::pos2(left + 8.0, cy), "folder", 16.0, Palette::VSCE_ICON_2026_FG);
-            p.text(egui::pos2(left + 20.0, cy), Align2::LEFT_CENTER, &dir, FontId::proportional(13.0), Palette::FG);
+            paint_codicon(p, egui::pos2(left + 8.0, cy), "folder", 16.0, Palette::VSCE_ICON_2026_FG());
+            p.text(egui::pos2(left + 20.0, cy), Align2::LEFT_CENTER, &dir, FontId::proportional(13.0), Palette::FG());
             continue;
         };
         let name = f.rel.rsplit('/').next().unwrap_or(&f.rel);
@@ -1038,19 +1038,19 @@ fn commit_files(ui: &mut Ui, root: &Path, row: &GraphRow, tree: bool, out: &mut 
             Some((glyph, color)) => {
                 p.text(egui::pos2(left + 8.0, cy), Align2::CENTER_CENTER, glyph.to_string(), crate::file_icons::seti_font(20.0), color);
             }
-            None => paint_codicon(p, egui::pos2(left + 8.0, cy), "file", 16.0, Palette::VSCE_ICON_2026_FG),
+            None => paint_codicon(p, egui::pos2(left + 8.0, cy), "file", 16.0, Palette::VSCE_ICON_2026_FG()),
         }
-        let g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG);
+        let g = p.layout_no_wrap(name.to_string(), FontId::proportional(13.0), Palette::FG());
         let nw = g.size().x;
         let nx = left + 21.0;
-        p.galley(egui::pos2(nx, cy - g.size().y / 2.0), g, Palette::FG);
+        p.galley(egui::pos2(nx, cy - g.size().y / 2.0), g, Palette::FG());
         if f.kind.strikethrough() {
-            p.line_segment([egui::pos2(nx, cy + 0.5), egui::pos2(nx + nw, cy + 0.5)], Stroke::new(1.0, Palette::FG));
+            p.line_segment([egui::pos2(nx, cy + 0.5), egui::pos2(nx + nw, cy + 0.5)], Stroke::new(1.0, Palette::FG()));
         }
         if !tree && !folder.is_empty() {
-            p.text(egui::pos2(nx + nw + 6.0, cy), Align2::LEFT_CENTER, folder, FontId::proportional(12.0), Palette::FG_DESCRIPTION);
+            p.text(egui::pos2(nx + nw + 6.0, cy), Align2::LEFT_CENTER, folder, FontId::proportional(12.0), Palette::FG_DESCRIPTION());
         }
-        p.text(egui::pos2(rect.right() - PAD_R - 8.0, cy), Align2::CENTER_CENTER, f.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG, 0.75));
+        p.text(egui::pos2(rect.right() - PAD_R - 8.0, cy), Align2::CENTER_CENTER, f.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG(), 0.75));
         if resp.clicked() || resp.double_clicked() {
             out.act(ScmAction::OpenCommitDiff {
                 root: root.to_path_buf(),
@@ -1065,10 +1065,10 @@ fn commit_files(ui: &mut Ui, root: &Path, row: &GraphRow, tree: bool, out: &mut 
 
 fn lane_color(c: usize) -> Color32 {
     match c {
-        crate::git::history::REF_COLOR_LOCAL => Palette::SCM_REF_LOCAL,
-        crate::git::history::REF_COLOR_REMOTE => Palette::SCM_REF_REMOTE,
-        crate::git::history::REF_COLOR_BASE => Palette::SCM_REF_BASE,
-        _ => Palette::SCM_GRAPH_LANES[c % Palette::SCM_GRAPH_LANES.len()],
+        crate::git::history::REF_COLOR_LOCAL => Palette::SCM_REF_LOCAL(),
+        crate::git::history::REF_COLOR_REMOTE => Palette::SCM_REF_REMOTE(),
+        crate::git::history::REF_COLOR_BASE => Palette::SCM_REF_BASE(),
+        _ => Palette::SCM_GRAPH_LANES()[c % Palette::SCM_GRAPH_LANES().len()],
     }
 }
 
@@ -1176,7 +1176,7 @@ fn paint_history_label(ui: &Ui, rect: Rect, graph_w: f32, row: &GraphRow) {
     let mut badge_rects = Vec::new();
     for b in row.badges.iter().rev() {
         let bg = lane_color(b.color);
-        let fg = Palette::SIDEBAR_BG;
+        let fg = Palette::SIDEBAR_BG();
         let desc = if b.show_description { Some(p.layout_no_wrap(b.name.clone(), FontId::proportional(12.0), fg)) } else { None };
         let icon_w = if b.icon == "git-branch" { 18.0 } else { 18.0 };
         let count = (b.count > 1).then(|| p.layout_no_wrap(b.count.to_string(), FontId::proportional(12.0), fg));
@@ -1207,18 +1207,18 @@ fn paint_history_label(ui: &Ui, rect: Rect, graph_w: f32, row: &GraphRow) {
     let head = row.kind == NodeKind::Head;
     let subject_font = if head { crate::ui_font::bold(13.0) } else { FontId::proportional(13.0) };
     let mut job = egui::text::LayoutJob::default();
-    job.append(&row.commit.summary, 0.0, egui::text::TextFormat::simple(subject_font, Palette::FG));
+    job.append(&row.commit.summary, 0.0, egui::text::TextFormat::simple(subject_font, Palette::FG()));
     job.append(
         &row.commit.author,
         6.5,
         egui::text::TextFormat::simple(
             FontId::proportional(11.7),
-            with_alpha(Palette::FG, 0.7),
+            with_alpha(Palette::FG(), 0.7),
         ),
     );
     job.wrap = egui::text::TextWrapping { max_width: avail, max_rows: 1, overflow_character: Some('…'), ..Default::default() };
     let g = p.layout_job(job);
-    p.galley(egui::pos2(x, cy - g.size().y / 2.0), g, Palette::FG);
+    p.galley(egui::pos2(x, cy - g.size().y / 2.0), g, Palette::FG());
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@
 //!   3. **Right pane**: scrollable list of "state cards" — one per
 //!      `StoryState` of the currently-selected widget.
 //!
-//! Each state card renders on a `Palette::EDITOR_BG` canvas so widgets are
+//! Each state card renders on a `Palette::EDITOR_BG()` canvas so widgets are
 //! tested against the realistic surface they'll inhabit in the workbench.
 
 use eframe::egui;
@@ -53,7 +53,7 @@ impl eframe::App for ShowcaseApp {
             .exact_height(32.0)
             .frame(
                 Frame::default()
-                    .fill(Palette::PANEL_BG)
+                    .fill(Palette::PANEL_BG())
                     .inner_margin(Margin::symmetric(12, 4)),
             )
             .show(ctx, |ui| {
@@ -64,7 +64,7 @@ impl eframe::App for ShowcaseApp {
                         .unwrap_or("https://vscode-elements.github.io/");
                     ui.label(
                         RichText::new("vscode-elements ▸ ")
-                            .color(Palette::FG_DESCRIPTION)
+                            .color(Palette::FG_DESCRIPTION())
                             .font(FontId::proportional(12.0)),
                     );
                     let label = STORIES
@@ -73,7 +73,7 @@ impl eframe::App for ShowcaseApp {
                         .unwrap_or("(no widgets registered)");
                     ui.label(
                         RichText::new(label)
-                            .color(Palette::FG)
+                            .color(Palette::FG())
                             .font(FontId::proportional(12.5)),
                     );
                     ui.with_layout(
@@ -81,7 +81,7 @@ impl eframe::App for ShowcaseApp {
                         |ui| {
                             ui.label(
                                 RichText::new(upstream)
-                                    .color(Palette::FG_DESCRIPTION)
+                                    .color(Palette::FG_DESCRIPTION())
                                     .font(FontId::monospace(11.5)),
                             );
                         },
@@ -95,7 +95,7 @@ impl eframe::App for ShowcaseApp {
             .resizable(false)
             .frame(
                 Frame::default()
-                    .fill(Palette::SIDEBAR_BG)
+                    .fill(Palette::SIDEBAR_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -105,7 +105,7 @@ impl eframe::App for ShowcaseApp {
         egui::CentralPanel::default()
             .frame(
                 Frame::default()
-                    .fill(Palette::EDITOR_BG)
+                    .fill(Palette::EDITOR_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -121,7 +121,7 @@ fn draw_rail(ui: &mut egui::Ui, selected: &mut usize) {
             ui.add_space(12.0);
             ui.label(
                 RichText::new("No widgets registered yet.")
-                    .color(Palette::FG_DESCRIPTION)
+                    .color(Palette::FG_DESCRIPTION())
                     .size(12.0),
             );
         });
@@ -133,7 +133,7 @@ fn draw_rail(ui: &mut egui::Ui, selected: &mut usize) {
                     "Phase 0 is scaffolding only. Widgets land starting Phase 1 \
                      (icon, divider, label).",
                 )
-                .color(Palette::FG_DESCRIPTION)
+                .color(Palette::FG_DESCRIPTION())
                 .size(11.0),
             );
         });
@@ -150,7 +150,7 @@ fn draw_rail(ui: &mut egui::Ui, selected: &mut usize) {
                     ui.add_space(10.0);
                     ui.label(
                         RichText::new(story.category.as_str().to_uppercase())
-                            .color(Palette::FG_DESCRIPTION)
+                            .color(Palette::FG_DESCRIPTION())
                             .size(11.0)
                             .strong(),
                     );
@@ -170,9 +170,9 @@ fn draw_rail_item(ui: &mut egui::Ui, story: &Story, idx: usize, selected: &mut u
     );
     let is_selected = *selected == idx;
     let bg = if is_selected {
-        Palette::LIST_ACTIVE_SELECTION_BG
+        Palette::LIST_ACTIVE_SELECTION_BG()
     } else if resp.hovered() {
-        Palette::LIST_HOVER_BG
+        Palette::LIST_HOVER_BG()
     } else {
         Color32::TRANSPARENT
     };
@@ -182,7 +182,7 @@ fn draw_rail_item(ui: &mut egui::Ui, story: &Story, idx: usize, selected: &mut u
         egui::Align2::LEFT_CENTER,
         story.display,
         FontId::proportional(12.5),
-        if is_selected { Palette::FG } else { Palette::FG },
+        if is_selected { Palette::FG() } else { Palette::FG() },
     );
     if resp.clicked() {
         *selected = idx;
@@ -210,7 +210,7 @@ fn draw_state_cards(ui: &mut egui::Ui, story: Option<&Story>) {
                 ui.add_space(28.0);
                 ui.label(
                     RichText::new(story.display)
-                        .color(Palette::FG)
+                        .color(Palette::FG())
                         .size(20.0)
                         .strong(),
                 );
@@ -234,14 +234,14 @@ fn draw_state_card(ui: &mut egui::Ui, state: &StoryState) {
             |ui| {
                 ui.label(
                     RichText::new(state.name)
-                        .color(Palette::FG)
+                        .color(Palette::FG())
                         .size(13.5)
                         .strong(),
                 );
                 if !state.caption.is_empty() {
                     ui.label(
                         RichText::new(state.caption)
-                            .color(Palette::FG_DESCRIPTION)
+                            .color(Palette::FG_DESCRIPTION())
                             .size(11.5),
                     );
                 }
@@ -256,8 +256,8 @@ fn draw_state_card(ui: &mut egui::Ui, state: &StoryState) {
                 // tiny widgets like the icon.
                 ui.allocate_ui(Vec2::new(canvas_w, canvas_h), |ui| {
                     Frame::default()
-                        .fill(Palette::EDITOR_BG)
-                        .stroke(Stroke::new(1.0, Palette::BORDER))
+                        .fill(Palette::EDITOR_BG())
+                        .stroke(Stroke::new(1.0, Palette::BORDER()))
                         .inner_margin(Margin::same(pad as i8))
                         .show(ui, |ui| {
                             let inner =
@@ -283,7 +283,7 @@ fn center_message(ui: &mut egui::Ui, text: &str) {
     ui.vertical_centered(|ui| {
         ui.label(
             RichText::new(text)
-                .color(Palette::FG_DESCRIPTION)
+                .color(Palette::FG_DESCRIPTION())
                 .size(12.5),
         );
     });

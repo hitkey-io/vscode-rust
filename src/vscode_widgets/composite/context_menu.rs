@@ -2,12 +2,12 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-context-menu/vscode-context-menu.ts
 //! Docs:     https://vscode-elements.github.io/components/context-menu/
 //! VS Code analogue: src/vs/base/browser/ui/menu/menu.ts
-//! Tokens:   --vscode-menu-background → Palette::VSCE_DROPDOWN_BG
-//!           --vscode-menu-foreground → Palette::VSCE_DROPDOWN_FG
-//!           --vscode-menu-selectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG
-//!           --vscode-menu-selectionForeground → Palette::VSCE_LIST_ACTIVE_SELECTION_FG
-//!           --vscode-menu-border → Palette::VSCE_DROPDOWN_BORDER
-//!           --vscode-foregroundDisabled → Palette::VSCE_FG_DISABLED
+//! Tokens:   --vscode-menu-background → Palette::VSCE_DROPDOWN_BG()
+//!           --vscode-menu-foreground → Palette::VSCE_DROPDOWN_FG()
+//!           --vscode-menu-selectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG()
+//!           --vscode-menu-selectionForeground → Palette::VSCE_LIST_ACTIVE_SELECTION_FG()
+//!           --vscode-menu-border → Palette::VSCE_DROPDOWN_BORDER()
+//!           --vscode-foregroundDisabled → Palette::VSCE_FG_DISABLED()
 //!
 //! Popup menu container. The caller draws the menu inside an `egui::Area`
 //! (or `popup_below_widget`) and passes the items. The widget returns the
@@ -106,11 +106,11 @@ pub fn context_menu(
         + 8.0;
     let frame_rect = egui::Rect::from_min_size(ui.cursor().min, Vec2::new(width, total_height));
     let painter = ui.painter().clone();
-    painter.rect_filled(frame_rect, CornerRadius::same(5), tokens::DROPDOWN_BG);
+    painter.rect_filled(frame_rect, CornerRadius::same(5), tokens::DROPDOWN_BG());
     painter.rect_stroke(
         frame_rect,
         CornerRadius::same(5),
-        Stroke::new(1.0, tokens::DROPDOWN_BORDER),
+        Stroke::new(1.0, tokens::DROPDOWN_BORDER()),
         StrokeKind::Inside,
     );
 
@@ -124,7 +124,7 @@ pub fn context_menu(
                     Vec2::new(width - 16.0, 1.0),
                 );
                 ui.painter()
-                    .rect_filled(r, 0.0, tokens::DROPDOWN_BORDER);
+                    .rect_filled(r, 0.0, tokens::DROPDOWN_BORDER());
                 ui.allocate_exact_size(Vec2::new(width, 5.0), Sense::hover());
                 continue;
             }
@@ -149,15 +149,15 @@ fn draw_menu_item(
 
     let painter = ui.painter().clone();
     let fg = if item.disabled {
-        tokens::FG_DISABLED
+        tokens::FG_DISABLED()
     } else if hovered {
-        tokens::LIST_ACTIVE_SELECTION_FG
+        tokens::LIST_ACTIVE_SELECTION_FG()
     } else {
-        tokens::DROPDOWN_FG
+        tokens::DROPDOWN_FG()
     };
     if hovered {
         let inner = rect.shrink2(Vec2::new(4.0, 0.0));
-        painter.rect_filled(inner, CornerRadius::same(3), tokens::LIST_ACTIVE_SELECTION_BG);
+        painter.rect_filled(inner, CornerRadius::same(3), tokens::LIST_ACTIVE_SELECTION_BG());
     }
 
     let cy = rect.center().y;
@@ -185,7 +185,7 @@ fn draw_menu_item(
             Align2::RIGHT_CENTER,
             sc,
             FontId::proportional(12.0),
-            if item.disabled { fg } else { tokens::FG_DESCRIPTION },
+            if item.disabled { fg } else { tokens::FG_DESCRIPTION() },
         );
     }
 

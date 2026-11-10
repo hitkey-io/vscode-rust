@@ -40,12 +40,12 @@ impl ChangeKind {
     pub fn decoration_color(self) -> egui::Color32 {
         use crate::theme::Palette;
         match self {
-            ChangeKind::Modified | ChangeKind::TypeChanged => Palette::GIT_MODIFIED_FG,
-            ChangeKind::Added | ChangeKind::Untracked => Palette::GIT_ADDED_FG,
-            ChangeKind::Renamed | ChangeKind::Copied => Palette::GIT_RENAMED_FG,
-            ChangeKind::Deleted => Palette::GIT_DELETED_FG,
-            ChangeKind::Ignored => Palette::GIT_IGNORED_FG,
-            ChangeKind::Conflicted => Palette::GIT_CONFLICT_FG,
+            ChangeKind::Modified | ChangeKind::TypeChanged => Palette::GIT_MODIFIED_FG(),
+            ChangeKind::Added | ChangeKind::Untracked => Palette::GIT_ADDED_FG(),
+            ChangeKind::Renamed | ChangeKind::Copied => Palette::GIT_RENAMED_FG(),
+            ChangeKind::Deleted => Palette::GIT_DELETED_FG(),
+            ChangeKind::Ignored => Palette::GIT_IGNORED_FG(),
+            ChangeKind::Conflicted => Palette::GIT_CONFLICT_FG(),
         }
     }
 

@@ -2,12 +2,12 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-textfield/vscode-textfield.ts
 //! Docs:     https://vscode-elements.github.io/components/textfield/
 //! VS Code analogue: src/vs/base/browser/ui/inputbox/inputBox.ts
-//! Tokens:   --vscode-input-background → Palette::VSCE_INPUT_BG
-//!           --vscode-input-foreground → Palette::VSCE_INPUT_FG
-//!           --vscode-input-border → Palette::VSCE_INPUT_BORDER
-//!           --vscode-input-placeholderForeground → Palette::VSCE_INPUT_PLACEHOLDER_FG
-//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER
-//!           --vscode-inputValidation-errorBorder → Palette::VSCE_INPUT_ERROR_BORDER
+//! Tokens:   --vscode-input-background → Palette::VSCE_INPUT_BG()
+//!           --vscode-input-foreground → Palette::VSCE_INPUT_FG()
+//!           --vscode-input-border → Palette::VSCE_INPUT_BORDER()
+//!           --vscode-input-placeholderForeground → Palette::VSCE_INPUT_PLACEHOLDER_FG()
+//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER()
+//!           --vscode-inputValidation-errorBorder → Palette::VSCE_INPUT_ERROR_BORDER()
 //!
 //! Single-line text input. Padding 4×6, border-radius 4, optional
 //! leading/trailing codicon slot. The widget wraps `egui::TextEdit` so it
@@ -107,19 +107,19 @@ pub fn textfield(ui: &mut Ui, props: &TextFieldProps<'_>, value: &mut String) ->
 
     let painter = ui.painter().clone();
     let bg = if props.disabled {
-        with_alpha(tokens::INPUT_BG, 0.6)
+        with_alpha(tokens::INPUT_BG(), 0.6)
     } else {
-        tokens::INPUT_BG
+        tokens::INPUT_BG()
     };
     painter.rect_filled(rect, CornerRadius::same(4), bg);
 
     let focus_visible = props.focused || (response.has_focus() && !props.disabled);
     let border = if props.invalid {
-        tokens::INPUT_ERROR_BORDER
+        tokens::INPUT_ERROR_BORDER()
     } else if focus_visible {
-        tokens::FOCUS_BORDER
+        tokens::FOCUS_BORDER()
     } else {
-        tokens::INPUT_BORDER
+        tokens::INPUT_BORDER()
     };
     painter.rect_stroke(
         rect,
@@ -135,7 +135,7 @@ pub fn textfield(ui: &mut Ui, props: &TextFieldProps<'_>, value: &mut String) ->
             Align2::CENTER_CENTER,
             glyph.to_string(),
             codicon_font(14.0),
-            tokens::ICON_FG,
+            tokens::ICON_FG(),
         );
         text_rect.min.x += icon_slot;
     }
@@ -145,7 +145,7 @@ pub fn textfield(ui: &mut Ui, props: &TextFieldProps<'_>, value: &mut String) ->
             Align2::CENTER_CENTER,
             glyph.to_string(),
             codicon_font(14.0),
-            tokens::ICON_FG,
+            tokens::ICON_FG(),
         );
         text_rect.max.x -= icon_slot;
     }
@@ -154,9 +154,9 @@ pub fn textfield(ui: &mut Ui, props: &TextFieldProps<'_>, value: &mut String) ->
     // egui's TextEdit, telling it to draw no frame of its own. The text
     // colour is forced to the input fg token to honour the theme.
     let text_color = if props.disabled {
-        with_alpha(tokens::INPUT_FG, 0.6)
+        with_alpha(tokens::INPUT_FG(), 0.6)
     } else {
-        tokens::INPUT_FG
+        tokens::INPUT_FG()
     };
 
     let mut child_ui = ui.new_child(

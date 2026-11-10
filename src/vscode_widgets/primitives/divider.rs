@@ -2,7 +2,7 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-divider/vscode-divider.ts
 //! Docs:     https://vscode-elements.github.io/components/divider/
 //! VS Code analogue: src/vs/platform/theme/common/colors/baseColors.ts:64 (textSeparator-foreground)
-//! Tokens:   --vscode-textSeparator-foreground → Palette::VSCE_TEXT_SEPARATOR_FG
+//! Tokens:   --vscode-textSeparator-foreground → Palette::VSCE_TEXT_SEPARATOR_FG()
 //!
 //! A 1px line separator. Renders either horizontally (full width of the
 //! parent layout) or vertically (full height).
@@ -24,7 +24,7 @@ pub struct DividerProps {
     pub thickness: f32,
     /// Length in CSS pixels. `None` means "fill the available cross axis".
     pub length: Option<f32>,
-    /// Override colour. `None` falls back to `tokens::TEXT_SEPARATOR_FG`.
+    /// Override colour. `None` falls back to `tokens::TEXT_SEPARATOR_FG()`.
     pub color: Option<egui::Color32>,
 }
 
@@ -63,7 +63,7 @@ impl DividerProps {
 }
 
 pub fn divider(ui: &mut Ui, props: &DividerProps) -> Response {
-    let color = props.color.unwrap_or(tokens::TEXT_SEPARATOR_FG);
+    let color = props.color.unwrap_or(tokens::TEXT_SEPARATOR_FG());
     let desired = match props.orientation {
         DividerOrientation::Horizontal => {
             let w = props.length.unwrap_or_else(|| ui.available_width());

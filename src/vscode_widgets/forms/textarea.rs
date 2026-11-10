@@ -86,19 +86,19 @@ pub fn textarea(ui: &mut Ui, props: &TextareaProps<'_>, value: &mut String) -> R
 
     let painter = ui.painter().clone();
     let bg = if props.disabled {
-        with_alpha(tokens::INPUT_BG, 0.6)
+        with_alpha(tokens::INPUT_BG(), 0.6)
     } else {
-        tokens::INPUT_BG
+        tokens::INPUT_BG()
     };
     painter.rect_filled(rect, CornerRadius::same(4), bg);
 
     let focus_visible = props.focused || (response.has_focus() && !props.disabled);
     let border = if props.invalid {
-        tokens::INPUT_ERROR_BORDER
+        tokens::INPUT_ERROR_BORDER()
     } else if focus_visible {
-        tokens::FOCUS_BORDER
+        tokens::FOCUS_BORDER()
     } else {
-        tokens::INPUT_BORDER
+        tokens::INPUT_BORDER()
     };
     painter.rect_stroke(
         rect,
@@ -108,9 +108,9 @@ pub fn textarea(ui: &mut Ui, props: &TextareaProps<'_>, value: &mut String) -> R
     );
 
     let text_color = if props.disabled {
-        with_alpha(tokens::INPUT_FG, 0.6)
+        with_alpha(tokens::INPUT_FG(), 0.6)
     } else {
-        tokens::INPUT_FG
+        tokens::INPUT_FG()
     };
     let inner = rect.shrink(pad);
     let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));

@@ -2,12 +2,12 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-tree/vscode-tree.ts
 //! Docs:     https://vscode-elements.github.io/components/tree/
 //! VS Code analogue: src/vs/base/browser/ui/tree/objectTreeModel.ts
-//! Tokens:   --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG
-//!           --vscode-list-activeSelectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG
-//!           --vscode-list-activeSelectionForeground → Palette::VSCE_LIST_ACTIVE_SELECTION_FG
-//!           --vscode-tree-indentGuidesStroke → Palette::VSCE_TREE_INDENT_GUIDE
-//!           --vscode-icon-foreground → Palette::VSCE_ICON_FG
-//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER
+//! Tokens:   --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG()
+//!           --vscode-list-activeSelectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG()
+//!           --vscode-list-activeSelectionForeground → Palette::VSCE_LIST_ACTIVE_SELECTION_FG()
+//!           --vscode-tree-indentGuidesStroke → Palette::VSCE_TREE_INDENT_GUIDE()
+//!           --vscode-icon-foreground → Palette::VSCE_ICON_FG()
+//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER()
 //!
 //! Hierarchical list with twistie chevrons, file icons, and selection.
 //! `TreeItem` is `Clone + 'static` so the caller can store the structure
@@ -155,9 +155,9 @@ fn draw_row(
     let painter = ui.painter().clone();
     let hovered = response.hovered() && !item.disabled;
     let bg = if selected {
-        tokens::LIST_ACTIVE_SELECTION_BG
+        tokens::LIST_ACTIVE_SELECTION_BG()
     } else if hovered {
-        tokens::LIST_HOVER_BG
+        tokens::LIST_HOVER_BG()
     } else {
         Color32::TRANSPARENT
     };
@@ -182,7 +182,7 @@ fn draw_row(
                     egui::pos2(x, rect.top()),
                     egui::pos2(x, rect.bottom()),
                 ],
-                Stroke::new(1.0, tokens::TREE_INDENT_GUIDE),
+                Stroke::new(1.0, tokens::TREE_INDENT_GUIDE()),
             );
         }
     }
@@ -204,7 +204,7 @@ fn draw_row(
             Align2::CENTER_CENTER,
             glyph.to_string(),
             codicon_font(12.0),
-            tokens::FG_DESCRIPTION,
+            tokens::FG_DESCRIPTION(),
         );
         if chev_resp.clicked() {
             toggled = true;
@@ -213,11 +213,11 @@ fn draw_row(
 
     let mut text_x = base_x + 18.0;
     let fg = if item.disabled {
-        tokens::FG_DISABLED
+        tokens::FG_DISABLED()
     } else if selected {
-        tokens::LIST_ACTIVE_SELECTION_FG
+        tokens::LIST_ACTIVE_SELECTION_FG()
     } else {
-        tokens::FG
+        tokens::FG()
     };
     if let Some(glyph) = item.icon {
         painter.text(
@@ -225,7 +225,7 @@ fn draw_row(
             Align2::LEFT_CENTER,
             glyph.to_string(),
             codicon_font(14.0),
-            tokens::ICON_FG,
+            tokens::ICON_FG(),
         );
         text_x += 18.0;
     }

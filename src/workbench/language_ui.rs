@@ -87,24 +87,24 @@ fn kind_icon(kind: &str) -> (&'static str, Color32) {
         "Variable" => ("symbol-variable", blue),
         "Class" => ("symbol-class", orange),
         "Interface" => ("symbol-interface", blue),
-        "Module" => ("symbol-module", Palette::FG),
-        "Property" => ("symbol-property", Palette::FG),
-        "Unit" => ("symbol-unit", Palette::FG),
-        "Value" => ("symbol-value", Palette::FG),
+        "Module" => ("symbol-module", Palette::FG()),
+        "Property" => ("symbol-property", Palette::FG()),
+        "Unit" => ("symbol-unit", Palette::FG()),
+        "Value" => ("symbol-value", Palette::FG()),
         "Enum" => ("symbol-enum", orange),
         "EnumMember" => ("symbol-enum-member", blue),
-        "Keyword" => ("symbol-keyword", Palette::FG),
-        "Snippet" => ("symbol-snippet", Palette::FG),
-        "Color" => ("symbol-color", Palette::FG),
-        "File" => ("symbol-file", Palette::FG),
-        "Reference" => ("symbol-reference", Palette::FG),
-        "Folder" => ("folder", Palette::FG),
-        "Constant" => ("symbol-constant", Palette::FG),
-        "Struct" => ("symbol-struct", Palette::FG),
+        "Keyword" => ("symbol-keyword", Palette::FG()),
+        "Snippet" => ("symbol-snippet", Palette::FG()),
+        "Color" => ("symbol-color", Palette::FG()),
+        "File" => ("symbol-file", Palette::FG()),
+        "Reference" => ("symbol-reference", Palette::FG()),
+        "Folder" => ("folder", Palette::FG()),
+        "Constant" => ("symbol-constant", Palette::FG()),
+        "Struct" => ("symbol-struct", Palette::FG()),
         "Event" => ("symbol-event", orange),
-        "Operator" => ("symbol-operator", Palette::FG),
-        "TypeParameter" => ("symbol-type-parameter", Palette::FG),
-        _ => ("symbol-text", Palette::FG),
+        "Operator" => ("symbol-operator", Palette::FG()),
+        "TypeParameter" => ("symbol-type-parameter", Palette::FG()),
+        _ => ("symbol-text", Palette::FG()),
     }
 }
 
@@ -136,7 +136,7 @@ pub fn suggest_widget(ctx: &Context, s: &mut Suggest, caret: egui::Rect, word_le
             let p = ui.painter();
             p.add(egui::epaint::Shadow { offset: [0, 0], blur: 8, spread: 0, color: Color32::from_black_alpha(90) }
                 .as_shape(rect, CornerRadius::same(3)));
-            p.rect(rect, CornerRadius::same(3), Palette::VSCE_EDITOR_WIDGET_BG, Stroke::new(1.0, Palette::VSCE_EDITOR_WIDGET_BORDER), StrokeKind::Inside);
+            p.rect(rect, CornerRadius::same(3), Palette::VSCE_EDITOR_WIDGET_BG(), Stroke::new(1.0, Palette::VSCE_EDITOR_WIDGET_BORDER()), StrokeKind::Inside);
             for (row, &idx) in s.shown.iter().enumerate().skip(top).take(MAX_ROWS) {
                 let item = &s.items[idx];
                 let r = egui::Rect::from_min_size(
@@ -147,9 +147,9 @@ pub fn suggest_widget(ctx: &Context, s: &mut Suggest, caret: egui::Rect, word_le
                 rr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &item.label));
                 let selected = row == s.selected;
                 if selected {
-                    ui.painter().rect_filled(r, 0.0, Palette::VSCE_SUGGEST_SELECTED_BG);
+                    ui.painter().rect_filled(r, 0.0, Palette::VSCE_SUGGEST_SELECTED_BG());
                 } else if rr.hovered() {
-                    ui.painter().rect_filled(r, 0.0, Palette::LIST_HOVER_BG);
+                    ui.painter().rect_filled(r, 0.0, Palette::LIST_HOVER_BG());
                 }
                 let (icon, color) = kind_icon(&item.kind);
                 if let Some(g) = codicon_by_name(icon) {
@@ -162,16 +162,16 @@ pub fn suggest_widget(ctx: &Context, s: &mut Suggest, caret: egui::Rect, word_le
                 let split = item.label.char_indices().nth(bold_n).map(|(b, _)| b).unwrap_or(item.label.len());
                 let (head, tail) = item.label.split_at(split);
                 if !head.is_empty() && item.label.to_lowercase().starts_with(&head.to_lowercase()) {
-                    job.append(head, 0.0, egui::TextFormat { font_id: font.clone(), color: Palette::VSCE_LIST_HIGHLIGHT_FG, ..Default::default() });
-                    job.append(tail, 0.0, egui::TextFormat { font_id: font.clone(), color: Palette::FG, ..Default::default() });
+                    job.append(head, 0.0, egui::TextFormat { font_id: font.clone(), color: Palette::VSCE_LIST_HIGHLIGHT_FG(), ..Default::default() });
+                    job.append(tail, 0.0, egui::TextFormat { font_id: font.clone(), color: Palette::FG(), ..Default::default() });
                 } else {
-                    job.append(&item.label, 0.0, egui::TextFormat { font_id: font.clone(), color: Palette::FG, ..Default::default() });
+                    job.append(&item.label, 0.0, egui::TextFormat { font_id: font.clone(), color: Palette::FG(), ..Default::default() });
                 }
                 let g = ui.fonts_mut(|f| f.layout_job(job));
-                ui.painter().galley(egui::pos2(r.left() + 24.0, r.center().y - g.size().y / 2.0), g, Palette::FG);
+                ui.painter().galley(egui::pos2(r.left() + 24.0, r.center().y - g.size().y / 2.0), g, Palette::FG());
                 if selected {
                     if let Some(d) = &item.detail {
-                        ui.painter_at(r).text(egui::pos2(r.right() - 8.0, r.center().y), Align2::RIGHT_CENTER, d, FontId::proportional(11.5), Palette::FG_DESCRIPTION);
+                        ui.painter_at(r).text(egui::pos2(r.right() - 8.0, r.center().y), Align2::RIGHT_CENTER, d, FontId::proportional(11.5), Palette::FG_DESCRIPTION());
                     }
                 }
                 if rr.clicked() {
@@ -208,8 +208,8 @@ pub fn card(
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(Palette::VSCE_EDITOR_WIDGET_BG)
-                .stroke(Stroke::new(1.0, Palette::VSCE_EDITOR_WIDGET_BORDER))
+                .fill(Palette::VSCE_EDITOR_WIDGET_BG())
+                .stroke(Stroke::new(1.0, Palette::VSCE_EDITOR_WIDGET_BORDER()))
                 .corner_radius(3)
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
@@ -217,9 +217,9 @@ pub fn card(
                     ui.spacing_mut().item_spacing.y = 4.0;
                     for d in problems {
                         let color = match d.severity {
-                            0 => Palette::VSCE_EDITOR_ERROR_FG,
-                            1 => Palette::VSCE_EDITOR_WARNING_FG,
-                            _ => Palette::VSCE_EDITOR_INFO_FG,
+                            0 => Palette::VSCE_EDITOR_ERROR_FG(),
+                            1 => Palette::VSCE_EDITOR_WARNING_FG(),
+                            _ => Palette::VSCE_EDITOR_INFO_FG(),
                         };
                         let mut text = d.message.clone();
                         if let Some(src) = &d.source {
@@ -230,7 +230,7 @@ pub fn card(
                         }
                         ui.horizontal_wrapped(|ui| {
                             ui.label(egui::RichText::new("●").color(color).size(10.0));
-                            ui.label(egui::RichText::new(text).color(Palette::FG).size(13.0));
+                            ui.label(egui::RichText::new(text).color(Palette::FG()).size(13.0));
                         });
                     }
                     if !problems.is_empty() && !blocks.is_empty() {
@@ -253,7 +253,7 @@ fn markdown(ui: &mut egui::Ui, md: &str) {
     for line in md.lines() {
         if line.trim_start().starts_with("```") {
             if in_code {
-                ui.label(egui::RichText::new(code.trim_end()).font(editor_mono_font(12.0)).color(Palette::FG));
+                ui.label(egui::RichText::new(code.trim_end()).font(editor_mono_font(12.0)).color(Palette::FG()));
                 code.clear();
             }
             in_code = !in_code;
@@ -280,14 +280,14 @@ fn markdown(ui: &mut egui::Ui, md: &str) {
         ui.label(job);
     }
     if in_code && !code.is_empty() {
-        ui.label(egui::RichText::new(code.trim_end()).font(editor_mono_font(12.0)).color(Palette::FG));
+        ui.label(egui::RichText::new(code.trim_end()).font(editor_mono_font(12.0)).color(Palette::FG()));
     }
 }
 
 fn inline(job: &mut egui::text::LayoutJob, text: &str, bold: bool) {
     let plain = |bold: bool| egui::TextFormat {
         font_id: if bold { crate::ui_font::bold(13.0) } else { FontId::proportional(13.0) },
-        color: Palette::FG,
+        color: Palette::FG(),
         ..Default::default()
     };
     let mut rest = text;
@@ -300,7 +300,7 @@ fn inline(job: &mut egui::text::LayoutJob, text: &str, bold: bool) {
         }
         if let Some(r) = rest.strip_prefix('`') {
             let end = r.find('`').unwrap_or(r.len());
-            job.append(&r[..end], 0.0, egui::TextFormat { font_id: editor_mono_font(12.0), color: Palette::FG, ..Default::default() });
+            job.append(&r[..end], 0.0, egui::TextFormat { font_id: editor_mono_font(12.0), color: Palette::FG(), ..Default::default() });
             rest = r.get(end + 1..).unwrap_or("");
             continue;
         }
@@ -308,7 +308,7 @@ fn inline(job: &mut egui::text::LayoutJob, text: &str, bold: bool) {
             if let Some(close) = r.find("](") {
                 let after = &r[close + 2..];
                 let end = after.find(')').unwrap_or(after.len());
-                job.append(&r[..close], 0.0, egui::TextFormat { color: Palette::VSCE_EXTENSION_VERIFIED_FG, ..plain(strong) });
+                job.append(&r[..close], 0.0, egui::TextFormat { color: Palette::VSCE_EXTENSION_VERIFIED_FG(), ..plain(strong) });
                 rest = after.get(end + 1..).unwrap_or("");
                 continue;
             }

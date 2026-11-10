@@ -3,10 +3,10 @@
 //! Docs:     https://vscode-elements.github.io/components/radio/
 //! VS Code analogue: src/vs/base/browser/ui/radio/radio.ts (group container);
 //!                   the classic circular radio is rendered by toggle.ts.
-//! Tokens:   --vscode-input-background (ring fill) → Palette::VSCE_INPUT_BG
-//!           --vscode-checkbox-border → Palette::VSCE_CHECKBOX_BORDER
-//!           --vscode-button-background (dot) → Palette::VSCE_BUTTON_BG
-//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER
+//! Tokens:   --vscode-input-background (ring fill) → Palette::VSCE_INPUT_BG()
+//!           --vscode-checkbox-border → Palette::VSCE_CHECKBOX_BORDER()
+//!           --vscode-button-background (dot) → Palette::VSCE_BUTTON_BG()
+//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER()
 //!
 //! Classic 16×16 circular radio. The caller owns the radio-group state
 //! (typically an `enum` or `usize` index) — pass `selected: bool` per
@@ -80,13 +80,13 @@ pub fn radio(ui: &mut Ui, props: &RadioProps<'_>, selected: &mut bool) -> Respon
         let cy = rect.center().y;
         let center = egui::pos2(rect.left() + dot_size * 0.5, cy);
 
-        painter.circle_filled(center, dot_size * 0.5, with_alpha(tokens::INPUT_BG, alpha));
+        painter.circle_filled(center, dot_size * 0.5, with_alpha(tokens::INPUT_BG(), alpha));
 
         let focus_visible = props.focused || (response.has_focus() && !props.disabled);
         let border = if focus_visible {
-            tokens::FOCUS_BORDER
+            tokens::FOCUS_BORDER()
         } else {
-            tokens::CHECKBOX_BORDER
+            tokens::CHECKBOX_BORDER()
         };
         painter.circle_stroke(
             center,
@@ -95,12 +95,12 @@ pub fn radio(ui: &mut Ui, props: &RadioProps<'_>, selected: &mut bool) -> Respon
         );
 
         if *selected {
-            painter.circle_filled(center, 4.0, with_alpha(tokens::BUTTON_BG, alpha));
+            painter.circle_filled(center, 4.0, with_alpha(tokens::BUTTON_BG(), alpha));
         }
 
         if let Some(galley) = label_galley {
             let label_pos = egui::pos2(rect.left() + dot_size + gap, cy - galley.size().y * 0.5);
-            painter.galley(label_pos, galley, with_alpha(tokens::FG, alpha));
+            painter.galley(label_pos, galley, with_alpha(tokens::FG(), alpha));
         }
 
         if response.clicked() {

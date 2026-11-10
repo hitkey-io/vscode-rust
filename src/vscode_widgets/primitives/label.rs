@@ -2,9 +2,9 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-label/vscode-label.ts
 //! Docs:     https://vscode-elements.github.io/components/label/
 //! VS Code analogue: src/vs/base/browser/ui/iconLabel/iconLabel.ts
-//! Tokens:   --vscode-foreground → Palette::VSCE_FG
-//!           --vscode-settings-headerForeground → Palette::VSCE_LABEL_FG
-//!           --vscode-errorForeground (required marker) → Palette::VSCE_FG_ERROR
+//! Tokens:   --vscode-foreground → Palette::VSCE_FG()
+//!           --vscode-settings-headerForeground → Palette::VSCE_LABEL_FG()
+//!           --vscode-errorForeground (required marker) → Palette::VSCE_FG_ERROR()
 //!
 //! Renders a single-line label. Bold-by-default, with a `normal` variant
 //! to opt out. `required: true` appends a red asterisk after the text.
@@ -77,9 +77,9 @@ impl<'a> LabelProps<'a> {
 pub fn label(ui: &mut Ui, props: &LabelProps<'_>) -> Response {
     let fg = props.color.unwrap_or_else(|| {
         if props.description {
-            tokens::FG_DESCRIPTION
+            tokens::FG_DESCRIPTION()
         } else {
-            tokens::LABEL_FG
+            tokens::LABEL_FG()
         }
     });
 
@@ -96,7 +96,7 @@ pub fn label(ui: &mut Ui, props: &LabelProps<'_>) -> Response {
         if props.required {
             ui.label(
                 RichText::new("*")
-                    .color(tokens::FG_ERROR)
+                    .color(tokens::FG_ERROR())
                     .font(FontId::proportional(props.size))
                     .strong(),
             );

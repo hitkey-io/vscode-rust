@@ -2,11 +2,11 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-checkbox/vscode-checkbox.ts
 //! Docs:     https://vscode-elements.github.io/components/checkbox/
 //! VS Code analogue: src/vs/base/browser/ui/toggle/toggle.ts
-//! Tokens:   --vscode-checkbox-background → Palette::VSCE_CHECKBOX_BG
-//!           --vscode-checkbox-border → Palette::VSCE_CHECKBOX_BORDER
-//!           --vscode-button-foreground (tick) → Palette::VSCE_BUTTON_FG
-//!           --vscode-inputOption-hoverBackground → Palette::VSCE_INPUT_OPTION_HOVER_BG
-//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER
+//! Tokens:   --vscode-checkbox-background → Palette::VSCE_CHECKBOX_BG()
+//!           --vscode-checkbox-border → Palette::VSCE_CHECKBOX_BORDER()
+//!           --vscode-button-foreground (tick) → Palette::VSCE_BUTTON_FG()
+//!           --vscode-inputOption-hoverBackground → Palette::VSCE_INPUT_OPTION_HOVER_BG()
+//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER()
 //!
 //! 18×18 checkbox with optional indeterminate state. Renders the tick from
 //! the codicon `check` glyph and the indeterminate mark as a horizontal
@@ -95,17 +95,17 @@ pub fn checkbox(ui: &mut Ui, props: &CheckboxProps<'_>, state: &mut CheckboxStat
         let hovered = response.hovered() && !props.disabled;
         let alpha = if props.disabled { 0.5 } else { 1.0 };
         let bg = if hovered {
-            blend(tokens::CHECKBOX_BG, tokens::INPUT_OPTION_HOVER_BG)
+            blend(tokens::CHECKBOX_BG(), tokens::INPUT_OPTION_HOVER_BG())
         } else {
-            tokens::CHECKBOX_BG
+            tokens::CHECKBOX_BG()
         };
         painter.rect_filled(box_rect, CornerRadius::same(3), with_alpha(bg, alpha));
 
         let focus_visible = props.focused || (response.has_focus() && !props.disabled);
         let border = if focus_visible {
-            tokens::FOCUS_BORDER
+            tokens::FOCUS_BORDER()
         } else {
-            tokens::CHECKBOX_BORDER
+            tokens::CHECKBOX_BORDER()
         };
         painter.rect_stroke(
             box_rect,
@@ -121,7 +121,7 @@ pub fn checkbox(ui: &mut Ui, props: &CheckboxProps<'_>, state: &mut CheckboxStat
                     Align2::CENTER_CENTER,
                     CHECK.to_string(),
                     codicon_font(14.0),
-                    with_alpha(tokens::FG, alpha),
+                    with_alpha(tokens::FG(), alpha),
                 );
             }
             CheckboxState::Indeterminate => {
@@ -129,14 +129,14 @@ pub fn checkbox(ui: &mut Ui, props: &CheckboxProps<'_>, state: &mut CheckboxStat
                     egui::pos2(box_rect.left() + 4.0, cy - 1.0),
                     egui::pos2(box_rect.right() - 4.0, cy + 1.0),
                 );
-                painter.rect_filled(bar, 1.0, with_alpha(tokens::FG, alpha));
+                painter.rect_filled(bar, 1.0, with_alpha(tokens::FG(), alpha));
             }
             CheckboxState::Unchecked => {}
         }
 
         if let Some(galley) = label_galley {
             let label_pos = egui::pos2(box_rect.right() + gap, cy - galley.size().y * 0.5);
-            painter.galley(label_pos, galley, with_alpha(tokens::FG, alpha));
+            painter.galley(label_pos, galley, with_alpha(tokens::FG(), alpha));
         }
         // Suppress unused warnings on `RichText` when no label is rendered.
         let _ = RichText::new("");

@@ -2,8 +2,8 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-form-helper/vscode-form-helper.ts
 //! Docs:     https://vscode-elements.github.io/components/form-helper/
 //! VS Code analogue: src/vs/workbench/browser/parts/preferences/settingsTree.ts
-//! Tokens:   --vscode-descriptionForeground → Palette::VSCE_FG_DESCRIPTION
-//!           --vscode-errorForeground → Palette::VSCE_FG_ERROR
+//! Tokens:   --vscode-descriptionForeground → Palette::VSCE_FG_DESCRIPTION()
+//!           --vscode-errorForeground → Palette::VSCE_FG_ERROR()
 //!
 //! Helper / description text rendered beneath a form field.
 
@@ -39,9 +39,9 @@ impl<'a> FormHelperProps<'a> {
 
 pub fn form_helper(ui: &mut Ui, props: &FormHelperProps<'_>) -> Response {
     let color = if props.error {
-        tokens::FG_ERROR
+        tokens::FG_ERROR()
     } else {
-        tokens::FG_DESCRIPTION
+        tokens::FG_DESCRIPTION()
     };
     ui.label(
         RichText::new(props.text)

@@ -34,7 +34,7 @@ pub fn show(
     };
 
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, Palette::TABS_STRIP_BG);
+    ui.painter().rect_filled(rect, 0.0, Palette::TABS_STRIP_BG());
 
     // Build the unified tab list: optional welcome tab, then every document.
     // The welcome tab is just a regular tab item with a distinct label and

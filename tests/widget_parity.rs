@@ -5,7 +5,7 @@
 //!
 //! 1. Spins up an in-process `egui_kittest::Harness` sized to the state's
 //!    suggested canvas, pinned to 2.0 DPR to match Retina screencapture.
-//! 2. Renders the state on top of `Palette::EDITOR_BG`.
+//! 2. Renders the state on top of `Palette::EDITOR_BG()`.
 //! 3. Writes the snapshot to
 //!    `../test-artifacts/snapshots/widgets/<widget>/<state>.png` (the
 //!    location is configured by `kittest.toml`).
@@ -54,7 +54,7 @@ fn widget_catalogue_renders_without_panics() {
                     return;
                 }
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::default().fill(theme::Palette::EDITOR_BG))
+                    .frame(egui::Frame::default().fill(theme::Palette::EDITOR_BG()))
                     .show(ctx, |ui| {
                         draw_fn(ui);
                     });

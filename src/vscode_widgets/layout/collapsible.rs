@@ -3,10 +3,10 @@
 //! Docs:     https://vscode-elements.github.io/components/collapsible/
 //! VS Code analogue: src/vs/workbench/browser/parts/sidebar/sidebarPart.ts
 //!                   (Explorer/Search section headers)
-//! Tokens:   --vscode-sideBarSectionHeader-background → Palette::VSCE_SECTION_HEADER_BG
-//!           --vscode-sideBarSectionHeader-foreground → Palette::VSCE_SECTION_HEADER_FG
-//!           --vscode-sideBarSectionHeader-border → Palette::VSCE_SECTION_HEADER_BORDER
-//!           --vscode-icon-foreground → Palette::VSCE_ICON_FG
+//! Tokens:   --vscode-sideBarSectionHeader-background → Palette::VSCE_SECTION_HEADER_BG()
+//!           --vscode-sideBarSectionHeader-foreground → Palette::VSCE_SECTION_HEADER_FG()
+//!           --vscode-sideBarSectionHeader-border → Palette::VSCE_SECTION_HEADER_BORDER()
+//!           --vscode-icon-foreground → Palette::VSCE_ICON_FG()
 //!
 //! Header strip + collapsible body. The `open` flag is owned by the caller
 //! so it can be wired to keyboard shortcuts or restored from settings.
@@ -70,9 +70,9 @@ pub fn collapsible<R>(
     let painter = ui.painter().clone();
     let hovered = header_resp.hovered() && !props.disabled;
     let bg = if hovered {
-        tokens::LIST_HOVER_BG
+        tokens::LIST_HOVER_BG()
     } else {
-        tokens::SECTION_HEADER_BG
+        tokens::SECTION_HEADER_BG()
     };
     painter.rect_filled(header_rect, 0.0, bg);
     painter.line_segment(
@@ -80,7 +80,7 @@ pub fn collapsible<R>(
             egui::pos2(header_rect.left(), header_rect.bottom() - 0.5),
             egui::pos2(header_rect.right(), header_rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, tokens::SECTION_HEADER_BORDER),
+        Stroke::new(1.0, tokens::SECTION_HEADER_BORDER()),
     );
 
     let chevron_glyph = if *open { CHEVRON_DOWN } else { CHEVRON_RIGHT };
@@ -90,7 +90,7 @@ pub fn collapsible<R>(
         Align2::CENTER_CENTER,
         chevron_glyph.to_string(),
         codicon_font(12.0),
-        with_alpha(tokens::ICON_FG, if props.disabled { 0.5 } else { 1.0 }),
+        with_alpha(tokens::ICON_FG(), if props.disabled { 0.5 } else { 1.0 }),
     );
 
     let title_pos = egui::pos2(
@@ -102,7 +102,7 @@ pub fn collapsible<R>(
         Align2::LEFT_CENTER,
         props.title.to_uppercase(),
         FontId::proportional(11.0),
-        with_alpha(tokens::SECTION_HEADER_FG, if props.disabled { 0.5 } else { 1.0 }),
+        with_alpha(tokens::SECTION_HEADER_FG(), if props.disabled { 0.5 } else { 1.0 }),
     );
 
     if let Some(desc) = props.description {
@@ -120,7 +120,7 @@ pub fn collapsible<R>(
             Align2::LEFT_CENTER,
             desc,
             FontId::proportional(11.0),
-            tokens::FG_DESCRIPTION,
+            tokens::FG_DESCRIPTION(),
         );
     }
 
@@ -128,7 +128,7 @@ pub fn collapsible<R>(
         painter.rect_stroke(
             header_rect.shrink(1.0),
             0,
-            Stroke::new(1.0, tokens::FOCUS_BORDER),
+            Stroke::new(1.0, tokens::FOCUS_BORDER()),
             StrokeKind::Inside,
         );
     }

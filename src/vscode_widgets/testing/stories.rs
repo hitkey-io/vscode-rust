@@ -883,7 +883,7 @@ fn split_layout_vertical(ui: &mut Ui) {
             ui.painter().rect_filled(
                 ui.available_rect_before_wrap(),
                 0.0,
-                crate::theme::Palette::SIDEBAR_BG,
+                crate::theme::Palette::SIDEBAR_BG(),
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -895,7 +895,7 @@ fn split_layout_vertical(ui: &mut Ui) {
             ui.painter().rect_filled(
                 ui.available_rect_before_wrap(),
                 0.0,
-                crate::theme::Palette::EDITOR_BG,
+                crate::theme::Palette::EDITOR_BG(),
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -916,7 +916,7 @@ fn split_layout_horizontal(ui: &mut Ui) {
             ui.painter().rect_filled(
                 ui.available_rect_before_wrap(),
                 0.0,
-                crate::theme::Palette::EDITOR_BG,
+                crate::theme::Palette::EDITOR_BG(),
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -928,7 +928,7 @@ fn split_layout_horizontal(ui: &mut Ui) {
             ui.painter().rect_filled(
                 ui.available_rect_before_wrap(),
                 0.0,
-                crate::theme::Palette::PANEL_BG,
+                crate::theme::Palette::PANEL_BG(),
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {

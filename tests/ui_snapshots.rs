@@ -127,7 +127,7 @@ fn activity_bar_explorer_selected() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG()))
             .show(ctx, |ui| {
                 activity_bar::show(ui, &mut current, &mut visible, 0);
             });
@@ -147,7 +147,7 @@ fn activity_bar_search_selected() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG()))
             .show(ctx, |ui| {
                 activity_bar::show(ui, &mut current, &mut visible, 0);
             });
@@ -168,7 +168,7 @@ fn sidebar_explorer_with_tree() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::SIDEBAR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::SIDEBAR_BG()))
             .show(ctx, |ui| {
                 let _ = sidebar::show(
                     ui,
@@ -203,7 +203,7 @@ fn sidebar_explorer_no_workspace() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::SIDEBAR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::SIDEBAR_BG()))
             .show(ctx, |ui| {
                 let _ = sidebar::show(
                     ui,
@@ -241,7 +241,7 @@ fn tabs_strip() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::TABS_STRIP_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::TABS_STRIP_BG()))
             .show(ctx, |ui| {
                 let _ = tabs::show(ui, &docs, active, false);
             });
@@ -261,7 +261,7 @@ fn status_bar_with_doc() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::STATUS_BAR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::STATUS_BAR_BG()))
             .show(ctx, |ui| {
                 let _ = status_bar::show(ui, Some(&docs[0]), "Ready", false, None, 0, (0, 0), false);
             });
@@ -278,7 +278,7 @@ fn status_bar_with_doc() {
 fn status_bar_no_doc() {
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::STATUS_BAR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::STATUS_BAR_BG()))
             .show(ctx, |ui| {
                 let _ = status_bar::show(ui, None, "", false, None, 0, (0, 0), false);
             });
@@ -298,11 +298,11 @@ fn command_palette_empty_query() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::EDITOR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::EDITOR_BG()))
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new("editor background")
-                        .color(theme::Palette::FG_DESCRIPTION),
+                        .color(theme::Palette::FG_DESCRIPTION()),
                 );
             });
         let _ = command_palette::show(ctx, &mut state);
@@ -330,27 +330,27 @@ fn full_app_welcome() {
         // Title bar
         TopBottomPanel::top("test_title_bar")
             .exact_height(35.0)
-            .frame(Frame::default().fill(theme::Palette::TITLE_BAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::TITLE_BAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let bottom_border = egui::Rect::from_min_size(
                     egui::pos2(rect.left(), rect.bottom() - 1.0),
                     egui::vec2(rect.width(), 1.0),
                 );
-                ui.painter().rect_filled(bottom_border, 0.0, theme::Palette::BORDER);
+                ui.painter().rect_filled(bottom_border, 0.0, theme::Palette::BORDER());
                 ui.painter().text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "vscode-rust",
                     egui::FontId::proportional(13.0),
-                    theme::Palette::TITLE_BAR_FG,
+                    theme::Palette::TITLE_BAR_FG(),
                 );
             });
 
         // Status bar
         TopBottomPanel::bottom("test_status_bar")
             .exact_height(22.0)
-            .frame(Frame::default().fill(theme::Palette::STATUS_BAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::STATUS_BAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let _ = status_bar::show(ui, None, "", false, None, 0, (0, 0), false);
             });
@@ -359,7 +359,7 @@ fn full_app_welcome() {
         SidePanel::left("test_activity_bar")
             .exact_width(48.0)
             .resizable(false)
-            .frame(Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 activity_bar::show(ui, &mut active_view, &mut sidebar_visible, 0);
             });
@@ -369,7 +369,7 @@ fn full_app_welcome() {
             .resizable(true)
             .min_width(170.0)
             .default_width(260.0)
-            .frame(Frame::default().fill(theme::Palette::SIDEBAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::SIDEBAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let _ = sidebar::show(
                     ui,
@@ -390,7 +390,7 @@ fn full_app_welcome() {
 
         // Central — welcome
         egui::CentralPanel::default()
-            .frame(Frame::default().fill(theme::Palette::EDITOR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::EDITOR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let _ = welcome_screen(ui);
             });
@@ -426,7 +426,7 @@ fn full_app_with_doc_and_palette() {
 
         TopBottomPanel::top("title")
             .exact_height(35.0)
-            .frame(Frame::default().fill(theme::Palette::TITLE_BAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::TITLE_BAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 ui.painter().text(
@@ -434,13 +434,13 @@ fn full_app_with_doc_and_palette() {
                     egui::Align2::CENTER_CENTER,
                     "main.rs — my-project — vscode-rust",
                     egui::FontId::proportional(13.0),
-                    theme::Palette::TITLE_BAR_FG,
+                    theme::Palette::TITLE_BAR_FG(),
                 );
             });
 
         TopBottomPanel::bottom("status")
             .exact_height(22.0)
-            .frame(Frame::default().fill(theme::Palette::STATUS_BAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::STATUS_BAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let _ = status_bar::show(ui, Some(&docs[0]), "", true, None, 0, (0, 0), false);
             });
@@ -448,7 +448,7 @@ fn full_app_with_doc_and_palette() {
         SidePanel::left("activity")
             .exact_width(48.0)
             .resizable(false)
-            .frame(Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::ACTIVITY_BAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 activity_bar::show(ui, &mut active_view, &mut sidebar_visible, 0);
             });
@@ -456,13 +456,13 @@ fn full_app_with_doc_and_palette() {
         SidePanel::left("sidebar")
             .resizable(true)
             .default_width(260.0)
-            .frame(Frame::default().fill(theme::Palette::SIDEBAR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::SIDEBAR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 let _ = sidebar::show(ui, active_view, &workspace, &mut tree, &mut search, &vscode_rust::git::Model::default(), &[], None, &mut vscode_rust::workbench::source_control::ScmUiState::default(), &std::collections::BTreeMap::new(), None, &mut false, &mut false);
             });
 
         egui::CentralPanel::default()
-            .frame(Frame::default().fill(theme::Palette::EDITOR_BG).inner_margin(Margin::ZERO))
+            .frame(Frame::default().fill(theme::Palette::EDITOR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
                     let _ = ui.allocate_ui_with_layout(
@@ -477,7 +477,7 @@ fn full_app_with_doc_and_palette() {
                             egui::Align2::LEFT_TOP,
                             &doc.text,
                             egui::FontId::monospace(13.5),
-                            theme::Palette::FG,
+                            theme::Palette::FG(),
                         );
                     }
                 });
@@ -501,12 +501,12 @@ fn command_palette_filtered() {
 
     let app = with_setup(move |ctx| {
         CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::Palette::EDITOR_BG))
+            .frame(egui::Frame::default().fill(theme::Palette::EDITOR_BG()))
             .show(ctx, |ui| {
                 let _ = ui.label(
                     egui::RichText::new("editor background")
                         .font(FontId::proportional(14.0))
-                        .color(theme::Palette::FG_DESCRIPTION),
+                        .color(theme::Palette::FG_DESCRIPTION()),
                 );
             });
         let _ = command_palette::show(ctx, &mut state);

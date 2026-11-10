@@ -1,8 +1,8 @@
 //! vscode-icon-button — derived from action-bar pattern.
 //! Upstream pattern: src/vs/base/browser/ui/actionbar/actionbar.css
-//! Tokens:   --vscode-icon-foreground → Palette::VSCE_ICON_FG
-//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG
-//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER
+//! Tokens:   --vscode-icon-foreground → Palette::VSCE_ICON_FG()
+//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG()
+//!           --vscode-focusBorder → Palette::VSCE_FOCUS_BORDER()
 //!
 //! Square click target for a single codicon. Used in toolbars, tabs, status
 //! bar, activity bar — anywhere the upstream UI shows an icon-only button.
@@ -22,7 +22,7 @@ pub struct IconButtonProps {
     pub disabled: bool,
     /// Draw the active stripe on the left edge (activity-bar pattern).
     pub active_stripe: bool,
-    /// Override icon colour. `None` falls back to `tokens::ICON_FG`.
+    /// Override icon colour. `None` falls back to `tokens::ICON_FG()`.
     pub color: Option<Color32>,
     /// Icon colour when hovered (only applied if the cursor is over the
     /// click target). `None` keeps the resting colour.
@@ -108,22 +108,22 @@ pub fn icon_button(ui: &mut Ui, props: &IconButtonProps) -> Response {
     let painter = ui.painter().clone();
     let hovered = response.hovered() && !props.disabled;
     if hovered && !props.no_hover_bg {
-        painter.rect_filled(rect, CornerRadius::same(props.corner_radius as u8), tokens::LIST_HOVER_BG);
+        painter.rect_filled(rect, CornerRadius::same(props.corner_radius as u8), tokens::LIST_HOVER_BG());
     }
 
     if response.has_focus() && !props.disabled {
         painter.rect_stroke(
             rect,
             CornerRadius::same(props.corner_radius as u8),
-            Stroke::new(1.0, tokens::FOCUS_BORDER),
+            Stroke::new(1.0, tokens::FOCUS_BORDER()),
             StrokeKind::Inside,
         );
     }
 
     let mut color = if hovered {
-        props.hover_color.or(props.color).unwrap_or(tokens::ICON_FG)
+        props.hover_color.or(props.color).unwrap_or(tokens::ICON_FG())
     } else {
-        props.color.unwrap_or(tokens::ICON_FG)
+        props.color.unwrap_or(tokens::ICON_FG())
     };
     if props.disabled {
         let [r, g, b, _] = color.to_array();
@@ -140,7 +140,7 @@ pub fn icon_button(ui: &mut Ui, props: &IconButtonProps) -> Response {
             rect.left_top(),
             egui::pos2(rect.left() + 2.0, rect.bottom()),
         );
-        painter.rect_filled(stripe, 0.0, tokens::FG);
+        painter.rect_filled(stripe, 0.0, tokens::FG());
     }
 
     painter.text(

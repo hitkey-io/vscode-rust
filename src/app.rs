@@ -25,6 +25,15 @@ pub struct App {
     sidebar_width: f32,
     status_message: String,
     palette: CommandPaletteState,
+    /// User settings (`settings.json`); in memory until
+    /// `bootstrap_user_data` points at a folder.
+    settings: crate::settings::Settings,
+    /// The Color Theme picker while it's open.
+    theme_pick: Option<ThemePick>,
+    /// `theme::generation()` the egui visuals were last built for.
+    visuals_generation: u32,
+    /// ⌘K was pressed: the second key of a chord (⌘K ⌘T) may follow.
+    chord_k: Option<std::time::Instant>,
     search: SearchState,
     show_welcome: bool,
     menu_ids: Option<MenuIds>,
@@ -155,6 +164,16 @@ enum GitPrompt {
 
 /// Request ids of the Source Control view's picks and inputs.
 const GIT_PROMPT_BASE: u64 = 1 << 52;
+
+/// Request id of the Color Theme picker.
+const THEME_PICK_ID: u64 = 1 << 53;
+
+/// The open Color Theme picker: the theme of each entry (none for "Browse
+/// Additional Color Themes...") and the theme to go back to on cancel.
+struct ThemePick {
+    entries: Vec<Option<&'static str>>,
+    original: String,
+}
 
 /// `refs/heads/main` → `main`, `refs/remotes/origin/x` → `origin/x`.
 fn short_ref(r: &str) -> String {
@@ -300,6 +319,10 @@ impl App {
             sidebar_width: 300.0,
             status_message: String::new(),
             palette: CommandPaletteState::default(),
+            settings: crate::settings::Settings::in_memory(),
+            theme_pick: None,
+            visuals_generation: 0,
+            chord_k: None,
             search: SearchState::default(),
             show_welcome: true,
             menu_ids: None,
@@ -380,6 +403,8 @@ impl App {
         } else if id == &ids.welcome {
             self.show_welcome = true;
             None
+        } else if id == &ids.color_theme {
+            Some(CommandId::SelectColorTheme)
         } else {
             None
         };
@@ -552,9 +577,9 @@ impl App {
                 start: utf16_to_byte(&doc.text, d.range[0], d.range[1]),
                 end: utf16_to_byte(&doc.text, d.range[2], d.range[3]),
                 color: match d.severity {
-                    0 => Palette::VSCE_EDITOR_ERROR_FG,
-                    1 => Palette::VSCE_EDITOR_WARNING_FG,
-                    _ => Palette::VSCE_EDITOR_INFO_FG,
+                    0 => Palette::VSCE_EDITOR_ERROR_FG(),
+                    1 => Palette::VSCE_EDITOR_WARNING_FG(),
+                    _ => Palette::VSCE_EDITOR_INFO_FG(),
                 },
             })
             .collect()
@@ -1589,7 +1614,7 @@ impl App {
                     egui::Align2::LEFT_CENTER,
                     v.name.to_uppercase(),
                     crate::ui_font::bold(11.0),
-                    Palette::SIDEBAR_SECTION_HEADER_FG,
+                    Palette::SIDEBAR_SECTION_HEADER_FG(),
                 );
             }
             let (rect, _) = ui.allocate_exact_size(egui::vec2(avail.width(), each), egui::Sense::hover());
@@ -1599,7 +1624,7 @@ impl App {
                     egui::Align2::LEFT_CENTER,
                     text,
                     egui::FontId::proportional(13.0),
-                    Palette::FG_DESCRIPTION,
+                    Palette::FG_DESCRIPTION(),
                 );
             };
             if v.kind == "webview" {
@@ -3103,8 +3128,17 @@ impl App {
         }
         if let Some(p) = saved_path {
             self.extensions.document_saved(&p);
+            self.settings_file_saved(&p);
         }
         self.refresh_git();
+    }
+
+    /// `settings.json` was saved from an editor: read it again.
+    fn settings_file_saved(&mut self, path: &std::path::Path) {
+        if self.settings.path() == Some(path) {
+            self.settings.reload();
+            self.apply_theme_settings();
+        }
     }
 
     fn save_all(&mut self) {
@@ -3124,6 +3158,7 @@ impl App {
         }
         for p in &saved_paths {
             self.extensions.document_saved(p);
+            self.settings_file_saved(p);
         }
         let msg = if errs > 0 {
             format!("Saved {} file(s), {} errors", saved, errs)
@@ -3213,6 +3248,20 @@ impl App {
             PaletteAction::ExtensionCommand(id) => {
                 self.extensions.execute(&id, serde_json::json!([]))
             }
+            PaletteAction::PickActive { request_id, index } => self.theme_pick_active(request_id, index),
+            PaletteAction::PickItemButton { request_id, .. } if request_id == THEME_PICK_ID => {
+                self.theme_pick_closed(None);
+                self.show_view(ActivityView::Extensions);
+                self.extensions.marketplace.set_query("@id:vscode.theme-defaults".into());
+            }
+            PaletteAction::PickItemButton { .. } => {}
+            PaletteAction::PickInputButton { request_id } => {
+                if request_id == THEME_PICK_ID {
+                    self.theme_pick_closed(None);
+                    self.open_user_settings();
+                }
+            }
+            PaletteAction::Picked { request_id, index } if request_id == THEME_PICK_ID => self.theme_pick_closed(index),
             PaletteAction::Picked { request_id, index } if self.extension_version_picked(request_id, index) => {}
             PaletteAction::Picked { request_id, index } if self.git_prompt_answered(request_id, index, None) => {}
             PaletteAction::Input { request_id, value } if self.git_prompt_answered(request_id, None, value.clone()) => {}
@@ -3225,6 +3274,158 @@ impl App {
                 self.extensions.answer(request_id, value);
             }
         }
+    }
+
+    /// Points settings at `<dir>/User/settings.json` and applies them
+    /// (`--user-data-dir`, like VS Code).
+    pub fn bootstrap_user_data(&mut self, dir: PathBuf) {
+        self.settings = crate::settings::Settings::load(&dir);
+        self.apply_theme_settings();
+    }
+
+    /// `workbench.colorTheme` + `workbench.colorCustomizations`.
+    fn apply_theme_settings(&mut self) {
+        let id = self.settings.get_str("workbench.colorTheme").unwrap_or(theme::themes::DEFAULT_THEME).to_string();
+        self.set_color_theme(&id);
+    }
+
+    /// Makes `id` the active colour theme (falls back to the default for an
+    /// unknown id, as VS Code does), with the user's colour customizations.
+    fn set_color_theme(&mut self, id: &str) {
+        let info = theme::themes::find(id)
+            .or_else(|| theme::themes::find(theme::themes::DEFAULT_THEME))
+            .expect("default theme");
+        let mut t = theme::ColorTheme::builtin(info);
+        if let Some(serde_json::Value::Object(custom)) = self.settings.get("workbench.colorCustomizations") {
+            // Global entries, then `[Theme Name]` sections for this theme.
+            let mut merged = serde_json::Map::new();
+            for (k, v) in custom {
+                if !k.starts_with('[') {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+            for (k, v) in custom {
+                if let (Some(names), serde_json::Value::Object(section)) = (k.strip_prefix('[').and_then(|k| k.strip_suffix(']')), v) {
+                    if names.split("][").any(|n| n == info.id || n == info.label) {
+                        merged.extend(section.clone());
+                    }
+                }
+            }
+            t.set_customizations(&merged);
+        }
+        theme::set_theme(t);
+    }
+
+    /// Preferences: Color Theme (`workbench.action.selectTheme`,
+    /// themes.contribution.ts): light, dark and high contrast groups, the
+    /// default themes pinned first, the rest by label; moving through the
+    /// list previews the theme.
+    fn open_color_theme_picker(&mut self) {
+        use theme::registry::ThemeKind;
+        let current = theme::current().id.clone();
+        let mut items = vec![("$(plus) Browse Additional Color Themes...".to_string(), None, None, false)];
+        let mut entries: Vec<Option<&'static str>> = vec![None];
+        let groups: [(&str, fn(ThemeKind) -> bool); 3] = [
+            ("light themes", |k| k == ThemeKind::Light),
+            ("dark themes", |k| k == ThemeKind::Dark),
+            ("high contrast themes", |k| k.is_high_contrast()),
+        ];
+        for (label, filter) in groups {
+            let mut themes: Vec<&theme::themes::ThemeInfo> =
+                theme::themes::BUILTIN.iter().filter(|t| filter(t.kind)).collect();
+            let pinned = |t: &theme::themes::ThemeInfo| {
+                t.id == theme::themes::DEFAULT_THEME || t.id == theme::themes::DEFAULT_LIGHT_THEME
+            };
+            themes.sort_by(|a, b| pinned(b).cmp(&pinned(a)).then_with(|| locale_compare(a.label, b.label)));
+            if themes.is_empty() {
+                continue;
+            }
+            items.push((label.to_string(), None, None, true));
+            entries.push(None);
+            for t in themes {
+                let description = match t.id {
+                    theme::themes::DEFAULT_THEME => Some("Default Dark".to_string()),
+                    theme::themes::DEFAULT_LIGHT_THEME => Some("Default Light".to_string()),
+                    id if id != t.label => Some(id.to_string()),
+                    _ => None,
+                };
+                items.push((t.label.to_string(), description, None, false));
+                entries.push(Some(t.id));
+            }
+        }
+        let active = entries.iter().position(|e| *e == Some(current.as_str()));
+        self.theme_pick = Some(ThemePick { entries, original: current });
+        self.palette.open_pick_with(
+            THEME_PICK_ID,
+            items,
+            Some("Select Color Theme (detect system color mode disabled)".into()),
+            crate::workbench::command_palette::PickOptions {
+                active,
+                report_active: true,
+                item_button: crate::icons::codicon_by_name("gear").map(|g| (g, "Manage Extension")),
+                input_button: Some((
+                    crate::icons::codicon_by_name("color-mode").unwrap_or('?'),
+                    "Detect system color mode disabled. Click to configure.",
+                )),
+            },
+        );
+    }
+
+    /// The picker's focus moved: preview that theme.
+    fn theme_pick_active(&mut self, request_id: u64, index: usize) {
+        if request_id != THEME_PICK_ID {
+            return;
+        }
+        if let Some(Some(id)) = self.theme_pick.as_ref().and_then(|p| p.entries.get(index)).copied() {
+            if theme::current().id != id {
+                self.set_color_theme(id);
+            }
+        }
+    }
+
+    /// The picker closed: keep the chosen theme (and write
+    /// `workbench.colorTheme`), or go back to the one it opened with.
+    fn theme_pick_closed(&mut self, index: Option<usize>) {
+        let Some(pick) = self.theme_pick.take() else { return };
+        match index.and_then(|i| pick.entries.get(i).copied()) {
+            Some(Some(id)) => {
+                self.set_color_theme(id);
+                // themeConfiguration.ts writeConfiguration (USER target): the
+                // default value is removed rather than written.
+                let user = self.settings.get_str("workbench.colorTheme").map(str::to_string);
+                let result = if id == theme::themes::DEFAULT_THEME {
+                    if user.is_some() { self.settings.update("workbench.colorTheme", None) } else { Ok(()) }
+                } else if user.as_deref() != Some(id) {
+                    self.settings.update("workbench.colorTheme", Some(serde_json::json!(id)))
+                } else {
+                    Ok(())
+                };
+                if let Err(e) = result {
+                    self.set_status(format!("Unable to write into user settings: {e}"));
+                }
+            }
+            Some(None) => {
+                // "Browse Additional Color Themes...": the catalogue's themes.
+                self.set_color_theme(&pick.original);
+                self.show_view(ActivityView::Extensions);
+                self.extensions.marketplace.set_query("@category:themes".into());
+            }
+            None => self.set_color_theme(&pick.original),
+        }
+    }
+
+    /// Opens the user `settings.json` in an editor (created empty when
+    /// missing).
+    fn open_user_settings(&mut self) {
+        let Some(path) = self.settings.path().map(PathBuf::from) else { return };
+        if !path.exists() {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, "{}");
+        }
+        self.show_welcome = false;
+        self.open_file(path);
     }
 
     /// Put the cursor at the start of 1-based `line` in the active editor,
@@ -3251,6 +3452,7 @@ impl App {
             CommandId::ShowSearch => self.show_view(ActivityView::Search),
             CommandId::QuickOpen => self.open_quick_open(),
             CommandId::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            CommandId::SelectColorTheme => self.open_color_theme_picker(),
         }
     }
 
@@ -3267,7 +3469,7 @@ impl App {
             .show_separator_line(false)
             .frame(
                 Frame::default()
-                    .fill(Palette::TITLE_BAR_BG)
+                    .fill(Palette::TITLE_BAR_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -3277,7 +3479,7 @@ impl App {
                     egui::pos2(rect.left(), rect.bottom() - 1.0),
                     egui::vec2(rect.width(), 1.0),
                 );
-                ui.painter().rect_filled(bottom_border, 0.0, Palette::BORDER);
+                ui.painter().rect_filled(bottom_border, 0.0, Palette::BORDER());
 
                 use crate::icons::codicon_font;
                 let p = ui.painter().clone();
@@ -3293,9 +3495,9 @@ impl App {
                     );
                     let resp = ui.interact(r, ui.id().with(("tnav", i)), egui::Sense::click());
                     let (bg, fg) = if resp.hovered() {
-                        (Palette::COMMAND_CENTER_BG, Palette::FG)
+                        (Palette::COMMAND_CENTER_BG(), Palette::FG())
                     } else {
-                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG)
+                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG())
                     };
                     ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
                     ui.painter().text(
@@ -3321,15 +3523,15 @@ impl App {
                 let pill_resp =
                     ui.interact(pill, ui.id().with("tcmdcenter"), egui::Sense::click());
                 let pill_bg = if pill_resp.hovered() {
-                    Palette::LIST_HOVER_BG
+                    Palette::LIST_HOVER_BG()
                 } else {
-                    Palette::COMMAND_CENTER_BG
+                    Palette::COMMAND_CENTER_BG()
                 };
                 ui.painter().rect(
                     pill,
                     egui::CornerRadius::same(6),
                     pill_bg,
-                    egui::Stroke::new(1.0, Palette::COMMAND_CENTER_BORDER),
+                    egui::Stroke::new(1.0, Palette::COMMAND_CENTER_BORDER()),
                     egui::StrokeKind::Inside,
                 );
                 ui.painter().text(
@@ -3337,14 +3539,14 @@ impl App {
                     egui::Align2::LEFT_CENTER,
                     crate::icons::SEARCH.to_string(),
                     codicon_font(13.0),
-                    Palette::COMMAND_CENTER_FG,
+                    Palette::COMMAND_CENTER_FG(),
                 );
                 ui.painter().text(
                     pill.center(),
                     egui::Align2::CENTER_CENTER,
                     &workspace_name,
                     egui::FontId::proportional(12.5),
-                    Palette::COMMAND_CENTER_FG,
+                    Palette::COMMAND_CENTER_FG(),
                 );
                 // VS Code's command center opens Quick Open (file search).
                 if pill_resp.clicked() {
@@ -3366,9 +3568,9 @@ impl App {
                     let r = egui::Rect::from_center_size(egui::pos2(rx, cy), egui::vec2(26.0, 22.0));
                     let resp = ui.interact(r, ui.id().with(("tlayout", i)), egui::Sense::click());
                     let (bg, fg) = if resp.hovered() {
-                        (Palette::COMMAND_CENTER_BG, Palette::FG)
+                        (Palette::COMMAND_CENTER_BG(), Palette::FG())
                     } else {
-                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG)
+                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG())
                     };
                     ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
                     ui.painter().text(
@@ -3399,11 +3601,11 @@ impl App {
                             v.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                             v.inactive.bg_fill = egui::Color32::TRANSPARENT;
                             v.hovered.bg_stroke = egui::Stroke::NONE;
-                            v.hovered.weak_bg_fill = Palette::LIST_HOVER_BG;
-                            v.hovered.bg_fill = Palette::LIST_HOVER_BG;
+                            v.hovered.weak_bg_fill = Palette::LIST_HOVER_BG();
+                            v.hovered.bg_fill = Palette::LIST_HOVER_BG();
                             v.active.bg_stroke = egui::Stroke::NONE;
                             v.open.bg_stroke = egui::Stroke::NONE;
-                            v.open.weak_bg_fill = Palette::LIST_HOVER_BG;
+                            v.open.weak_bg_fill = Palette::LIST_HOVER_BG();
                             ui.spacing_mut().item_spacing.x = 0.0;
                             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
 
@@ -3547,6 +3749,34 @@ impl App {
             return;
         }
 
+        // ⌘K chords: ⌘K ⌘T = Preferences: Color Theme.
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::K))) {
+            self.chord_k = Some(std::time::Instant::now());
+            self.set_status("(⌘K) was pressed. Waiting for second key of chord...");
+            return;
+        }
+        if let Some(at) = self.chord_k {
+            let second = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key { key, pressed: true, modifiers, .. } if *key != Key::K || !modifiers.command => {
+                        Some((*key, *modifiers))
+                    }
+                    _ => None,
+                })
+            });
+            if let Some((key, modifiers)) = second {
+                self.chord_k = None;
+                self.status_message.clear();
+                if key == Key::T && modifiers.command {
+                    ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T));
+                    self.open_color_theme_picker();
+                    return;
+                }
+            } else if at.elapsed() > std::time::Duration::from_secs(10) {
+                self.chord_k = None;
+            }
+        }
+
         let save = ctx.input_mut(|i| {
             i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::S))
         });
@@ -3624,6 +3854,11 @@ impl App {
     /// in-process test harnesses (egui_kittest) that don't have a real
     /// `eframe::Frame` instance.
     pub fn render(&mut self, ctx: &Context) {
+        // A new colour theme: rebuild egui's visuals from it.
+        if theme::generation() != self.visuals_generation {
+            theme::apply(ctx);
+            self.visuals_generation = theme::generation();
+        }
         self.render_impl(ctx);
     }
 
@@ -3668,7 +3903,7 @@ impl App {
             .show_separator_line(false)
             .frame(
                 Frame::default()
-                    .fill(Palette::STATUS_BAR_BG)
+                    .fill(Palette::STATUS_BAR_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -3755,7 +3990,7 @@ impl App {
             .show_separator_line(false)
             .frame(
                 Frame::default()
-                    .fill(Palette::ACTIVITY_BAR_BG)
+                    .fill(Palette::ACTIVITY_BAR_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -3807,19 +4042,19 @@ impl App {
                     .default_width(self.sidebar_width)
                     .frame(
                         Frame::default()
-                            .fill(Palette::SIDEBAR_BG)
+                            .fill(Palette::SIDEBAR_BG())
                             .inner_margin(Margin::ZERO),
                     )
                     .show(ctx, |ui| {
                         if self.active_view == ActivityView::ExtensionContainer {
                             let rect = ui.max_rect();
-                            ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
+                            ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG());
                             self.extension_container_view(ui);
                             return SidebarOutput::default();
                         }
                         if self.active_view == ActivityView::Extensions {
                             let rect = ui.max_rect();
-                            ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
+                            ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG());
                             let view = crate::workbench::extensions_view::show(ui, &mut self.extensions);
                             if let Some(ext) = view.install {
                                 self.extensions.marketplace.install(&ext);
@@ -3883,7 +4118,7 @@ impl App {
         egui::CentralPanel::default()
             .frame(
                 Frame::default()
-                    .fill(Palette::EDITOR_BG)
+                    .fill(Palette::EDITOR_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -3944,7 +4179,7 @@ impl App {
                         let rect = ui.available_rect_before_wrap();
                         ui.allocate_rect(rect, egui::Sense::hover());
                         if self.extensions.webviews.get(&handle).is_some_and(|w| w.html.is_empty()) {
-                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(13.0), Palette::FG_DESCRIPTION);
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(13.0), Palette::FG_DESCRIPTION());
                         }
                         self.webview_host.place(handle, rect);
                     } else if let Some(idx) = self.active_doc {
@@ -4085,21 +4320,21 @@ impl eframe::App for App {
 fn menu_label(label: &str) -> egui::RichText {
     egui::RichText::new(label)
         .size(13.0)
-        .color(Palette::TITLE_BAR_FG)
+        .color(Palette::TITLE_BAR_FG())
 }
 
 fn title_icon(ui: &mut egui::Ui, glyph: char, tip: &str) -> egui::Response {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 4.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 4.0, Palette::LIST_HOVER_BG());
     }
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         glyph.to_string(),
         crate::icons::codicon_font(15.0),
-        Palette::TITLE_BAR_FG,
+        Palette::TITLE_BAR_FG(),
     );
     resp.on_hover_text(tip)
 }
@@ -4144,14 +4379,14 @@ pub fn empty_editor_hints(ui: &mut egui::Ui) {
             egui::Align2::RIGHT_CENTER,
             *label,
             egui::FontId::proportional(13.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
         painter.text(
             egui::pos2(cx - total_w / 2.0 + label_w + 40.0, y),
             egui::Align2::LEFT_CENTER,
             *shortcut,
             egui::FontId::proportional(13.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
     }
 }
@@ -4182,13 +4417,13 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
             ui.label(
                 egui::RichText::new("Visual Studio Code")
                     .size(36.0)
-                    .color(Palette::FG),
+                    .color(Palette::FG()),
             );
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("Editing evolved")
                     .size(18.0)
-                    .color(Palette::FG_DESCRIPTION),
+                    .color(Palette::FG_DESCRIPTION()),
             );
 
             ui.add_space(36.0);
@@ -4202,7 +4437,7 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.label(
-                            egui::RichText::new("Start").size(20.0).color(Palette::FG).strong(),
+                            egui::RichText::new("Start").size(20.0).color(Palette::FG()).strong(),
                         );
                         ui.add_space(8.0);
                         let _ = welcome_link_icon(ui, Some(crate::icons::NEW_FILE), "New File…");
@@ -4223,12 +4458,12 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
 
                         ui.add_space(28.0);
                         ui.label(
-                            egui::RichText::new("Recent").size(20.0).color(Palette::FG).strong(),
+                            egui::RichText::new("Recent").size(20.0).color(Palette::FG()).strong(),
                         );
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new("No recent folders")
-                                .color(Palette::FG_DESCRIPTION),
+                                .color(Palette::FG_DESCRIPTION()),
                         );
                     },
                 );
@@ -4242,7 +4477,7 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
                         ui.label(
                             egui::RichText::new("Walkthroughs")
                                 .size(20.0)
-                                .color(Palette::FG)
+                                .color(Palette::FG())
                                 .strong(),
                         );
                         ui.add_space(10.0);
@@ -4263,7 +4498,7 @@ pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
                 &mut show_on_startup,
                 egui::RichText::new("Show welcome page on startup")
                     .size(13.0)
-                    .color(Palette::FG_DESCRIPTION),
+                    .color(Palette::FG_DESCRIPTION()),
             );
         });
     });
@@ -4277,15 +4512,15 @@ fn walkthrough_card(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
     let bg = if resp.hovered() {
-        Palette::LIST_HOVER_BG
+        Palette::LIST_HOVER_BG()
     } else {
-        Palette::SIDEBAR_SECTION_HEADER_BG
+        Palette::SIDEBAR_SECTION_HEADER_BG()
     };
     ui.painter().rect(
         rect,
         egui::CornerRadius::same(6),
         bg,
-        egui::Stroke::new(1.0, Palette::BORDER),
+        egui::Stroke::new(1.0, Palette::BORDER()),
         egui::StrokeKind::Inside,
     );
     let icon_c = egui::pos2(rect.left() + 22.0, rect.center().y);
@@ -4294,7 +4529,7 @@ fn walkthrough_card(ui: &mut egui::Ui, title: &str, subtitle: &str) {
         egui::Align2::CENTER_CENTER,
         crate::icons::VSCODE.to_string(),
         crate::icons::codicon_font(20.0),
-        Palette::ACCENT,
+        Palette::ACCENT(),
     );
     let tx = rect.left() + 44.0;
     if subtitle.is_empty() {
@@ -4303,7 +4538,7 @@ fn walkthrough_card(ui: &mut egui::Ui, title: &str, subtitle: &str) {
             egui::Align2::LEFT_CENTER,
             title,
             egui::FontId::proportional(13.5),
-            Palette::FG,
+            Palette::FG(),
         );
     } else {
         ui.painter().text(
@@ -4311,14 +4546,14 @@ fn walkthrough_card(ui: &mut egui::Ui, title: &str, subtitle: &str) {
             egui::Align2::LEFT_CENTER,
             title,
             egui::FontId::proportional(13.5),
-            Palette::FG,
+            Palette::FG(),
         );
         ui.painter().text(
             egui::pos2(tx, rect.top() + 36.0),
             egui::Align2::LEFT_CENTER,
             subtitle,
             egui::FontId::proportional(12.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
     }
 }
@@ -4339,9 +4574,9 @@ fn welcome_link_icon(ui: &mut egui::Ui, icon: Option<char>, text: &str) -> egui:
     );
     let painter = ui.painter();
     let color = if resp.hovered() {
-        Palette::FG_BRIGHT
+        Palette::FG_BRIGHT()
     } else {
-        Palette::ACCENT
+        Palette::ACCENT()
     };
     let mut tx = rect.left();
     if let Some(g) = icon {
@@ -4367,7 +4602,7 @@ fn welcome_link_icon(ui: &mut egui::Ui, icon: Option<char>, text: &str) -> egui:
             egui::Align2::LEFT_CENTER,
             shortcut,
             egui::FontId::proportional(12.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
     }
     resp
@@ -4386,4 +4621,43 @@ fn word_bytes(text: &str, byte: usize) -> (usize, usize) {
         .unwrap_or(byte);
     let end = text[byte..].find(|c: char| !is_word(c)).map(|e| byte + e).unwrap_or(text.len());
     (start, end)
+}
+
+/// `String.prototype.localeCompare` as the theme picker sorts with it
+/// (ICU root collation, simplified): spaces, then punctuation, then
+/// digits, then letters, case-insensitive first.
+fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
+    let key = |s: &str| -> Vec<(u8, char)> {
+        s.chars()
+            .map(|c| {
+                let class = if c.is_whitespace() {
+                    0
+                } else if c.is_ascii_punctuation() {
+                    1
+                } else if c.is_numeric() {
+                    2
+                } else {
+                    3
+                };
+                (class, c.to_lowercase().next().unwrap_or(c))
+            })
+            .collect()
+    };
+    key(a).cmp(&key(b)).then_with(|| a.cmp(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::locale_compare;
+
+    #[test]
+    fn theme_labels_sort_like_vs_code() {
+        // Order of the Color Theme picker in VS Code 1.145.2.
+        let mut light = vec!["Solarized Light", "Light+", "Quiet Light", "Light Modern", "Light (Visual Studio)"];
+        light.sort_by(|a, b| locale_compare(a, b));
+        assert_eq!(light, ["Light (Visual Studio)", "Light Modern", "Light+", "Quiet Light", "Solarized Light"]);
+        let mut dark = vec!["Dark+", "Abyss", "Dark Modern", "Dark (Visual Studio)", "Kimbie Dark"];
+        dark.sort_by(|a, b| locale_compare(a, b));
+        assert_eq!(dark, ["Abyss", "Dark (Visual Studio)", "Dark Modern", "Dark+", "Kimbie Dark"]);
+    }
 }

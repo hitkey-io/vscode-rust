@@ -35,6 +35,8 @@ struct Live {
     version: u64,
     rect: egui::Rect,
     visible: bool,
+    /// `theme::generation()` the page's colours were last sent for.
+    theme: u32,
 }
 
 /// The native web views and where the workbench wants them this frame.
@@ -167,7 +169,10 @@ impl WebviewHost {
             if !self.live.contains_key(handle) {
                 match self.create(window, *handle, *rect) {
                     Ok(view) => {
-                        self.live.insert(*handle, Live { view, version: u64::MAX, rect: *rect, visible: true });
+                        self.live.insert(
+                            *handle,
+                            Live { view, version: u64::MAX, rect: *rect, visible: true, theme: crate::theme::generation() },
+                        );
                     }
                     Err(e) => {
                         eprintln!("webview {handle}: {e}");
@@ -176,6 +181,13 @@ impl WebviewHost {
                 }
             }
             let live = self.live.get_mut(handle).unwrap();
+            if live.theme != crate::theme::generation() {
+                live.theme = crate::theme::generation();
+                let _ = live.view.evaluate_script(&format!(
+                    "window.__vscodeApplyTheme && window.__vscodeApplyTheme({});",
+                    theme_json()
+                ));
+            }
             if live.version != version {
                 live.version = version;
                 let _ = live.view.load_url(&format!("{SCHEME}://w{handle}/index.html?v={version}"));
@@ -229,7 +241,10 @@ impl WebviewHost {
         let ipc = self.ipc_tx.clone();
         wry::WebViewBuilder::new()
             .with_bounds(bounds(rect))
-            .with_background_color((0x18, 0x19, 0x1A, 0xFF))
+            .with_background_color({
+                let [r, g, b, _] = crate::theme::Palette::EDITOR_BG().to_array();
+                (r, g, b, 0xFF)
+            })
             .with_initialization_script(bootstrap_script())
             .with_custom_protocol(SCHEME.to_string(), move |_id, request| serve(&pages, request))
             .with_ipc_handler(move |request| {
@@ -278,25 +293,43 @@ fn bootstrap_script() -> String {
   }};
   const theme = document.createElement('style');
   theme.id = '_defaultStyles';
-  theme.textContent = {css};
+  let current = {theme};
   const apply = () => {{
+    theme.textContent = current.css;
     (document.head || document.documentElement).prepend(theme);
-    if (document.body) {{
-      document.body.classList.add('vscode-dark');
-      document.body.dataset.vscodeThemeKind = 'vscode-dark';
-      document.body.dataset.vscodeThemeName = 'Dark Modern';
-      document.body.dataset.vscodeThemeId = 'Dark Modern';
+    const body = document.body;
+    if (body) {{
+      body.classList.remove('vscode-light', 'vscode-dark', 'vscode-high-contrast', 'vscode-high-contrast-light');
+      body.classList.add(current.kind);
+      if (current.kind === 'vscode-high-contrast-light') {{ body.classList.add('vscode-high-contrast'); }}
+      body.dataset.vscodeThemeKind = current.kind;
+      body.dataset.vscodeThemeName = current.name;
+      body.dataset.vscodeThemeId = current.id;
     }}
+    document.documentElement.style.setProperty('color-scheme', current.kind.includes('light') ? 'light' : 'dark');
   }};
+  window.__vscodeApplyTheme = (t) => {{ current = t; apply(); }};
   if (document.readyState === 'loading') {{
     document.addEventListener('DOMContentLoaded', apply);
   }} else {{
     apply();
   }}
-  document.documentElement.style.setProperty('color-scheme', 'dark');
 }})();"#,
-        css = serde_json::to_string(THEME_CSS).unwrap()
+        theme = theme_json()
     )
+}
+
+/// The active theme for a page: CSS (colour variables + default styles),
+/// body class, name and id.
+pub fn theme_json() -> String {
+    let t = crate::theme::current();
+    serde_json::json!({
+        "css": format!("{}{}", crate::theme::webview_css(), THEME_CSS),
+        "kind": crate::theme::webview_theme_class(),
+        "name": t.label,
+        "id": t.id,
+    })
+    .to_string()
 }
 
 /// Answer `vscode-resource://w<handle>/…`: the page itself, or a file

@@ -2,9 +2,9 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-scrollable/vscode-scrollable.ts
 //! Docs:     https://vscode-elements.github.io/components/scrollable/
 //! VS Code analogue: src/vs/base/browser/ui/scrollbar/media/scrollbars.css
-//! Tokens:   --vscode-scrollbarSlider-background → Palette::VSCE_SCROLLBAR_SLIDER_BG
-//!           --vscode-scrollbarSlider-hoverBackground → Palette::VSCE_SCROLLBAR_SLIDER_HOVER
-//!           --vscode-scrollbarSlider-activeBackground → Palette::VSCE_SCROLLBAR_SLIDER_ACTIVE
+//! Tokens:   --vscode-scrollbarSlider-background → Palette::VSCE_SCROLLBAR_SLIDER_BG()
+//!           --vscode-scrollbarSlider-hoverBackground → Palette::VSCE_SCROLLBAR_SLIDER_HOVER()
+//!           --vscode-scrollbarSlider-activeBackground → Palette::VSCE_SCROLLBAR_SLIDER_ACTIVE()
 //!
 //! Thin wrapper around `egui::ScrollArea` with the upstream slider colours
 //! patched into the local `Visuals`. The wrapper is a function, not a
@@ -84,9 +84,9 @@ pub fn scrollable<R>(
     // displayed at low alpha through `interact_background_opacity`.
     let style = ui.style_mut();
     let v = &mut style.visuals;
-    v.widgets.inactive.bg_fill = tokens::SCROLLBAR_SLIDER_BG;
-    v.widgets.hovered.bg_fill = tokens::SCROLLBAR_SLIDER_HOVER;
-    v.widgets.active.bg_fill = tokens::SCROLLBAR_SLIDER_ACTIVE;
+    v.widgets.inactive.bg_fill = tokens::SCROLLBAR_SLIDER_BG();
+    v.widgets.hovered.bg_fill = tokens::SCROLLBAR_SLIDER_HOVER();
+    v.widgets.active.bg_fill = tokens::SCROLLBAR_SLIDER_ACTIVE();
     v.widgets.inactive.bg_stroke = Stroke::NONE;
     v.widgets.hovered.bg_stroke = Stroke::NONE;
     v.widgets.active.bg_stroke = Stroke::NONE;

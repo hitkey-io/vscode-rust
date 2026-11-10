@@ -1,7 +1,7 @@
 //! In-editor find widget (Cmd+F).
 //! VS Code analogue: src/vs/editor/contrib/find/browser/findWidget.ts
-//! Tokens: --vscode-editorWidget-background → Palette::EDITOR_WIDGET_BG
-//!         --vscode-editorWidget-border     → Palette::EDITOR_WIDGET_BORDER
+//! Tokens: --vscode-editorWidget-background → Palette::EDITOR_WIDGET_BG()
+//!         --vscode-editorWidget-border     → Palette::EDITOR_WIDGET_BORDER()
 //!         --vscode-editor-findMatchBackground / findMatchHighlightBackground
 //!
 //! A small panel docked to the editor's top-right corner: query input, a
@@ -88,8 +88,8 @@ pub fn show(
             p.rect(
                 rect,
                 CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 },
-                Palette::EDITOR_WIDGET_BG,
-                Stroke::new(1.0, Palette::EDITOR_WIDGET_BORDER),
+                Palette::EDITOR_WIDGET_BG(),
+                Stroke::new(1.0, Palette::EDITOR_WIDGET_BORDER()),
                 StrokeKind::Inside,
             );
 
@@ -101,8 +101,8 @@ pub fn show(
             ui.painter().rect(
                 input_rect,
                 CornerRadius::same(2),
-                Palette::VSCE_INPUT_BG,
-                Stroke::new(1.0, Palette::INPUT_BORDER),
+                Palette::VSCE_INPUT_BG(),
+                Stroke::new(1.0, Palette::INPUT_BORDER()),
                 StrokeKind::Inside,
             );
             let edit_inner = input_rect.shrink2(egui::vec2(5.0, 2.0));
@@ -117,7 +117,7 @@ pub fn show(
                                 .desired_width(f32::INFINITY)
                                 .hint_text("Find")
                                 .font(FontId::proportional(12.5))
-                                .text_color(Palette::FG),
+                                .text_color(Palette::FG()),
                         );
                         if state.request_focus {
                             r.request_focus();
@@ -159,9 +159,9 @@ pub fn show(
                 format!("{} of {}", state.current + 1, matches.len())
             };
             let count_color = if matches.is_empty() && !state.query.is_empty() {
-                Palette::GIT_DELETED_FG
+                Palette::GIT_DELETED_FG()
             } else {
-                Palette::FG_DESCRIPTION
+                Palette::FG_DESCRIPTION()
             };
             ui.painter().text(
                 egui::pos2(input_rect.right() + 10.0, rect.center().y),
@@ -186,15 +186,15 @@ pub fn show(
                 let bresp = ui.interact(r, ui.id().with(("findbtn", i)), Sense::click());
                 let enabled = i == 0 || !matches.is_empty();
                 let fg = if !enabled {
-                    Palette::FG_DESCRIPTION.gamma_multiply(0.5)
+                    Palette::FG_DESCRIPTION().gamma_multiply(0.5)
                 } else if bresp.hovered() {
-                    Palette::FG_BRIGHT
+                    Palette::FG_BRIGHT()
                 } else {
-                    Palette::FG
+                    Palette::FG()
                 };
                 if bresp.hovered() && enabled {
                     ui.painter()
-                        .rect_filled(r, CornerRadius::same(3), Palette::LIST_HOVER_BG);
+                        .rect_filled(r, CornerRadius::same(3), Palette::LIST_HOVER_BG());
                 }
                 ui.painter().text(
                     r.center(),

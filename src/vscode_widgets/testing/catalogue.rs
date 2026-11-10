@@ -36,7 +36,7 @@ pub struct StoryState {
     /// harness uses this for `Harness::builder().with_size(...)`.
     pub size: (f32, f32),
     /// Renderer for this state. The closure receives a `Ui` already painted on
-    /// a `Palette::EDITOR_BG` (or `PANEL_BG`) background.
+    /// a `Palette::EDITOR_BG()` (or `PANEL_BG`) background.
     pub draw: fn(&mut Ui),
 }
 

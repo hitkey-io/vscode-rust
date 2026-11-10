@@ -3,10 +3,10 @@
 //! Docs:     https://vscode-elements.github.io/components/table/
 //! VS Code analogue: src/vs/base/browser/ui/table/table.ts
 //! Tokens:   --vscode-dropdown-background → Palette::VSCE_DROPDOWN_BG (header bg)
-//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG
-//!           --vscode-list-activeSelectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG
-//!           --vscode-tree-tableColumnsBorder → Palette::VSCE_TABLE_COLUMN_BORDER
-//!           --vscode-tree-tableOddRowsBackground → Palette::VSCE_TABLE_ODD_ROW_BG
+//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG()
+//!           --vscode-list-activeSelectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG()
+//!           --vscode-tree-tableColumnsBorder → Palette::VSCE_TABLE_COLUMN_BORDER()
+//!           --vscode-tree-tableOddRowsBackground → Palette::VSCE_TABLE_ODD_ROW_BG()
 //!
 //! Single-API table that takes a slice of header strings and a `&[&[&str]]`
 //! body matrix. Row selection is owned by the caller.
@@ -96,7 +96,7 @@ pub fn table(
             Align2::LEFT_CENTER,
             *header,
             FontId::proportional(11.5),
-            tokens::FG_DESCRIPTION,
+            tokens::FG_DESCRIPTION(),
         );
         if props.border_columns && col_idx + 1 < col_count {
             painter.line_segment(
@@ -104,7 +104,7 @@ pub fn table(
                     egui::pos2(cell_rect.right() - 0.5, cell_rect.top() + 4.0),
                     egui::pos2(cell_rect.right() - 0.5, cell_rect.bottom() - 4.0),
                 ],
-                Stroke::new(1.0, tokens::TABLE_COLUMN_BORDER),
+                Stroke::new(1.0, tokens::TABLE_COLUMN_BORDER()),
             );
         }
         x += cw;
@@ -114,7 +114,7 @@ pub fn table(
             egui::pos2(header_rect.left(), header_rect.bottom() - 0.5),
             egui::pos2(header_rect.right(), header_rect.bottom() - 0.5),
         ],
-        Stroke::new(1.0, tokens::TABLE_COLUMN_BORDER),
+        Stroke::new(1.0, tokens::TABLE_COLUMN_BORDER()),
     );
     ui.allocate_exact_size(Vec2::new(total_width, props.header_height), Sense::hover());
 
@@ -128,11 +128,11 @@ pub fn table(
 
         let is_selected = *selected_row == Some(row_idx);
         let bg = if is_selected {
-            tokens::LIST_ACTIVE_SELECTION_BG
+            tokens::LIST_ACTIVE_SELECTION_BG()
         } else if row_resp.hovered() {
-            tokens::LIST_HOVER_BG
+            tokens::LIST_HOVER_BG()
         } else if props.striped && row_idx % 2 == 1 {
-            tokens::TABLE_ODD_ROW_BG
+            tokens::TABLE_ODD_ROW_BG()
         } else {
             Color32::TRANSPARENT
         };
@@ -142,9 +142,9 @@ pub fn table(
 
         let mut x = row_rect.left();
         let fg = if is_selected {
-            tokens::LIST_ACTIVE_SELECTION_FG
+            tokens::LIST_ACTIVE_SELECTION_FG()
         } else {
-            tokens::FG
+            tokens::FG()
         };
         for (col_idx, cell) in row.iter().enumerate() {
             let cw = widths.get(col_idx).copied().unwrap_or(80.0);
@@ -165,7 +165,7 @@ pub fn table(
                         egui::pos2(cell_rect.right() - 0.5, cell_rect.top()),
                         egui::pos2(cell_rect.right() - 0.5, cell_rect.bottom()),
                     ],
-                    Stroke::new(1.0, tokens::TABLE_COLUMN_BORDER),
+                    Stroke::new(1.0, tokens::TABLE_COLUMN_BORDER()),
                 );
             }
             x += cw;

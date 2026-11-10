@@ -2,12 +2,12 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-tabs/vscode-tabs.ts
 //! Docs:     https://vscode-elements.github.io/components/tabs/
 //! VS Code analogue: src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts
-//! Tokens:   --vscode-tab-activeBackground → Palette::VSCE_TAB_ACTIVE_BG
-//!           --vscode-tab-inactiveBackground → Palette::VSCE_TAB_INACTIVE_BG
-//!           --vscode-tab-activeForeground → Palette::VSCE_TAB_ACTIVE_FG
-//!           --vscode-tab-inactiveForeground → Palette::VSCE_TAB_INACTIVE_FG
-//!           --vscode-tab-activeBorderTop → Palette::VSCE_TAB_ACTIVE_BORDER_TOP
-//!           --vscode-tab-border → Palette::VSCE_TAB_BORDER
+//! Tokens:   --vscode-tab-activeBackground → Palette::VSCE_TAB_ACTIVE_BG()
+//!           --vscode-tab-inactiveBackground → Palette::VSCE_TAB_INACTIVE_BG()
+//!           --vscode-tab-activeForeground → Palette::VSCE_TAB_ACTIVE_FG()
+//!           --vscode-tab-inactiveForeground → Palette::VSCE_TAB_INACTIVE_FG()
+//!           --vscode-tab-activeBorderTop → Palette::VSCE_TAB_ACTIVE_BORDER_TOP()
+//!           --vscode-tab-border → Palette::VSCE_TAB_BORDER()
 //!
 //! Horizontal tab strip. Stateless wrt selection — the caller passes
 //! `active: &mut usize` and we mutate it on click. Each `Tab` may have a
@@ -136,7 +136,7 @@ pub fn tabs(
     // Paint the strip background once — individual tabs paint their own bg
     // on top.
     ui.painter()
-        .rect_filled(row_rect, 0.0, tokens::TAB_INACTIVE_BG);
+        .rect_filled(row_rect, 0.0, tokens::TAB_INACTIVE_BG());
 
     // Track whether the active index changed this frame so we can scroll it
     // into view (VS Code keeps the active editor tab visible).
@@ -179,7 +179,7 @@ pub fn tabs(
             egui::pos2(row_rect.left(), row_rect.bottom() - 0.5),
             egui::pos2(row_rect.right(), row_rect.bottom() - 0.5),
         ],
-        egui::Stroke::new(1.0, tokens::TAB_BORDER),
+        egui::Stroke::new(1.0, tokens::TAB_BORDER()),
     );
 
     out
@@ -233,9 +233,9 @@ fn draw_single_tab(
     let painter = ui.painter().clone();
     let hovered = response.hovered() && !tab.disabled;
     let bg = match (is_active, hovered) {
-        (true, _) => tokens::TAB_ACTIVE_BG,
-        (false, true) => tokens::LIST_HOVER_BG,
-        (false, false) => tokens::TAB_INACTIVE_BG,
+        (true, _) => tokens::TAB_ACTIVE_BG(),
+        (false, true) => tokens::LIST_HOVER_BG(),
+        (false, false) => tokens::TAB_INACTIVE_BG(),
     };
     painter.rect_filled(rect, 0.0, bg);
 
@@ -245,7 +245,7 @@ fn draw_single_tab(
             rect.left_top(),
             egui::pos2(rect.right(), rect.top() + 1.0),
         );
-        painter.rect_filled(top, 0.0, tokens::TAB_ACTIVE_BORDER_TOP);
+        painter.rect_filled(top, 0.0, tokens::TAB_ACTIVE_BORDER_TOP());
     }
     // Right separator.
     painter.line_segment(
@@ -253,15 +253,15 @@ fn draw_single_tab(
             egui::pos2(rect.right() - 0.5, rect.top()),
             egui::pos2(rect.right() - 0.5, rect.bottom()),
         ],
-        egui::Stroke::new(1.0, tokens::TAB_BORDER),
+        egui::Stroke::new(1.0, tokens::TAB_BORDER()),
     );
 
     let fg = if tab.disabled {
-        tokens::FG_DISABLED
+        tokens::FG_DISABLED()
     } else if is_active {
-        tokens::TAB_ACTIVE_FG
+        tokens::TAB_ACTIVE_FG()
     } else {
-        tokens::TAB_INACTIVE_FG
+        tokens::TAB_INACTIVE_FG()
     };
 
     let mut cursor = rect.left() + pad_x;
@@ -299,7 +299,7 @@ fn draw_single_tab(
         let pin_rect = egui::Rect::from_center_size(pin_center, Vec2::splat(16.0));
         let pin_resp = ui.interact(pin_rect, response.id.with("pin"), Sense::click());
         if pin_resp.hovered() {
-            painter.rect_filled(pin_rect, CornerRadius::same(3), tokens::LIST_HOVER_BG);
+            painter.rect_filled(pin_rect, CornerRadius::same(3), tokens::LIST_HOVER_BG());
         }
         // Hovering the pin offers an unpin affordance via the close glyph;
         // otherwise show the filled pin (or a dirty dot if unsaved).
@@ -327,7 +327,7 @@ fn draw_single_tab(
             ui.interact(close_rect, response.id.with("close"), Sense::click());
         let close_hovered = close_resp.hovered();
         if close_hovered {
-            painter.rect_filled(close_rect, CornerRadius::same(3), tokens::LIST_HOVER_BG);
+            painter.rect_filled(close_rect, CornerRadius::same(3), tokens::LIST_HOVER_BG());
         }
         let glyph = if tab.dirty && !close_hovered {
             CIRCLE_FILLED

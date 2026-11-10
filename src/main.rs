@@ -13,6 +13,8 @@ fn main() -> eframe::Result<()> {
     // Like VS Code's `--extensions-dir`: replaces the default folders.
     let mut cli_extensions_dir: Option<PathBuf> = None;
     let mut cli_extensions_view = false;
+    // Like VS Code's `--user-data-dir`: where `User/settings.json` lives.
+    let mut cli_user_data_dir: Option<PathBuf> = None;
     let mut i = 2usize;
     while i < args.len() {
         if args[i] == "--search" {
@@ -23,6 +25,9 @@ fn main() -> eframe::Result<()> {
             i += 1;
         } else if args[i] == "--extensions-dir" {
             cli_extensions_dir = args.get(i + 1).map(PathBuf::from);
+            i += 2;
+        } else if args[i] == "--user-data-dir" {
+            cli_user_data_dir = args.get(i + 1).map(PathBuf::from);
             i += 2;
         } else if args[i] == "--extensions" {
             cli_extensions_view = true;
@@ -68,6 +73,9 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             let mut a = app::App::new(cc);
             a.attach_menu_ids(menu_ids);
+            if let Some(dir) = cli_user_data_dir.clone().or_else(vscode_rust::settings::default_user_data_dir) {
+                a.bootstrap_user_data(dir);
+            }
             if let Some(ws) = cli_workspace.clone() {
                 a.bootstrap_workspace(ws);
             }

@@ -116,7 +116,7 @@ pub fn form_group<R>(
         ui.vertical(|ui| {
             ui.label(
                 RichText::new(label_text)
-                    .color(tokens::LABEL_FG)
+                    .color(tokens::LABEL_FG())
                     .font(FontId::proportional(13.0))
                     .strong(),
             );
@@ -132,7 +132,7 @@ pub fn form_group<R>(
                 |ui| {
                     ui.label(
                         RichText::new(label_text)
-                            .color(tokens::LABEL_FG)
+                            .color(tokens::LABEL_FG())
                             .font(FontId::proportional(13.0))
                             .strong(),
                     );

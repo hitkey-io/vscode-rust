@@ -3,7 +3,7 @@
 //! Docs:     https://vscode-elements.github.io/components/progress-ring/
 //! VS Code analogue: src/vs/base/browser/ui/progressbar/progressbar.ts (the
 //!                   indeterminate variant uses the same animation pattern)
-//! Tokens:   --vscode-progressBar-background → Palette::VSCE_PROGRESS_BG
+//! Tokens:   --vscode-progressBar-background → Palette::VSCE_PROGRESS_BG()
 //!
 //! Circular indeterminate spinner. Draws a 270°-long arc that rotates
 //! around the centre at a fixed angular velocity. The widget calls
@@ -23,7 +23,7 @@ pub struct ProgressRingProps {
     pub spin_duration: f32,
     /// Sweep angle in radians (length of the moving arc). Default 270°.
     pub sweep: f32,
-    /// Override arc colour. `None` falls back to `tokens::FOCUS_BORDER`.
+    /// Override arc colour. `None` falls back to `tokens::FOCUS_BORDER()`.
     pub color: Option<Color32>,
 }
 
@@ -67,7 +67,7 @@ pub fn progress_ring(ui: &mut Ui, props: &ProgressRingProps) -> Response {
 
     let center = rect.center();
     let radius = (props.size - props.thickness) * 0.5;
-    let color = props.color.unwrap_or(tokens::FOCUS_BORDER);
+    let color = props.color.unwrap_or(tokens::FOCUS_BORDER());
 
     // Sample the sweep arc with enough segments to look smooth at 32px.
     let segments = 48usize;

@@ -42,13 +42,13 @@ pub fn show_with_containers(
     let mut palette_requested = false;
     let painter = ui.painter();
     let rect = ui.max_rect();
-    painter.rect_filled(rect, 0.0, Palette::ACTIVITY_BAR_BG);
+    painter.rect_filled(rect, 0.0, Palette::ACTIVITY_BAR_BG());
 
     let right_border = egui::Rect::from_min_size(
         egui::pos2(rect.right() - 1.0, rect.top()),
         egui::vec2(1.0, rect.height()),
     );
-    painter.rect_filled(right_border, 0.0, Palette::BORDER);
+    painter.rect_filled(right_border, 0.0, Palette::BORDER());
 
     ui.allocate_ui_with_layout(
         ui.available_size(),
@@ -75,8 +75,8 @@ pub fn show_with_containers(
                             .size(ITEM_HEIGHT)
                             .icon_size(24.0)
                             .no_hover_bg()
-                            .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
-                            .hover_color(Palette::ACTIVITY_BAR_FG),
+                            .color(Palette::ACTIVITY_BAR_INACTIVE_FG())
+                            .hover_color(Palette::ACTIVITY_BAR_FG()),
                     );
                     if resp.clicked() {
                         palette_requested = true;
@@ -88,10 +88,10 @@ pub fn show_with_containers(
                     .size(ITEM_HEIGHT)
                     .icon_size(24.0)
                     .no_hover_bg()
-                    .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
-                    .hover_color(Palette::ACTIVITY_BAR_FG);
+                    .color(Palette::ACTIVITY_BAR_INACTIVE_FG())
+                    .hover_color(Palette::ACTIVITY_BAR_FG());
                 if is_selected {
-                    props = props.active_stripe().color(Palette::ACTIVITY_BAR_FG);
+                    props = props.active_stripe().color(Palette::ACTIVITY_BAR_FG());
                 }
                 let response = icon_button(ui, &props);
 
@@ -105,14 +105,14 @@ pub fn show_with_containers(
                     ui.painter().rect_filled(
                         badge,
                         egui::CornerRadius::same(8),
-                        Palette::ACCENT,
+                        Palette::ACCENT(),
                     );
                     ui.painter().text(
                         center,
                         Align2::CENTER_CENTER,
                         txt,
                         FontId::proportional(10.5),
-                        Palette::FG_BRIGHT,
+                        Palette::FG_BRIGHT(),
                     );
                 }
 
@@ -138,15 +138,15 @@ pub fn show_with_containers(
                     && *sidebar_visible;
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(ITEM_HEIGHT, ITEM_HEIGHT), egui::Sense::click());
                 let tint = if is_selected || resp.hovered() {
-                    Palette::ACTIVITY_BAR_FG
+                    Palette::ACTIVITY_BAR_FG()
                 } else {
-                    Palette::ACTIVITY_BAR_INACTIVE_FG
+                    Palette::ACTIVITY_BAR_INACTIVE_FG()
                 };
                 if is_selected {
                     ui.painter().rect_filled(
                         egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
                         0.0,
-                        Palette::ACTIVITY_BAR_FG,
+                        Palette::ACTIVITY_BAR_FG(),
                     );
                 }
                 let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0));
@@ -198,8 +198,8 @@ pub fn show_with_containers(
                         .size(ITEM_HEIGHT)
                         .icon_size(24.0)
                         .no_hover_bg()
-                        .color(Palette::ACTIVITY_BAR_INACTIVE_FG)
-                        .hover_color(Palette::ACTIVITY_BAR_FG),
+                        .color(Palette::ACTIVITY_BAR_INACTIVE_FG())
+                        .hover_color(Palette::ACTIVITY_BAR_FG()),
                 );
                 if resp.clicked() {
                     palette_requested = true;

@@ -18,7 +18,7 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), HEIGHT), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, Palette::EDITOR_BG);
+    p.rect_filled(rect, 0.0, Palette::EDITOR_BG());
 
     // Build segments relative to the workspace root (root name itself omitted,
     // matching VS Code which starts at the first folder under the root).
@@ -46,7 +46,7 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
                 Align2::LEFT_CENTER,
                 icons::CHEVRON_RIGHT.to_string(),
                 codicon_font(11.0),
-                Palette::FG_DESCRIPTION,
+                Palette::FG_DESCRIPTION(),
             );
             x += 13.0;
         }
@@ -64,8 +64,8 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
                 x += 18.0;
             }
         }
-        let g = p.layout_no_wrap(name.clone(), label_font.clone(), Palette::BREADCRUMB_FG);
-        p.galley(egui::pos2(x, cy - g.size().y * 0.5), g.clone(), Palette::BREADCRUMB_FG);
+        let g = p.layout_no_wrap(name.clone(), label_font.clone(), Palette::BREADCRUMB_FG());
+        p.galley(egui::pos2(x, cy - g.size().y * 0.5), g.clone(), Palette::BREADCRUMB_FG());
         x += g.size().x + 6.0;
     }
 
@@ -76,13 +76,13 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
         Align2::LEFT_CENTER,
         icons::CHEVRON_RIGHT.to_string(),
         codicon_font(11.0),
-        Palette::FG_DESCRIPTION,
+        Palette::FG_DESCRIPTION(),
     );
     p.text(
         egui::pos2(x + 13.0, cy),
         Align2::LEFT_CENTER,
         "…",
         label_font,
-        Palette::FG_DESCRIPTION,
+        Palette::FG_DESCRIPTION(),
     );
 }

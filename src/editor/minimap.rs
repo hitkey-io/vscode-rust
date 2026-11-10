@@ -26,7 +26,7 @@ const PAD: f32 = 4.0;
 /// slider; pass `0`/`0` to omit the slider.
 pub fn show(ui: &Ui, area: Rect, doc: &Document, top_line: usize, visible_rows: usize) {
     let p = ui.painter();
-    p.rect_filled(area, 0.0, Palette::EDITOR_BG);
+    p.rect_filled(area, 0.0, Palette::EDITOR_BG());
 
     let runs = line_runs(&doc.text, doc.language);
     let max_rows = ((area.height() - PAD) / LINE_H).floor() as usize;
@@ -77,7 +77,7 @@ pub fn show(ui: &Ui, area: Rect, doc: &Document, top_line: usize, visible_rows: 
     ui.painter().vline(
         area.left(),
         area.y_range(),
-        egui::Stroke::new(1.0, Palette::EDITOR_BG),
+        egui::Stroke::new(1.0, Palette::EDITOR_BG()),
     );
     let _ = Sense::hover();
 }

@@ -42,7 +42,7 @@ pub fn show(
     };
 
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
+    ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG());
 
     ui.vertical(|ui| {
         // The SCM view draws its own "SOURCE CONTROL" title; others get the
@@ -96,19 +96,19 @@ pub fn title_bar(ui: &mut Ui, title: &str) -> egui::Rect {
     let (header_rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 35.0), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(header_rect, 0.0, Palette::SIDEBAR_SECTION_HEADER_BG);
+    painter.rect_filled(header_rect, 0.0, Palette::SIDEBAR_SECTION_HEADER_BG());
     painter.text(
         header_rect.left_center() + egui::vec2(20.0, 0.0),
         egui::Align2::LEFT_CENTER,
         title,
         FontId::proportional(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG,
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
     );
     let bottom_border = egui::Rect::from_min_size(
         egui::pos2(header_rect.left(), header_rect.bottom() - 1.0),
         egui::vec2(header_rect.width(), 1.0),
     );
-    painter.rect_filled(bottom_border, 0.0, Palette::BORDER);
+    painter.rect_filled(bottom_border, 0.0, Palette::BORDER());
     header_rect
 }
 
@@ -150,7 +150,7 @@ fn explorer_panel(
             ui.add_space(10.0);
             label(
                 ui,
-                &LabelProps::new("NO FOLDER OPENED").size(11.0).color(Palette::FG),
+                &LabelProps::new("NO FOLDER OPENED").size(11.0).color(Palette::FG()),
             );
         });
         ui.add_space(8.0);
@@ -213,7 +213,7 @@ fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &s
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
     }
     let mid = rect.center().y;
     let chev = if *expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
@@ -223,14 +223,14 @@ fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &s
         egui::Align2::CENTER_CENTER,
         chev.to_string(),
         codicon_font(12.0),
-        Palette::FG_DESCRIPTION,
+        Palette::FG_DESCRIPTION(),
     );
     p.text(
         egui::pos2(rect.left() + 22.0, mid),
         egui::Align2::LEFT_CENTER,
         title,
         FontId::proportional(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG,
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
     );
     if resp.clicked() {
         *expanded = !*expanded;
@@ -243,7 +243,7 @@ fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &s
             egui::Align2::LEFT_TOP,
             empty_msg,
             FontId::proportional(12.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
     }
 }
@@ -256,7 +256,7 @@ fn root_row(ui: &mut Ui, root: &mut FileNode) {
         ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
     let hovered = response.hovered();
     if hovered {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
     }
     let mid = rect.center().y;
     let chev = if root.expanded {
@@ -269,14 +269,14 @@ fn root_row(ui: &mut Ui, root: &mut FileNode) {
         egui::Align2::CENTER_CENTER,
         chev.to_string(),
         codicon_font(12.0),
-        Palette::FG_DESCRIPTION,
+        Palette::FG_DESCRIPTION(),
     );
     ui.painter().text(
         egui::pos2(rect.left() + 22.0, mid),
         egui::Align2::LEFT_CENTER,
         root.name.to_uppercase(),
         FontId::proportional(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG,
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
     );
 
     // Hover action cluster (new file / new folder / refresh / collapse all).
@@ -297,7 +297,7 @@ fn root_row(ui: &mut Ui, root: &mut FileNode) {
         {
             let hit = egui::Rect::from_center_size(egui::pos2(x, mid), egui::vec2(20.0, row_h));
             let r = ui.interact(hit, response.id.with(("rootact", i)), Sense::click());
-            let col = if r.hovered() { Palette::FG } else { Palette::FG_DESCRIPTION };
+            let col = if r.hovered() { Palette::FG() } else { Palette::FG_DESCRIPTION() };
             ui.painter().text(
                 egui::pos2(x, mid),
                 egui::Align2::CENTER_CENTER,
@@ -368,9 +368,9 @@ fn render_node(
     let is_selected = !node.is_dir && active_file == Some(node.path.as_path());
     if is_selected {
         ui.painter()
-            .rect_filled(rect, 0.0, Palette::LIST_INACTIVE_SELECTION_BG);
+            .rect_filled(rect, 0.0, Palette::LIST_INACTIVE_SELECTION_BG());
     } else if response.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
     }
 
     let mut cursor = rect.left_top() + egui::vec2(indent, 0.0);
@@ -388,7 +388,7 @@ fn render_node(
             egui::Align2::LEFT_CENTER,
             chev.to_string(),
             codicon_font(12.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
     }
     cursor.x += 12.0;
@@ -411,7 +411,7 @@ fn render_node(
                 egui::Align2::LEFT_CENTER,
                 icons::FILE.to_string(),
                 codicon_font(15.0),
-                Palette::FG_DESCRIPTION,
+                Palette::FG_DESCRIPTION(),
             );
         }
         cursor.x += 20.0;
@@ -419,7 +419,7 @@ fn render_node(
 
     // Git decoration: tint the name + paint a status letter on the right.
     let deco = node_decoration(node, decorations);
-    let name_color = deco.map(|k| k.decoration_color()).unwrap_or(Palette::FG);
+    let name_color = deco.map(|k| k.decoration_color()).unwrap_or(Palette::FG());
     painter.text(
         cursor + egui::vec2(0.0, mid_y),
         egui::Align2::LEFT_CENTER,
@@ -457,6 +457,6 @@ fn render_node(
 fn placeholder(ui: &mut Ui, text: &str) {
     ui.add_space(20.0);
     ui.with_layout(Layout::top_down(Align::Center), |ui| {
-        ui.label(RichText::new(text).color(Palette::FG_DESCRIPTION));
+        ui.label(RichText::new(text).color(Palette::FG_DESCRIPTION()));
     });
 }

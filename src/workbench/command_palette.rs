@@ -35,6 +35,7 @@ pub enum CommandId {
     ShowSearch,
     QuickOpen,
     Quit,
+    SelectColorTheme,
 }
 
 pub struct CommandEntry {
@@ -70,6 +71,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: CommandId::ShowSearch,    title: "Show Search",             category: "View", shortcut: Some("⇧⌘F") },
     CommandEntry { id: CommandId::QuickOpen,     title: "Go to File…",             category: "",     shortcut: Some("⌘P") },
     CommandEntry { id: CommandId::Quit,          title: "Quit",                    category: "File", shortcut: Some("⌘Q") },
+    CommandEntry { id: CommandId::SelectColorTheme, title: "Color Theme",          category: "Preferences", shortcut: Some("⌘K ⌘T") },
 ];
 
 /// What the user picked in the Quick Access popup.
@@ -92,6 +94,28 @@ pub enum PaletteAction {
     /// An extension's `showInputBox` finished: the text, or `None` when
     /// dismissed.
     Input { request_id: u64, value: Option<String> },
+    /// The focused entry of a pick list changed (only for lists opened with
+    /// `PickOptions::report_active`), e.g. to preview a colour theme.
+    PickActive { request_id: u64, index: usize },
+    /// An entry's button (`PickOptions::item_button`) was clicked.
+    PickItemButton { request_id: u64, index: usize },
+    /// The button beside the input (`PickOptions::input_button`) was
+    /// clicked; the list closes.
+    PickInputButton { request_id: u64 },
+}
+
+/// Extra behaviour of a pick list (`IQuickPick` properties).
+#[derive(Clone, Debug, Default)]
+pub struct PickOptions {
+    /// Item index focused when the list opens (`activeItems`).
+    pub active: Option<usize>,
+    /// Report focus changes as `PaletteAction::PickActive`.
+    pub report_active: bool,
+    /// A button on the focused / hovered entry: (codicon, tooltip). Not on
+    /// entries whose label starts with an icon (`$(plus) Browse…`).
+    pub item_button: Option<(char, &'static str)>,
+    /// A button inside the input box, on the right: (codicon, tooltip).
+    pub input_button: Option<(char, &'static str)>,
 }
 
 /// An extension's own use of the Quick Input (quickInput.ts): a list to pick
@@ -103,6 +127,7 @@ pub enum CustomInput {
         /// (label, description, detail, is_separator)
         items: Vec<(String, Option<String>, Option<String>, bool)>,
         placeholder: Option<String>,
+        options: PickOptions,
     },
     Text {
         request_id: u64,
@@ -138,6 +163,9 @@ pub struct CommandPaletteState {
     just_opened: bool,
     /// First visible row of the result list (keeps the selection in view).
     scroll_top: usize,
+    /// Height the result list may take (quickInputController.ts: 40% of
+    /// the window, in whole 44px steps, plus 6px that shows there's more).
+    list_max_h: f32,
     /// Sub-row remainder of mouse-wheel scrolling, in points.
     scroll_accum: f32,
     /// Workspace root for relative paths in Quick Open descriptions.
@@ -152,6 +180,10 @@ pub struct CommandPaletteState {
     custom: Option<CustomInput>,
     /// Requests whose popup was replaced before an answer (answer `None`).
     abandoned: Vec<u64>,
+    /// The pick entry last reported as focused (`PickActive`).
+    last_active: Option<(u64, usize)>,
+    /// The input box's button was clicked this frame (request id).
+    input_button_clicked: Option<u64>,
 }
 
 impl CommandPaletteState {
@@ -162,12 +194,30 @@ impl CommandPaletteState {
         items: Vec<(String, Option<String>, Option<String>, bool)>,
         placeholder: Option<String>,
     ) {
+        self.open_pick_with(request_id, items, placeholder, PickOptions::default());
+    }
+
+    /// A pick list with `options` (focused entry, focus reports, buttons).
+    pub fn open_pick_with(
+        &mut self,
+        request_id: u64,
+        items: Vec<(String, Option<String>, Option<String>, bool)>,
+        placeholder: Option<String>,
+        options: PickOptions,
+    ) {
         self.abandon_custom();
-        self.custom = Some(CustomInput::Pick { request_id, items, placeholder });
+        // The focused entry's row: entries before it, separators excluded.
+        let row = options
+            .active
+            .map(|a| items.iter().take(a).filter(|i| !i.3).count())
+            .unwrap_or(0);
+        self.custom = Some(CustomInput::Pick { request_id, items, placeholder, options });
         self.visible = true;
         self.query.clear();
-        self.selected = 0;
+        self.selected = row;
+        // `show` scrolls just enough to bring it into view.
         self.scroll_top = 0;
+        self.last_active = None;
         self.just_opened = true;
     }
 
@@ -244,6 +294,12 @@ impl CommandPaletteState {
     /// built-in ones: `(id, category, title)`.
     pub fn set_extension_commands(&mut self, commands: Vec<(String, String, String)>) {
         self.extension_commands = commands;
+    }
+
+    /// Rows that fit the list whole.
+    fn full_rows(&self) -> usize {
+        let h = if self.list_max_h > 0.0 { self.list_max_h } else { 16.0 * ROW_H };
+        ((h / ROW_H).floor() as usize).max(1)
     }
 
     /// `>` prefix → command palette; anything else → Quick Open.
@@ -657,15 +713,30 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
         return finish_custom(state, chosen);
     }
 
+    // Focus changes of a pick list that wants them (theme preview).
+    if chosen.is_none() {
+        if let Some(CustomInput::Pick { options: PickOptions { report_active: true, .. }, .. }) = &state.custom {
+            if let Some(ItemKind::Pick(request_id, index)) = items.get(state.selected).map(|i| i.kind.clone()) {
+                if state.last_active != Some((request_id, index)) {
+                    state.last_active = Some((request_id, index));
+                    chosen = Some(PaletteAction::PickActive { request_id, index });
+                }
+            }
+        }
+    }
+
     // Keep the selected row inside the visible window.
+    let window_h = ctx.content_rect().height();
+    state.list_max_h = (window_h * 0.4 / 44.0).floor() * 44.0 + 6.0;
+    let full_rows = state.full_rows();
     if state.selected < state.scroll_top {
         state.scroll_top = state.selected;
-    } else if state.selected >= state.scroll_top + MAX_VISIBLE_ROWS {
-        state.scroll_top = state.selected + 1 - MAX_VISIBLE_ROWS;
+    } else if state.selected >= state.scroll_top + full_rows {
+        state.scroll_top = state.selected + 1 - full_rows;
     }
     state.scroll_top = state
         .scroll_top
-        .min(items.len().saturating_sub(MAX_VISIBLE_ROWS));
+        .min(items.len().saturating_sub(full_rows));
 
     // Snapshot the just_opened flag now: palette_input (inside the area)
     // consumes it to grab focus, but the click-outside guard below must still
@@ -677,14 +748,16 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
     // `left = (width - 600) / 2` for the 600px content box; the 1px border
     // sits outside it, so the popup is 602px wide and starts at that left.
     let content = ctx.content_rect();
-    let left = content.left() + ((content.width() - POPUP_W) / 2.0).round();
+    // `width = min(window width * 0.62, 600)`.
+    let popup_w = (content.width() * 0.62).min(POPUP_W).floor();
+    let left = content.left() + ((content.width() - popup_w) / 2.0).round();
     let area = egui::Area::new(egui::Id::new("command_palette_area"))
         .order(Order::Foreground)
         .fixed_pos(egui::pos2(left, content.top() + POPUP_TOP))
         .show(ctx, |ui| {
             Frame::default()
-                .fill(Palette::VSCE_QUICK_INPUT_BG)
-                .stroke(Stroke::new(1.0, Palette::VSCE_WIDGET_BORDER))
+                .fill(Palette::VSCE_QUICK_INPUT_BG())
+                .stroke(Stroke::new(1.0, Palette::VSCE_WIDGET_BORDER()))
                 // --vscode-cornerRadius-xLarge
                 .corner_radius(12)
                 // --vscode-shadow-xl: 0 0 20px rgba(0, 0, 0, 0.15)
@@ -696,7 +769,7 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
                 })
                 .inner_margin(Margin::ZERO)
                 .show(ui, |ui| {
-                    ui.set_width(POPUP_W);
+                    ui.set_width(popup_w);
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                     palette_input(ui, state);
                     palette_list(ui, &items, state, &mut chosen);
@@ -705,6 +778,10 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
 
     if !was_just_opened && area.response.clicked_elsewhere() {
         state.visible = false;
+    }
+    if let Some(request_id) = state.input_button_clicked.take() {
+        state.visible = false;
+        chosen = Some(PaletteAction::PickInputButton { request_id });
     }
 
     if state.visible { chosen } else { finish_custom(state, chosen) }
@@ -715,7 +792,11 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
 fn finish_custom(state: &mut CommandPaletteState, chosen: Option<PaletteAction>) -> Option<PaletteAction> {
     let Some(custom) = state.custom.take() else { return chosen };
     match chosen {
-        Some(a @ (PaletteAction::Picked { .. } | PaletteAction::Input { .. })) => Some(a),
+        Some(
+            a @ (PaletteAction::Picked { .. }
+            | PaletteAction::Input { .. }
+            | PaletteAction::PickInputButton { .. }),
+        ) => Some(a),
         _ => Some(match custom {
             CustomInput::Pick { request_id, .. } => PaletteAction::Picked { request_id, index: None },
             CustomInput::Text { request_id, .. } => PaletteAction::Input { request_id, value: None },
@@ -740,7 +821,6 @@ const LIST_PAD_X: f32 = 6.0;
 const ROW_H: f32 = 22.0;
 /// `.quick-input-list-entry { padding: 0 6px }`
 const ENTRY_PAD_X: f32 = 6.0;
-const MAX_VISIBLE_ROWS: usize = 16;
 /// `.quick-input-list-rows { margin-left: 5px }`
 const ROWS_MARGIN: f32 = 5.0;
 /// File icon column (`.monaco-icon-label::before`): 16px + 6px padding-right.
@@ -756,6 +836,8 @@ const ACTION_MARGIN: f32 = 4.0;
 const ACTION_BAR_MARGIN: f32 = 4.0;
 /// `.quick-input-list-separator { margin-right: 4px }`
 const SEPARATOR_MARGIN: f32 = 4.0;
+/// An inline input button: 16px codicon with 2px padding each side.
+const INPUT_BUTTON_W: f32 = 20.0;
 
 fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
     let (header, _) = ui.allocate_exact_size(
@@ -768,6 +850,39 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
     );
     // Reserve the box's paint slot first so it lands behind the text.
     let box_slot = ui.painter().add(egui::Shape::Noop);
+
+    // A button beside the input (the Color Theme picker's colour mode)
+    // takes 20px plus a 6px gap from the box.
+    let input_button = match &state.custom {
+        Some(CustomInput::Pick { options, request_id, .. }) => options.input_button.map(|b| (b, *request_id)),
+        _ => None,
+    };
+    let box_rect = if input_button.is_some() {
+        box_rect.with_max_x(box_rect.right() - INPUT_BUTTON_W - 6.0)
+    } else {
+        box_rect
+    };
+    if let Some(((glyph, tooltip), request_id)) = input_button {
+        let r = egui::Rect::from_min_size(
+            egui::pos2(box_rect.right() + 6.0, box_rect.center().y - INPUT_BUTTON_W / 2.0),
+            egui::vec2(INPUT_BUTTON_W, INPUT_BUTTON_W),
+        );
+        let resp = ui.interact(r, ui.id().with("quick_input_button"), Sense::click()).on_hover_text(tooltip);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
+        if resp.hovered() {
+            ui.painter().rect_filled(r, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG());
+        }
+        ui.painter().text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph.to_string(),
+            crate::icons::codicon_font(16.0),
+            Palette::VSCE_ICON_2026_FG(),
+        );
+        if resp.clicked() {
+            state.input_button_clicked = Some(request_id);
+        }
+    }
 
     // The text sits 6px inside the 1px border (`.input { padding: 4px 6px }`).
     let text_rect = box_rect.shrink2(egui::vec2(7.0, 1.0));
@@ -794,10 +909,10 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
         );
         {
             // The caret uses the input foreground, as in VS Code.
-            ui.visuals_mut().text_cursor.stroke.color = Palette::VSCE_QUICK_INPUT_BOX_FG;
+            ui.visuals_mut().text_cursor.stroke.color = Palette::VSCE_QUICK_INPUT_BOX_FG();
             // egui paints hint text in the weak text colour, whatever the
             // hint's own colour says.
-            ui.visuals_mut().weak_text_color = Some(Palette::VSCE_QUICK_INPUT_PLACEHOLDER_FG);
+            ui.visuals_mut().weak_text_color = Some(Palette::VSCE_QUICK_INPUT_PLACEHOLDER_FG());
             let edit = TextEdit::singleline(&mut state.query)
                 .id_salt("quick_access_input")
                 .frame(Frame::NONE)
@@ -806,7 +921,7 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
                 .hint_text(placeholder)
                 .password(password)
                 .font(FontId::proportional(13.0))
-                .text_color(Palette::VSCE_QUICK_INPUT_BOX_FG)
+                .text_color(Palette::VSCE_QUICK_INPUT_BOX_FG())
                 .vertical_align(egui::Align::Center);
             let resp = ui.add_sized(text_rect.size(), edit);
             if state.just_opened {
@@ -829,16 +944,16 @@ fn palette_input(ui: &mut Ui, state: &mut CommandPaletteState) {
     // Input background with a 1px border that turns into the focus border
     // while the input owns the keyboard.
     let border = if focused {
-        Palette::VSCE_QUICK_INPUT_FOCUS_BORDER
+        Palette::VSCE_QUICK_INPUT_FOCUS_BORDER()
     } else {
-        Palette::INPUT_BORDER
+        Palette::INPUT_BORDER()
     };
     ui.painter().set(
         box_slot,
         egui::epaint::RectShape::new(
             box_rect,
             CornerRadius::same(6),
-            Palette::VSCE_QUICK_INPUT_BOX_BG,
+            Palette::VSCE_QUICK_INPUT_BOX_BG(),
             Stroke::new(1.0, border),
             StrokeKind::Inside,
         ),
@@ -869,7 +984,7 @@ fn palette_list(
                     egui::Align2::LEFT_CENTER,
                     msg,
                     FontId::proportional(13.0),
-                    Palette::FG,
+                    Palette::FG(),
                 );
                 ui.add_space(LIST_PAD_BOTTOM);
             }
@@ -880,15 +995,26 @@ fn palette_list(
     }
 
     let top = state.scroll_top.min(items.len().saturating_sub(1));
-    let end = (top + MAX_VISIBLE_ROWS).min(items.len());
     ui.add_space(LIST_GAP);
     let list_top = ui.cursor().top();
+    // A list longer than its height scrolls; its 7px bottom padding is then
+    // inside the scrolled area, so a part of the next row shows there.
+    let overflows = items.len() as f32 * ROW_H > state.list_max_h;
+    let list_bottom = list_top + state.list_max_h.max(ROW_H) + if overflows { LIST_PAD_BOTTOM } else { 0.0 };
+    // Rows past the list's height are cut off, as the list widget clips them.
+    let outer_clip = ui.clip_rect();
+    ui.set_clip_rect(outer_clip.intersect(egui::Rect::from_x_y_ranges(outer_clip.x_range(), list_top..=list_bottom)));
     let mut removed: Option<PathBuf> = None;
-    for (row, item) in items.iter().enumerate().take(end).skip(top) {
+    for (row, item) in items.iter().enumerate().skip(top) {
+        let remaining = list_bottom - ui.cursor().top();
+        if remaining <= 0.5 {
+            break;
+        }
         let is_selected = row == state.selected;
 
         let (slot, resp) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H.min(remaining)), Sense::click());
+        let slot = egui::Rect::from_min_size(slot.min, egui::vec2(slot.width(), ROW_H));
         let rect = slot.shrink2(egui::vec2(LIST_PAD_X, 0.0));
         let a11y = item.accessible_label();
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.clone()));
@@ -897,27 +1023,38 @@ fn palette_list(
         // "Remove from Recently Opened" for editor-history entries).
         let mut action_clicked = false;
         let mut action_rect = None;
-        if item.from_history && (is_selected || resp.hovered()) {
+        let pick_button = match (&state.custom, &item.kind) {
+            (Some(CustomInput::Pick { options, .. }), ItemKind::Pick(..)) if !item.label.starts_with("$(") => {
+                options.item_button
+            }
+            _ => None,
+        };
+        let button = if item.from_history {
+            Some((crate::icons::CLOSE, "Remove from Recently Opened"))
+        } else {
+            pick_button
+        };
+        if let (Some((glyph, tooltip)), true) = (button, is_selected || resp.hovered()) {
             let right = rect.right() - ENTRY_PAD_X - ACTION_BAR_MARGIN - ACTION_MARGIN;
             let r = egui::Rect::from_center_size(
                 egui::pos2(right - ACTION_BOX / 2.0, rect.center().y + 1.0),
                 egui::vec2(ACTION_BOX, ACTION_BOX),
             );
-            let btn = ui
-                .interact(r, resp.id.with("remove_recent"), Sense::click())
-                .on_hover_text("Remove from Recently Opened");
-            btn.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Remove from Recently Opened")
-            });
+            let btn = ui.interact(r, resp.id.with("remove_recent"), Sense::click()).on_hover_text(tooltip);
+            btn.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
             action_clicked = btn.clicked();
-            action_rect = Some((r, btn.hovered()));
+            action_rect = Some((r, btn.hovered(), glyph));
         }
 
         paint_row(ui, rect, item, is_selected, resp.hovered(), row > top, action_rect);
 
         if action_clicked {
-            if let ItemKind::File { path, .. } = &item.kind {
-                removed = Some(path.clone());
+            match &item.kind {
+                ItemKind::File { path, .. } => removed = Some(path.clone()),
+                ItemKind::Pick(request_id, index) => {
+                    *chosen = Some(PaletteAction::PickItemButton { request_id: *request_id, index: *index });
+                }
+                _ => {}
             }
         } else if resp.clicked() {
             *chosen = Some(item.action());
@@ -925,31 +1062,27 @@ fn palette_list(
         }
     }
 
+    ui.set_clip_rect(outer_clip);
+    let full_rows = state.full_rows();
+    let pad_bottom = if overflows { 0.0 } else { LIST_PAD_BOTTOM };
+
     // Mouse-wheel scrolling over the list, one row per ROW_H of delta.
     let list_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), list_top..=ui.cursor().top());
-    if ui.rect_contains_pointer(list_rect) && items.len() > MAX_VISIBLE_ROWS {
+    if ui.rect_contains_pointer(list_rect) && items.len() > full_rows {
         state.scroll_accum += ui.input(|i| i.smooth_scroll_delta.y);
         let rows = (state.scroll_accum / ROW_H).trunc();
         if rows != 0.0 {
             state.scroll_accum -= rows * ROW_H;
-            let max_top = items.len() - MAX_VISIBLE_ROWS;
+            let max_top = items.len() - full_rows;
             state.scroll_top =
                 (state.scroll_top as isize - rows as isize).clamp(0, max_top as isize) as usize;
             // The wheel scrolls the view only; keep the selection inside it.
-            state.selected = state.selected.clamp(state.scroll_top, state.scroll_top + MAX_VISIBLE_ROWS - 1);
+            state.selected = state.selected.clamp(state.scroll_top, state.scroll_top + full_rows - 1);
             ui.ctx().request_repaint();
         }
     }
 
-    if items.len() > end {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(LIST_PAD_X + ENTRY_PAD_X);
-            let more = format!("… and {} more", items.len() - end);
-            label(ui, &LabelProps::new(&more).normal().description().size(11.5));
-        });
-    }
-    ui.add_space(LIST_PAD_BOTTOM);
+    ui.add_space(pad_bottom);
 
     if let Some(path) = removed {
         state.recent.retain(|p| p != &path);
@@ -965,15 +1098,15 @@ fn paint_row(
     is_selected: bool,
     hovered: bool,
     not_first: bool,
-    action: Option<(egui::Rect, bool)>,
+    action: Option<(egui::Rect, bool, char)>,
 ) {
     let painter = ui.painter();
 
     // Selection / hover fill (`.monaco-list-row { border-radius: 3px }`).
     if is_selected {
-        painter.rect_filled(rect, 3.0, Palette::VSCE_QUICK_INPUT_LIST_FOCUS_BG);
+        painter.rect_filled(rect, 3.0, Palette::VSCE_QUICK_INPUT_LIST_FOCUS_BG());
     } else if hovered {
-        painter.rect_filled(rect, 3.0, Palette::VSCE_QUICK_INPUT_LIST_HOVER_BG);
+        painter.rect_filled(rect, 3.0, Palette::VSCE_QUICK_INPUT_LIST_HOVER_BG());
     }
 
     // Group separator: 1px top border on the first entry of every group after
@@ -982,7 +1115,7 @@ fn paint_row(
         painter.rect_filled(
             egui::Rect::from_min_size(rect.left_top(), egui::vec2(rect.width(), 1.0)),
             0.0,
-            Palette::VSCE_PICKER_GROUP_BORDER,
+            Palette::VSCE_PICKER_GROUP_BORDER(),
         );
     }
 
@@ -993,11 +1126,11 @@ fn paint_row(
     // description is `.label-description { opacity: .7; font-size: .9em }`.
     let (fg, hl_fg) = if is_selected {
         (
-            Palette::VSCE_QUICK_INPUT_LIST_FOCUS_FG,
-            Palette::VSCE_QUICK_INPUT_LIST_FOCUS_HIGHLIGHT_FG,
+            Palette::VSCE_QUICK_INPUT_LIST_FOCUS_FG(),
+            Palette::VSCE_QUICK_INPUT_LIST_FOCUS_HIGHLIGHT_FG(),
         )
     } else {
-        (Palette::FG, Palette::VSCE_LIST_HIGHLIGHT_FG)
+        (Palette::FG(), Palette::VSCE_LIST_HIGHLIGHT_FG())
     };
     let desc_fg = fg.gamma_multiply(0.7);
 
@@ -1007,7 +1140,7 @@ fn paint_row(
             Some((g, c)) => (g, c, crate::file_icons::seti_font(ICON_FONT)),
             None => (
                 crate::icons::FILE,
-                Palette::FG,
+                Palette::FG(),
                 FontId::new(14.0, egui::FontFamily::Name(crate::icons::CODICON_FAMILY.into())),
             ),
         };
@@ -1022,7 +1155,24 @@ fn paint_row(
         x += ICON_W + ICON_PAD;
     }
 
-    x += paint_highlighted(ui, egui::pos2(x, cy), &item.label, &item.label_hl, 13.0, fg, hl_fg);
+    // `$(icon) text` labels: the codicon, then the text.
+    let mut label_text = item.label.as_str();
+    let mut label_hl = std::borrow::Cow::Borrowed(&item.label_hl);
+    if let Some(rest) = label_text.strip_prefix("$(") {
+        if let Some(end) = rest.find(')') {
+            if let Some(glyph) = crate::icons::codicon_by_name(&rest[..end]) {
+                painter.text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, glyph.to_string(), crate::icons::codicon_font(16.0), fg);
+                x += 16.0 + 4.0;
+                let skip = end + 3 + usize::from(rest[end + 1..].starts_with(' '));
+                let skip_chars = item.label[..skip.min(item.label.len())].chars().count();
+                label_text = &item.label[skip.min(item.label.len())..];
+                label_hl = std::borrow::Cow::Owned(
+                    item.label_hl.iter().filter(|&&i| i >= skip_chars).map(|i| i - skip_chars).collect(),
+                );
+            }
+        }
+    }
+    x += paint_highlighted(ui, egui::pos2(x, cy), label_text, &label_hl, 13.0, fg, hl_fg);
 
     if !item.description.is_empty() {
         // margin-left: 0.5em
@@ -1033,14 +1183,14 @@ fn paint_row(
     // Right side: row action button, then keybinding chips (commands) or the
     // group label (files).
     let mut right = rect.right() - ENTRY_PAD_X - ACTION_BAR_MARGIN;
-    if let Some((r, btn_hovered)) = action {
+    if let Some((r, btn_hovered, glyph)) = action {
         if btn_hovered {
-            painter.rect_filled(r, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG);
+            painter.rect_filled(r, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG());
         }
         painter.text(
             r.center(),
             egui::Align2::CENTER_CENTER,
-            crate::icons::CLOSE.to_string(),
+            glyph.to_string(),
             FontId::new(16.0, egui::FontFamily::Name(crate::icons::CODICON_FAMILY.into())),
             fg,
         );
@@ -1058,7 +1208,7 @@ fn paint_row(
             egui::Align2::RIGHT_CENTER,
             sep,
             FontId::proportional(11.0),
-            if is_selected { fg } else { Palette::VSCE_QUICK_INPUT_SEPARATOR_FG },
+            if is_selected { fg } else { Palette::VSCE_QUICK_INPUT_SEPARATOR_FG() },
         );
     }
 }
@@ -1129,7 +1279,7 @@ fn paint_kbd(ui: &Ui, anchor: Pos2, text: &str) -> f32 {
     let pad_x: f32 = 5.0;
     let key_gap: f32 = 4.0;
     let chord_gap: f32 = 6.0;
-    let fg = Palette::VSCE_KEYBINDING_LABEL_FG;
+    let fg = Palette::VSCE_KEYBINDING_LABEL_FG();
 
     // Chords, each a list of (key text, key width).
     let mut chords: Vec<Vec<(String, f32)>> = vec![Vec::new()];
@@ -1164,15 +1314,15 @@ fn paint_kbd(ui: &Ui, anchor: Pos2, text: &str) -> f32 {
             p.rect(
                 key,
                 CornerRadius::same(3),
-                Palette::VSCE_KEYBINDING_LABEL_BG,
-                Stroke::new(1.0, Palette::VSCE_KEYBINDING_LABEL_BORDER),
+                Palette::VSCE_KEYBINDING_LABEL_BG(),
+                Stroke::new(1.0, Palette::VSCE_KEYBINDING_LABEL_BORDER()),
                 StrokeKind::Inside,
             );
             // Heavier bottom edge (`border-bottom-color`).
             p.hline(
                 (key.left() + 2.0)..=(key.right() - 2.0),
                 key.bottom() - 0.5,
-                Stroke::new(1.0, Palette::VSCE_KEYBINDING_LABEL_BOTTOM_BORDER),
+                Stroke::new(1.0, Palette::VSCE_KEYBINDING_LABEL_BOTTOM_BORDER()),
             );
             p.text(key.center(), egui::Align2::CENTER_CENTER, s, font.clone(), fg);
             x += w;

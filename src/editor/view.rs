@@ -82,7 +82,7 @@ pub fn show_with_squiggles(
     // Real advance width of a Menlo digit at the editor size.
     let char_w = ui
         .painter()
-        .layout_no_wrap("0".to_string(), editor_mono_font(EDITOR_FONT_SIZE), Palette::FG)
+        .layout_no_wrap("0".to_string(), editor_mono_font(EDITOR_FONT_SIZE), Palette::FG())
         .size()
         .x
         .max(6.0);
@@ -160,9 +160,9 @@ fn paint_squiggle(ui: &Ui, galley: &egui::Galley, origin: egui::Pos2, text: &str
 /// Paint the Git diff strip for one row at vertical centre `y_center`.
 fn paint_diff(ui: &Ui, gutter_left: f32, y_center: f32, kind: DiffKind) {
     let color = match kind {
-        DiffKind::Added => Palette::GIT_GUTTER_ADDED,
-        DiffKind::Modified => Palette::GIT_GUTTER_MODIFIED,
-        DiffKind::DeletedAbove => Palette::GIT_GUTTER_DELETED,
+        DiffKind::Added => Palette::GIT_GUTTER_ADDED(),
+        DiffKind::Modified => Palette::GIT_GUTTER_MODIFIED(),
+        DiffKind::DeletedAbove => Palette::GIT_GUTTER_DELETED(),
     };
     if matches!(kind, DiffKind::DeletedAbove) {
         // A small downward caret marking where lines were removed.
@@ -212,9 +212,9 @@ fn paint_gutter(
 
         // Line number, right-aligned within the number sub-column.
         let color = if ln == cursor_line {
-            Palette::LINE_NUMBER_ACTIVE_FG
+            Palette::LINE_NUMBER_ACTIVE_FG()
         } else {
-            Palette::LINE_NUMBER_FG
+            Palette::LINE_NUMBER_FG()
         };
         painter.text(
             egui::pos2(gutter_rect.left() + number_w - 4.0, y),
@@ -242,7 +242,7 @@ fn paint_gutter(
             Align2::CENTER_CENTER,
             glyph.to_string(),
             codicon_font(12.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
 
         let hit = egui::Rect::from_center_size(
@@ -332,7 +332,7 @@ fn show_editable(
                             egui::vec2(ui.available_width().max(200.0), LINE_HEIGHT),
                         ),
                         0.0,
-                        Palette::LINE_HIGHLIGHT_BG,
+                        Palette::LINE_HIGHLIGHT_BG(),
                     );
                 }
 
@@ -459,7 +459,7 @@ fn show_folded(
                 let (code_rect, _) =
                     ui.allocate_exact_size(egui::vec2(avail_w, body_h), Sense::hover());
                 ui.painter()
-                    .rect_filled(code_rect, 0.0, Palette::EDITOR_BG);
+                    .rect_filled(code_rect, 0.0, Palette::EDITOR_BG());
 
                 for (row, &ln) in visible.iter().enumerate() {
                     let mut line_text = all_lines[ln - 1].clone();
@@ -480,7 +480,7 @@ fn show_folded(
                     ui.painter().galley(
                         egui::pos2(code_rect.left() + 6.0, y),
                         galley,
-                        Palette::FG,
+                        Palette::FG(),
                     );
                 }
             });

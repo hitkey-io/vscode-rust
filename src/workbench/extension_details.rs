@@ -1489,7 +1489,7 @@ body {{ padding: 0; margin: 0; color: var(--vscode-foreground); background: var(
 .readme-content {{ flex: 1; }}
 .nocontent {{ opacity: .8; }}
 </style></head>
-<body class="vscode-dark"><div class="extension-editor" role="document">
+<body><div class="extension-editor" role="document">
 <div class="header"><div class="icon-container">{icon}</div><div class="details">
 <div class="title">{title}</div>
 <div class="subtitle">{subtitle}</div>

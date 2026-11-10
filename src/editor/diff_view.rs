@@ -138,7 +138,7 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
     let gutter_w = number_w + 20.0;
 
     let full = ui.available_rect_before_wrap();
-    ui.painter().rect_filled(full, 0.0, Palette::EDITOR_BG);
+    ui.painter().rect_filled(full, 0.0, Palette::EDITOR_BG());
     let content = Rect::from_min_max(full.min, egui::pos2(full.right() - OVERVIEW_W, full.bottom()));
     let line = |ui: &Ui, rect: Rect, side: Option<Line>, removed: bool, highlights: &[(usize, usize)], changed: bool| {
         let p = ui.painter_at(rect);
@@ -147,7 +147,7 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
             if changed {
                 let mut x = rect.left() - rect.height();
                 while x < rect.right() {
-                    p.line_segment([egui::pos2(x, rect.bottom()), egui::pos2(x + rect.height(), rect.top())], Stroke::new(1.0, Palette::DIFF_DIAGONAL_FILL));
+                    p.line_segment([egui::pos2(x, rect.bottom()), egui::pos2(x + rect.height(), rect.top())], Stroke::new(1.0, Palette::DIFF_DIAGONAL_FILL()));
                     x += 6.0;
                 }
             }
@@ -155,9 +155,9 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
         };
         let text_x = rect.left() + gutter_w;
         if changed {
-            let wash = if removed { Palette::DIFF_REMOVED_BG } else { Palette::DIFF_INSERTED_BG };
+            let wash = if removed { Palette::DIFF_REMOVED_BG() } else { Palette::DIFF_INSERTED_BG() };
             p.rect_filled(Rect::from_min_max(egui::pos2(rect.left() + number_w, rect.top()), rect.max), 0.0, wash);
-            let text_wash = if removed { Palette::DIFF_REMOVED_TEXT_BG } else { Palette::DIFF_INSERTED_TEXT_BG };
+            let text_wash = if removed { Palette::DIFF_REMOVED_TEXT_BG() } else { Palette::DIFF_INSERTED_TEXT_BG() };
             for (a, b) in highlights {
                 let r = Rect::from_min_max(
                     egui::pos2(text_x + *a as f32 * char_w, rect.top()),
@@ -165,7 +165,7 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
                 );
                 p.rect_filled(r, 0.0, text_wash);
             }
-            let (sign, color) = if removed { ("-", Palette::GIT_DELETED_FG) } else { ("+", Palette::GIT_ADDED_FG) };
+            let (sign, color) = if removed { ("-", Palette::GIT_DELETED_FG()) } else { ("+", Palette::GIT_ADDED_FG()) };
             p.text(egui::pos2(rect.left() + number_w + 10.0, rect.center().y), Align2::CENTER_CENTER, sign, font.clone(), color);
         }
         p.text(
@@ -173,11 +173,11 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
             Align2::RIGHT_CENTER,
             l.no.to_string(),
             font.clone(),
-            Palette::LINE_NUMBER_FG,
+            Palette::LINE_NUMBER_FG(),
         );
         let job = build_layout_job(&ctx, &style, l.text, language, f32::INFINITY, None);
         let g = ui.ctx().fonts_mut(|f| f.layout_job(job));
-        p.galley(egui::pos2(text_x, rect.center().y - g.size().y / 2.0), g, Palette::FG);
+        p.galley(egui::pos2(text_x, rect.center().y - g.size().y / 2.0), g, Palette::FG());
     };
 
     let mut viewport = (0.0, 0.0);
@@ -213,7 +213,7 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
                     line(ui, right, row.right, false, &rh, row.changed);
                 }
                 // The divider between the two editors.
-                ui.painter().vline(rect.left() + half - 0.5, rect.y_range(), Stroke::new(1.0, Palette::DIFF_DIVIDER));
+                ui.painter().vline(rect.left() + half - 0.5, rect.y_range(), Stroke::new(1.0, Palette::DIFF_DIVIDER()));
             } else {
                 // Inline: a changed pair shows the removed line, then the added one.
                 let mut i = 0usize;
@@ -243,7 +243,7 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
     // Overview ruler: where the changes are, and the visible part.
     let ruler = Rect::from_min_max(egui::pos2(content.right(), full.top()), full.max);
     let p = ui.painter();
-    p.vline(ruler.left(), ruler.y_range(), Stroke::new(1.0, Palette::DIFF_DIVIDER));
+    p.vline(ruler.left(), ruler.y_range(), Stroke::new(1.0, Palette::DIFF_DIVIDER()));
     if !rows.is_empty() {
         let scale = ruler.height() / rows.len() as f32;
         let half = ruler.width() / 2.0;
@@ -251,17 +251,17 @@ pub fn show(ui: &mut Ui, base: &str, working: &str, language: &str) {
             let y = ruler.top() + i as f32 * scale;
             let h = scale.max(2.0);
             if row.left.is_some() {
-                p.rect_filled(Rect::from_min_size(egui::pos2(ruler.left() + 1.0, y), egui::vec2(half - 1.0, h)), 0.0, Palette::GIT_DELETED_FG.gamma_multiply(0.6));
+                p.rect_filled(Rect::from_min_size(egui::pos2(ruler.left() + 1.0, y), egui::vec2(half - 1.0, h)), 0.0, Palette::GIT_DELETED_FG().gamma_multiply(0.6));
             }
             if row.right.is_some() {
-                p.rect_filled(Rect::from_min_size(egui::pos2(ruler.left() + half, y), egui::vec2(half, h)), 0.0, Palette::GIT_ADDED_FG.gamma_multiply(0.6));
+                p.rect_filled(Rect::from_min_size(egui::pos2(ruler.left() + half, y), egui::vec2(half, h)), 0.0, Palette::GIT_ADDED_FG().gamma_multiply(0.6));
             }
         }
         let total_h = LINE_HEIGHT * total_rows as f32 + 8.0;
         if total_h > content.height() {
             let top = ruler.top() + viewport.0 / total_h * ruler.height();
             let bottom = ruler.top() + viewport.1 / total_h * ruler.height();
-            p.rect_filled(Rect::from_min_max(egui::pos2(ruler.left(), top), egui::pos2(ruler.right(), bottom)), 0.0, Palette::DIFF_RULER_SLIDER);
+            p.rect_filled(Rect::from_min_max(egui::pos2(ruler.left(), top), egui::pos2(ruler.right(), bottom)), 0.0, Palette::DIFF_RULER_SLIDER());
         }
     }
     ui.allocate_rect(full, Sense::hover());

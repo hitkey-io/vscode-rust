@@ -2,11 +2,11 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-single-select/vscode-single-select.ts
 //! Docs:     https://vscode-elements.github.io/components/single-select/
 //! VS Code analogue: src/vs/base/browser/ui/selectBox/selectBox.ts
-//! Tokens:   --vscode-dropdown-background → Palette::VSCE_DROPDOWN_BG
-//!           --vscode-dropdown-border → Palette::VSCE_DROPDOWN_BORDER
-//!           --vscode-dropdown-foreground → Palette::VSCE_DROPDOWN_FG
-//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG
-//!           --vscode-list-activeSelectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG
+//! Tokens:   --vscode-dropdown-background → Palette::VSCE_DROPDOWN_BG()
+//!           --vscode-dropdown-border → Palette::VSCE_DROPDOWN_BORDER()
+//!           --vscode-dropdown-foreground → Palette::VSCE_DROPDOWN_FG()
+//!           --vscode-list-hoverBackground → Palette::VSCE_LIST_HOVER_BG()
+//!           --vscode-list-activeSelectionBackground → Palette::VSCE_LIST_ACTIVE_SELECTION_BG()
 //!
 //! Closed dropdown trigger + optional popup list. The trigger is always
 //! rendered inline; the popup, when `open: true`, is drawn directly below
@@ -90,15 +90,15 @@ pub fn single_select(
     let (rect, trigger_resp) = ui.allocate_exact_size(Vec2::new(width, height), sense);
 
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, CornerRadius::same(4), tokens::DROPDOWN_BG);
+    painter.rect_filled(rect, CornerRadius::same(4), tokens::DROPDOWN_BG());
 
     let focus_visible = props.focused || (trigger_resp.has_focus() && !props.disabled);
     let border = if props.invalid {
-        tokens::INPUT_ERROR_BORDER
+        tokens::INPUT_ERROR_BORDER()
     } else if focus_visible {
-        tokens::FOCUS_BORDER
+        tokens::FOCUS_BORDER()
     } else {
-        tokens::DROPDOWN_BORDER
+        tokens::DROPDOWN_BORDER()
     };
     painter.rect_stroke(
         rect,
@@ -109,9 +109,9 @@ pub fn single_select(
 
     let cy = rect.center().y;
     let fg = if props.disabled {
-        with_alpha(tokens::DROPDOWN_FG, 0.5)
+        with_alpha(tokens::DROPDOWN_FG(), 0.5)
     } else {
-        tokens::DROPDOWN_FG
+        tokens::DROPDOWN_FG()
     };
     let text = match selected {
         Some(i) if *i < props.options.len() => props.options[*i].to_string(),
@@ -119,7 +119,7 @@ pub fn single_select(
     };
     let placeholder = selected.is_none() || selected.map_or(true, |i| i >= props.options.len());
     let text_color = if placeholder {
-        tokens::INPUT_PLACEHOLDER_FG
+        tokens::INPUT_PLACEHOLDER_FG()
     } else {
         fg
     };
@@ -160,11 +160,11 @@ pub fn single_select(
         ui.allocate_exact_size(Vec2::new(width, popup_h + 2.0), Sense::hover());
 
         let pp = ui.painter().clone();
-        pp.rect_filled(popup_rect, CornerRadius::same(4), tokens::DROPDOWN_BG);
+        pp.rect_filled(popup_rect, CornerRadius::same(4), tokens::DROPDOWN_BG());
         pp.rect_stroke(
             popup_rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, tokens::DROPDOWN_BORDER),
+            Stroke::new(1.0, tokens::DROPDOWN_BORDER()),
             StrokeKind::Inside,
         );
 
@@ -176,9 +176,9 @@ pub fn single_select(
             let row_resp = ui.interact(row_rect, ui.id().with(("ss_row", i)), Sense::click());
             let is_selected = *selected == Some(i);
             let bg = if is_selected {
-                tokens::LIST_ACTIVE_SELECTION_BG
+                tokens::LIST_ACTIVE_SELECTION_BG()
             } else if row_resp.hovered() {
-                tokens::LIST_HOVER_BG
+                tokens::LIST_HOVER_BG()
             } else {
                 Color32::TRANSPARENT
             };
@@ -186,9 +186,9 @@ pub fn single_select(
                 pp.rect_filled(row_rect, CornerRadius::same(3), bg);
             }
             let row_fg = if is_selected {
-                tokens::LIST_ACTIVE_SELECTION_FG
+                tokens::LIST_ACTIVE_SELECTION_FG()
             } else {
-                tokens::DROPDOWN_FG
+                tokens::DROPDOWN_FG()
             };
             pp.text(
                 egui::pos2(row_rect.left() + 8.0, row_rect.center().y),

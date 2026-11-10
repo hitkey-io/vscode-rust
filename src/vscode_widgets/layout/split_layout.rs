@@ -3,8 +3,8 @@
 //! Docs:     https://vscode-elements.github.io/components/split-layout/
 //! VS Code analogue: src/vs/base/browser/ui/splitview/splitview.ts
 //!                   src/vs/base/browser/ui/sash/sash.ts
-//! Tokens:   --vscode-sash-hoverBorder → Palette::VSCE_SASH_HOVER_BORDER
-//!           --vscode-textSeparator-foreground → Palette::VSCE_TEXT_SEPARATOR_FG
+//! Tokens:   --vscode-sash-hoverBorder → Palette::VSCE_SASH_HOVER_BORDER()
+//!           --vscode-textSeparator-foreground → Palette::VSCE_TEXT_SEPARATOR_FG()
 //!
 //! Two-pane split with a draggable sash. `split_pos` is the size of the
 //! first pane in CSS pixels, owned by the caller so it can be persisted
@@ -153,7 +153,7 @@ pub fn split_layout<R1, R2>(
     ui.painter().rect_filled(sash_rect, 0.0, Color32::TRANSPARENT);
     if sash_resp.hovered() || sash_resp.dragged() {
         ui.painter()
-            .rect_filled(sash_rect, 0.0, tokens::SASH_HOVER_BORDER);
+            .rect_filled(sash_rect, 0.0, tokens::SASH_HOVER_BORDER());
     } else {
         // Always render a 1 px hairline so the split is visible even at rest.
         let line = match props.orientation {
@@ -166,7 +166,7 @@ pub fn split_layout<R1, R2>(
                 egui::pos2(sash_rect.right(), sash_rect.center().y + 0.5),
             ),
         };
-        ui.painter().rect_filled(line, 0.0, tokens::TEXT_SEPARATOR_FG);
+        ui.painter().rect_filled(line, 0.0, tokens::TEXT_SEPARATOR_FG());
     }
 
     let mut first_ui = ui.new_child(egui::UiBuilder::new().max_rect(first_rect));

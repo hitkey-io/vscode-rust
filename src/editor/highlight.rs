@@ -1,6 +1,5 @@
-//! Syntax highlighting using syntect with the VS Code 1.119+ "2026 Dark" tmTheme
-//! generated from `vscode-original/extensions/theme-defaults/themes/2026-dark.json`
-//! (+ its `include` chain).
+//! Syntax highlighting using syntect with the active colour theme's
+//! `tokenColors` (theme JSON plus its `include` chain).
 //!
 //! After syntect produces base token colors, we run a post-processing pass that
 //! recolors matched bracket pairs in rotation — mirroring VS Code's
@@ -14,27 +13,150 @@ const EDITOR_FONT_SIZE: f32 = 12.0;
 const EDITOR_LINE_HEIGHT: f32 = EDITOR_FONT_SIZE * 1.5;
 use once_cell::sync::Lazy;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use crate::theme::Palette;
+use std::sync::{Arc, Mutex};
+use syntect::highlighting::Theme;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
 static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
 
-static DARK_PLUS: Lazy<Theme> = Lazy::new(|| {
-    let mut cursor = std::io::Cursor::new(include_bytes!("../../assets/dark_2026.tmTheme"));
-    ThemeSet::load_from_reader(&mut cursor)
-        .expect("failed to load embedded 2026 Dark tmTheme")
-});
+/// The active theme's TextMate rules as a syntect theme, plus the colours
+/// the bracket pass needs. Rebuilt when the colour theme changes.
+struct SyntaxTheme {
+    theme: Theme,
+    /// Foregrounds of string and comment scopes: brackets inside them keep
+    /// the token colour.
+    plain_colors: Vec<syntect::highlighting::Color>,
+    /// `editorBracketHighlight.foreground1-6` that aren't transparent.
+    brackets: Vec<Color32>,
+    unexpected_bracket: Color32,
+}
 
-// editorBracketHighlight.foreground{1,2,3} dark defaults from VS Code's
-// editorColorRegistry.ts. levels 4–6 cycle the same three colors.
-const BRACKET_COLORS: [Color32; 3] = [
-    Color32::from_rgb(0xFF, 0xD7, 0x00), // gold
-    Color32::from_rgb(0xDA, 0x70, 0xD6), // orchid
-    Color32::from_rgb(0x17, 0x9F, 0xFF), // bright blue
-];
+static SYNTAX_THEME: Lazy<Mutex<Option<(u32, Arc<SyntaxTheme>)>>> = Lazy::new(|| Mutex::new(None));
 
-const UNMATCHED_BRACKET: Color32 = Color32::from_rgb(0xFF, 0x12, 0x12);
+fn syntax_theme() -> Arc<SyntaxTheme> {
+    let generation = crate::theme::generation();
+    let mut cache = SYNTAX_THEME.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((g, t)) = cache.as_ref() {
+        if *g == generation && generation != 0 {
+            return t.clone();
+        }
+    }
+    let t = Arc::new(build_syntax_theme());
+    *cache = Some((crate::theme::generation(), t.clone()));
+    t
+}
+
+fn syntect_color(c: Color32) -> syntect::highlighting::Color {
+    let [r, g, b, a] = c.to_srgba_unmultiplied();
+    syntect::highlighting::Color { r, g, b, a }
+}
+
+fn build_syntax_theme() -> SyntaxTheme {
+    use std::str::FromStr;
+    use syntect::highlighting::{FontStyle, Highlighter, ScopeSelectors, StyleModifier, ThemeItem, ThemeSettings};
+
+    let colors = crate::theme::current();
+    let to_syntect = |c: &crate::theme::color::Color| syntect::highlighting::Color { r: c.r, g: c.g, b: c.b, a: (c.a * 255.0).round() as u8 };
+    let mut theme = Theme {
+        settings: ThemeSettings {
+            foreground: Some(syntect_color(Palette::EDITOR_FG())),
+            background: Some(syntect_color(Palette::EDITOR_BG())),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for rule in &colors.token_rules {
+        if rule.scopes.is_empty() {
+            continue;
+        }
+        let Ok(scope) = ScopeSelectors::from_str(&rule.scopes.join(", ")) else { continue };
+        let font_style = rule.font_style.as_deref().map(|s| {
+            let mut f = FontStyle::empty();
+            for part in s.split_whitespace() {
+                match part {
+                    "bold" => f |= FontStyle::BOLD,
+                    "italic" => f |= FontStyle::ITALIC,
+                    "underline" => f |= FontStyle::UNDERLINE,
+                    _ => {}
+                }
+            }
+            f
+        });
+        theme.scopes.push(ThemeItem {
+            scope,
+            style: StyleModifier {
+                foreground: rule.foreground.as_ref().map(to_syntect),
+                background: rule.background.as_ref().map(to_syntect),
+                font_style,
+            },
+        });
+    }
+    // syntect's (Sublime) grammars name some tokens differently from VS
+    // Code's TextMate grammars: give those scopes the colour the theme sets
+    // for VS Code's name.
+    const BRIDGES: &[(&str, &str)] = &[
+        ("meta.structure.dictionary.key.json string.quoted.double.json", "source.json support.type.property-name.json"),
+        ("meta.mapping.key string.quoted.double, meta.mapping.key.yaml", "source.yaml entity.name.tag.yaml"),
+    ];
+    let mut bridged = Vec::new();
+    {
+        let highlighter = Highlighter::new(&theme);
+        for (syntect_scope, vscode_scope) in BRIDGES {
+            let stack: Vec<syntect::parsing::Scope> =
+                vscode_scope.split(' ').filter_map(|s| syntect::parsing::Scope::new(s).ok()).collect();
+            let style = highlighter.style_for_stack(&stack);
+            if let Ok(scope) = ScopeSelectors::from_str(syntect_scope) {
+                bridged.push(ThemeItem {
+                    scope,
+                    style: StyleModifier { foreground: Some(style.foreground), background: None, font_style: None },
+                });
+            }
+        }
+    }
+    theme.scopes.extend(bridged);
+    let highlighter = Highlighter::new(&theme);
+    let mut plain_colors = Vec::new();
+    for scope in [
+        "string.quoted.double",
+        "string.quoted.single",
+        "string.template",
+        "string.regexp",
+        "comment.line",
+        "comment.block",
+        "comment.block.documentation",
+    ] {
+        let stack: Vec<syntect::parsing::Scope> =
+            scope.split('.').scan(String::new(), |acc, part| {
+                if !acc.is_empty() {
+                    acc.push('.');
+                }
+                acc.push_str(part);
+                Some(acc.clone())
+            })
+            .last()
+            .and_then(|s| syntect::parsing::Scope::new(&s).ok())
+            .into_iter()
+            .collect();
+        let fg = highlighter.style_for_stack(&stack).foreground;
+        if !plain_colors.contains(&fg) {
+            plain_colors.push(fg);
+        }
+    }
+    let brackets = [
+        Palette::BRACKET_1(),
+        Palette::BRACKET_2(),
+        Palette::BRACKET_3(),
+        Palette::BRACKET_4(),
+        Palette::BRACKET_5(),
+        Palette::BRACKET_6(),
+    ]
+    .into_iter()
+    .filter(|c| c.a() > 0)
+    .collect();
+    SyntaxTheme { theme, plain_colors, brackets, unexpected_bracket: Palette::BRACKET_UNEXPECTED() }
+}
 
 /// Find-match decoration for `build_layout_job`: byte ranges of every match in
 /// the document plus the index of the current one. The current match gets the
@@ -73,15 +195,14 @@ pub fn build_layout_job(
     job.wrap.max_width = wrap_width;
 
     let syntax = pick_syntax(language);
-    let mut highlighter = HighlightLines::new(syntax, &DARK_PLUS);
+    let st = syntax_theme();
+    let mut highlighter = HighlightLines::new(syntax, &st.theme);
     let font = crate::icons::editor_mono_font(EDITOR_FONT_SIZE);
     let mut w = JobWriter { job: &mut job, pos: 0, find };
 
     // Track nesting state across the whole document so brackets on different
     // lines still get matched.
     let mut bracket_stack: Vec<char> = Vec::new();
-    let mut in_string = false;
-    let mut in_comment = false;
 
     for line in LinesWithEndings::from(text) {
         let regions = match highlighter.highlight_line(line, &SYNTAX_SET) {
@@ -93,17 +214,10 @@ pub fn build_layout_job(
         };
 
         for (style, snippet) in regions {
-            // Detect comment/string scopes via foreground color heuristic: syntect
-            // strings/comments use distinct theme colors that fall into known ranges.
-            // A cleaner approach is scope-tag inspection, but syntect's HighlightLines
-            // only hands us colors. Approximation: skip bracket coloring when the
-            // current style's foreground matches the theme's string/comment palette.
-            let snippet_in_string = is_string_color(style.foreground);
-            let snippet_in_comment = is_comment_color(style.foreground);
-            in_string = snippet_in_string;
-            in_comment = snippet_in_comment;
-
-            if snippet_in_string || snippet_in_comment {
+            // syntect's HighlightLines only hands out styles, so strings and
+            // comments are recognised by the theme's colours for those scopes;
+            // brackets inside them keep the token colour.
+            if st.plain_colors.contains(&style.foreground) || st.brackets.is_empty() {
                 w.push(
                     snippet,
                     &font,
@@ -124,7 +238,7 @@ pub fn build_layout_job(
                     flush(&mut w, &mut buf, &font, base_color);
                     let level = bracket_stack.len();
                     bracket_stack.push(ch);
-                    let color = BRACKET_COLORS[level % BRACKET_COLORS.len()];
+                    let color = st.brackets[level % st.brackets.len()];
                     w.push(&ch.to_string(), &font, syntect_rgb(color));
                 } else if is_close_bracket(ch) {
                     flush(&mut w, &mut buf, &font, base_color);
@@ -135,9 +249,9 @@ pub fn build_layout_job(
                     let color = if matched {
                         let level = bracket_stack.len() - 1;
                         bracket_stack.pop();
-                        BRACKET_COLORS[level % BRACKET_COLORS.len()]
+                        st.brackets[level % st.brackets.len()]
                     } else {
-                        UNMATCHED_BRACKET
+                        st.unexpected_bracket
                     };
                     w.push(&ch.to_string(), &font, syntect_rgb(color));
                 } else {
@@ -147,7 +261,6 @@ pub fn build_layout_job(
             flush(&mut w, &mut buf, &font, base_color);
         }
     }
-    let _ = (in_string, in_comment);
     job
 }
 
@@ -156,7 +269,8 @@ pub fn build_layout_job(
 /// syntect theme so the miniature matches the editor's palette.
 pub fn line_runs(text: &str, language: &str) -> Vec<Vec<(String, Color32)>> {
     let syntax = pick_syntax(language);
-    let mut hl = HighlightLines::new(syntax, &DARK_PLUS);
+    let st = syntax_theme();
+    let mut hl = HighlightLines::new(syntax, &st.theme);
     let mut out = Vec::new();
     for line in LinesWithEndings::from(text) {
         let mut runs = Vec::new();
@@ -243,9 +357,9 @@ impl JobWriter<'_> {
             for (i, &(s, e)) in f.ranges.iter().enumerate() {
                 if s <= a && b <= e {
                     bg = Some(if i == f.current {
-                        crate::theme::Palette::FIND_MATCH_BG
+                        crate::theme::Palette::FIND_MATCH_BG()
                     } else {
-                        crate::theme::Palette::FIND_MATCH_HL_BG
+                        crate::theme::Palette::FIND_MATCH_HL_BG()
                     });
                 }
             }
@@ -304,18 +418,6 @@ fn is_close_bracket(c: char) -> bool {
     matches!(c, ')' | ']' | '}')
 }
 
-fn is_string_color(c: syntect::highlighting::Color) -> bool {
-    // 2026 Dark string foreground = #a5d6ff and #ffa657 (in different scopes).
-    let hex = (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
-    matches!(hex, 0xa5d6ff | 0xffa657 | 0xce9178 | 0xd16969)
-}
-
-fn is_comment_color(c: syntect::highlighting::Color) -> bool {
-    // 2026 Dark / dark_modern comment foreground = #8b949e or #6A9955.
-    let hex = (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
-    matches!(hex, 0x8b949e | 0x6A9955 | 0x6a9955)
-}
-
 fn pick_syntax(language: &str) -> &'static syntect::parsing::SyntaxReference {
     // syntect's default syntax set has no TypeScript; fall back to JavaScript
     // (covers comments / keywords / strings / templates well enough for TS too).
@@ -350,5 +452,5 @@ fn pick_syntax(language: &str) -> &'static syntect::parsing::SyntaxReference {
 }
 
 fn default_fg() -> Color32 {
-    Color32::from_rgb(0xBB, 0xBE, 0xBF)
+    Palette::EDITOR_FG()
 }

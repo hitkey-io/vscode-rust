@@ -58,7 +58,7 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
 
         let text_w = TOAST_W - PAD_X * 2.0 - (ICON + 8.0) - 28.0;
         let galley = ctx.fonts_mut(|f| {
-            f.layout(n.text.clone(), FontId::proportional(13.0), Palette::VSCE_NOTIFICATIONS_FG, text_w)
+            f.layout(n.text.clone(), FontId::proportional(13.0), Palette::VSCE_NOTIFICATIONS_FG(), text_w)
         });
         let message_h = galley.size().y.max(LINE);
         let footer = n.source.is_some() || !n.actions.is_empty();
@@ -87,15 +87,15 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                 p.rect(
                     rect,
                     CornerRadius::same(4),
-                    Palette::VSCE_NOTIFICATIONS_BG,
-                    Stroke::new(1.0, Palette::VSCE_NOTIFICATION_TOAST_BORDER),
+                    Palette::VSCE_NOTIFICATIONS_BG(),
+                    Stroke::new(1.0, Palette::VSCE_NOTIFICATION_TOAST_BORDER()),
                     StrokeKind::Inside,
                 );
 
                 let (glyph, color) = match n.severity {
-                    Severity::Info => (icons::INFO_ICON, Palette::VSCE_NOTIFICATIONS_INFO_ICON),
-                    Severity::Warning => (icons::WARNING_ICON, Palette::VSCE_NOTIFICATIONS_WARNING_ICON),
-                    Severity::Error => (icons::ERROR_ICON, Palette::VSCE_NOTIFICATIONS_ERROR_ICON),
+                    Severity::Info => (icons::INFO_ICON, Palette::VSCE_NOTIFICATIONS_INFO_ICON()),
+                    Severity::Warning => (icons::WARNING_ICON, Palette::VSCE_NOTIFICATIONS_WARNING_ICON()),
+                    Severity::Error => (icons::ERROR_ICON, Palette::VSCE_NOTIFICATIONS_ERROR_ICON()),
                 };
                 let top = rect.top() + PAD_Y;
                 let left = rect.left() + PAD_X;
@@ -110,7 +110,7 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                 p.galley(
                     egui::pos2(text_left, top + (LINE - 17.0) / 2.0),
                     galley,
-                    Palette::VSCE_NOTIFICATIONS_FG,
+                    Palette::VSCE_NOTIFICATIONS_FG(),
                 );
 
                 // Close button (top-right toolbar).
@@ -125,14 +125,14 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Clear Notification")
                 });
                 if close_resp.hovered() {
-                    ui.painter().rect_filled(close, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG);
+                    ui.painter().rect_filled(close, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG());
                 }
                 ui.painter().text(
                     close.center(),
                     Align2::CENTER_CENTER,
                     icons::CLOSE.to_string(),
                     codicon_font(16.0),
-                    Palette::VSCE_NOTIFICATIONS_FG,
+                    Palette::VSCE_NOTIFICATIONS_FG(),
                 );
                 if close_resp.clicked() {
                     out.push(Dismissal { id: n.id, action: None });
@@ -148,7 +148,7 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                         Align2::LEFT_CENTER,
                         format!("Source: {source}"),
                         FontId::proportional(12.0),
-                        Palette::FG_DESCRIPTION,
+                        Palette::FG_DESCRIPTION(),
                     );
                 }
                 // Buttons right-aligned; the first one is primary.
@@ -156,7 +156,7 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                 for (i, title) in n.actions.iter().enumerate().rev() {
                     let w = ui
                         .painter()
-                        .layout_no_wrap(title.clone(), FontId::proportional(13.0), Palette::FG)
+                        .layout_no_wrap(title.clone(), FontId::proportional(13.0), Palette::FG())
                         .size()
                         .x
                         + 22.0;
@@ -169,16 +169,16 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
                     let primary = i == 0;
                     let fill = match (primary, resp.hovered()) {
-                        (true, false) => Palette::VSCE_BUTTON_2026_BG,
-                        (true, true) => Palette::VSCE_BUTTON_2026_HOVER_BG,
-                        (false, true) => Palette::VSCE_BUTTON_2026_SECONDARY_HOVER_BG,
+                        (true, false) => Palette::VSCE_BUTTON_2026_BG(),
+                        (true, true) => Palette::VSCE_BUTTON_2026_HOVER_BG(),
+                        (false, true) => Palette::VSCE_BUTTON_2026_SECONDARY_HOVER_BG(),
                         (false, false) => egui::Color32::TRANSPARENT,
                     };
                     ui.painter().rect(
                         r,
                         CornerRadius::same(4),
                         fill,
-                        Stroke::new(1.0, Palette::VSCE_BUTTON_2026_BORDER),
+                        Stroke::new(1.0, Palette::VSCE_BUTTON_2026_BORDER()),
                         StrokeKind::Inside,
                     );
                     ui.painter().text(
@@ -186,7 +186,7 @@ pub fn show(ctx: &Context, notifications: &[Notification]) -> Vec<Dismissal> {
                         Align2::CENTER_CENTER,
                         title,
                         FontId::proportional(13.0),
-                        if primary { egui::Color32::WHITE } else { Palette::VSCE_NOTIFICATIONS_FG },
+                        if primary { egui::Color32::WHITE } else { Palette::VSCE_NOTIFICATIONS_FG() },
                     );
                     if resp.clicked() {
                         out.push(Dismissal { id: n.id, action: Some(i) });

@@ -2,7 +2,7 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-icon/vscode-icon.ts
 //! Docs:     https://vscode-elements.github.io/components/icon/
 //! VS Code analogue: src/vs/base/browser/ui/codicons/codicon/codicon.css
-//! Tokens:   --vscode-icon-foreground → Palette::VSCE_ICON_FG
+//! Tokens:   --vscode-icon-foreground → Palette::VSCE_ICON_FG()
 //!
 //! Renders a single codicon glyph using the bundled codicon.ttf font.
 //! Supports `name`, `size`, `action-icon`, `spin` and `spin-duration`
@@ -29,7 +29,7 @@ pub struct IconProps {
     pub spin: bool,
     /// Full rotation duration in seconds. Default `1.5`.
     pub spin_duration: f32,
-    /// Override colour. `None` falls back to `tokens::ICON_FG`.
+    /// Override colour. `None` falls back to `tokens::ICON_FG()`.
     pub color: Option<Color32>,
 }
 
@@ -84,11 +84,11 @@ pub fn icon(ui: &mut Ui, props: &IconProps) -> Response {
     };
     let (rect, response) = ui.allocate_exact_size(desired, sense);
 
-    let color = props.color.unwrap_or(tokens::ICON_FG);
+    let color = props.color.unwrap_or(tokens::ICON_FG());
 
     if props.action_icon && response.hovered() {
         ui.painter()
-            .rect_filled(rect.expand(2.0), 3.0, tokens::LIST_HOVER_BG);
+            .rect_filled(rect.expand(2.0), 3.0, tokens::LIST_HOVER_BG());
     }
 
     let painter = ui.painter().clone();

@@ -121,8 +121,8 @@ fn search_input_row(ui: &mut Ui, state: &mut SearchState) -> bool {
         ui.painter().rect(
             full_rect,
             0.0,
-            Palette::INPUT_BG,
-            Stroke::new(1.0, Palette::INPUT_BORDER),
+            Palette::INPUT_BG(),
+            Stroke::new(1.0, Palette::INPUT_BORDER()),
             egui::StrokeKind::Inside,
         );
 
@@ -136,9 +136,9 @@ fn search_input_row(ui: &mut Ui, state: &mut SearchState) -> bool {
             ui.add(
                 egui::TextEdit::singleline(&mut state.query)
                     .desired_width(text_rect.width())
-                    .hint_text(RichText::new("Search").color(Palette::INPUT_PLACEHOLDER))
+                    .hint_text(RichText::new("Search").color(Palette::INPUT_PLACEHOLDER()))
                     .font(FontId::proportional(13.0))
-                    .frame(egui::Frame::default().fill(Palette::INPUT_BG))
+                    .frame(egui::Frame::default().fill(Palette::INPUT_BG()))
                     .vertical_align(egui::Align::Center),
             )
         });
@@ -173,9 +173,9 @@ fn search_input_row(ui: &mut Ui, state: &mut SearchState) -> bool {
             let resp = ui.interact(tg_rect, id, Sense::click());
 
             let bg = if *active_ptr {
-                Palette::INPUT_OPTION_ACTIVE_BG
+                Palette::INPUT_OPTION_ACTIVE_BG()
             } else if resp.hovered() {
-                Palette::LIST_HOVER_BG
+                Palette::LIST_HOVER_BG()
             } else {
                 Color32::TRANSPARENT
             };
@@ -184,7 +184,7 @@ fn search_input_row(ui: &mut Ui, state: &mut SearchState) -> bool {
                 ui.painter().rect_stroke(
                     tg_rect,
                     3.0,
-                    Stroke::new(1.0, Palette::INPUT_OPTION_ACTIVE_BORDER),
+                    Stroke::new(1.0, Palette::INPUT_OPTION_ACTIVE_BORDER()),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -193,7 +193,7 @@ fn search_input_row(ui: &mut Ui, state: &mut SearchState) -> bool {
                 egui::Align2::CENTER_CENTER,
                 glyph,
                 FontId::proportional(11.0),
-                Palette::FG,
+                Palette::FG(),
             );
 
             let resp = resp.on_hover_text(tip);
@@ -272,7 +272,7 @@ fn render_results(
         let (rect, resp) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
         if resp.hovered() {
-            ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+            ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
         }
         let painter = ui.painter();
         let mid_y = rect.center().y;
@@ -288,7 +288,7 @@ fn render_results(
             egui::Align2::LEFT_CENTER,
             chev.to_string(),
             codicon_font(12.0),
-            Palette::FG_DESCRIPTION,
+            Palette::FG_DESCRIPTION(),
         );
 
         // File icon — Seti file-type glyph (matches the Explorer tree).
@@ -306,7 +306,7 @@ fn render_results(
                 egui::Align2::LEFT_CENTER,
                 icons::FILE.to_string(),
                 codicon_font(14.0),
-                Palette::FG_DESCRIPTION,
+                Palette::FG_DESCRIPTION(),
             );
         }
 
@@ -314,13 +314,13 @@ fn render_results(
         let name_galley = painter.layout_no_wrap(
             file_name.clone(),
             FontId::proportional(13.0),
-            Palette::FG,
+            Palette::FG(),
         );
         let name_x = rect.left() + 48.0;
         painter.galley(
             egui::pos2(name_x, mid_y - name_galley.size().y / 2.0),
             name_galley.clone(),
-            Palette::FG,
+            Palette::FG(),
         );
 
         // Folder path (greyed out, smaller, after the name)
@@ -331,7 +331,7 @@ fn render_results(
                 egui::Align2::LEFT_CENTER,
                 parent_str,
                 FontId::proportional(11.5),
-                Palette::FG_DESCRIPTION,
+                Palette::FG_DESCRIPTION(),
             );
         }
 
@@ -346,14 +346,14 @@ fn render_results(
         ui.painter().rect_filled(
             badge_rect,
             badge_h / 2.0,
-            Palette::BADGE_BG,
+            Palette::BADGE_BG(),
         );
         ui.painter().text(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,
             count_text,
             FontId::proportional(11.0),
-            Palette::FG,
+            Palette::FG(),
         );
 
         if resp.clicked() {
@@ -382,7 +382,7 @@ fn draw_match_row(
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
     }
     let painter = ui.painter();
     let mid_y = rect.center().y;
@@ -406,15 +406,15 @@ fn draw_match_row(
         let mat = &preview[start..start + highlight_len.min(preview.len() - start)];
         let after = &preview[start + mat.len()..];
 
-        let g_before = painter.layout_no_wrap(before.to_string(), font.clone(), Palette::FG);
-        let g_match = painter.layout_no_wrap(mat.to_string(), font.clone(), Palette::FG);
-        let g_after = painter.layout_no_wrap(after.to_string(), font.clone(), Palette::FG);
+        let g_before = painter.layout_no_wrap(before.to_string(), font.clone(), Palette::FG());
+        let g_match = painter.layout_no_wrap(mat.to_string(), font.clone(), Palette::FG());
+        let g_after = painter.layout_no_wrap(after.to_string(), font.clone(), Palette::FG());
 
         let mut x = indent_x;
         painter.galley(
             egui::pos2(x, mid_y - g_before.size().y / 2.0),
             g_before.clone(),
-            Palette::FG,
+            Palette::FG(),
         );
         x += g_before.size().x;
 
@@ -423,18 +423,18 @@ fn draw_match_row(
             egui::pos2(x, mid_y - g_match.size().y / 2.0),
             egui::vec2(g_match.size().x, g_match.size().y),
         );
-        painter.rect_filled(match_rect, 2.0, Palette::SEARCH_MATCH_BG);
+        painter.rect_filled(match_rect, 2.0, Palette::SEARCH_MATCH_BG());
         painter.galley(
             egui::pos2(x, mid_y - g_match.size().y / 2.0),
             g_match.clone(),
-            Palette::FG,
+            Palette::FG(),
         );
         x += g_match.size().x;
 
         painter.galley(
             egui::pos2(x, mid_y - g_after.size().y / 2.0),
             g_after.clone(),
-            Palette::FG,
+            Palette::FG(),
         );
     } else {
         painter.text(
@@ -442,7 +442,7 @@ fn draw_match_row(
             egui::Align2::LEFT_CENTER,
             &preview,
             font,
-            Palette::FG,
+            Palette::FG(),
         );
     }
 

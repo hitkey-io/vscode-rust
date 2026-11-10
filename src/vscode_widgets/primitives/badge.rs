@@ -2,8 +2,8 @@
 //! Upstream: https://github.com/vscode-elements/elements/blob/main/src/vscode-badge/vscode-badge.ts
 //! Docs:     https://vscode-elements.github.io/components/badge/
 //! VS Code analogue: src/vs/base/browser/ui/countBadge/countBadge.ts
-//! Tokens:   --vscode-badge-background → Palette::VSCE_BADGE_BG
-//!           --vscode-badge-foreground → Palette::VSCE_BADGE_FG
+//! Tokens:   --vscode-badge-background → Palette::VSCE_BADGE_BG()
+//!           --vscode-badge-foreground → Palette::VSCE_BADGE_FG()
 //!           --vscode-activityBarBadge-background → 0x0078D4 (uses VSCE_BUTTON_BG)
 //!
 //! Compact label rendered as a pill (default) or rounded rect (counter
@@ -73,19 +73,19 @@ pub fn badge(ui: &mut Ui, props: &BadgeProps<'_>) -> Response {
     let (pad_x, pad_y, radius, min_w, min_h, bg, fg) = match props.variant {
         BadgeVariant::Default => (
             5.0, 3.0, 11, 18.0, 18.0,
-            tokens::BADGE_BG, tokens::BADGE_FG,
+            tokens::BADGE_BG(), tokens::BADGE_FG(),
         ),
         BadgeVariant::Counter => (
             3.0, 2.0, 2, 0.0, 0.0,
-            tokens::BADGE_BG, tokens::BADGE_FG,
+            tokens::BADGE_BG(), tokens::BADGE_FG(),
         ),
         BadgeVariant::ActivityBar => (
             5.0, 3.0, 11, 18.0, 18.0,
-            tokens::BUTTON_BG, Color32::WHITE,
+            tokens::BUTTON_BG(), Color32::WHITE,
         ),
         BadgeVariant::TabHeader => (
             4.0, 2.0, 9, 0.0, 0.0,
-            tokens::BADGE_BG, tokens::BADGE_FG,
+            tokens::BADGE_BG(), tokens::BADGE_FG(),
         ),
     };
 

@@ -87,14 +87,14 @@ pub fn multi_select(
     let (rect, trigger_resp) = ui.allocate_exact_size(Vec2::new(width, height), sense);
 
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, CornerRadius::same(4), tokens::DROPDOWN_BG);
+    painter.rect_filled(rect, CornerRadius::same(4), tokens::DROPDOWN_BG());
     let focus_visible = props.focused || (trigger_resp.has_focus() && !props.disabled);
     let border = if props.invalid {
-        tokens::INPUT_ERROR_BORDER
+        tokens::INPUT_ERROR_BORDER()
     } else if focus_visible {
-        tokens::FOCUS_BORDER
+        tokens::FOCUS_BORDER()
     } else {
-        tokens::DROPDOWN_BORDER
+        tokens::DROPDOWN_BORDER()
     };
     painter.rect_stroke(
         rect,
@@ -105,9 +105,9 @@ pub fn multi_select(
 
     let cy = rect.center().y;
     let fg = if props.disabled {
-        with_alpha(tokens::DROPDOWN_FG, 0.5)
+        with_alpha(tokens::DROPDOWN_FG(), 0.5)
     } else {
-        tokens::DROPDOWN_FG
+        tokens::DROPDOWN_FG()
     };
     if selected.is_empty() {
         painter.text(
@@ -115,7 +115,7 @@ pub fn multi_select(
             Align2::LEFT_CENTER,
             props.placeholder,
             FontId::proportional(13.0),
-            tokens::INPUT_PLACEHOLDER_FG,
+            tokens::INPUT_PLACEHOLDER_FG(),
         );
     } else {
         // Count badge + summary text.
@@ -130,13 +130,13 @@ pub fn multi_select(
             egui::pos2(rect.left() + 8.0, cy - 9.0),
             Vec2::new(badge_w, 18.0),
         );
-        painter.rect_filled(badge_rect, CornerRadius::same(9), tokens::BADGE_BG);
+        painter.rect_filled(badge_rect, CornerRadius::same(9), tokens::BADGE_BG());
         painter.text(
             badge_rect.center(),
             Align2::CENTER_CENTER,
             badge_text,
             FontId::proportional(11.0),
-            tokens::BADGE_FG,
+            tokens::BADGE_FG(),
         );
 
         let labels: Vec<&str> = selected
@@ -180,11 +180,11 @@ pub fn multi_select(
         ui.allocate_exact_size(Vec2::new(width, popup_h + 2.0), Sense::hover());
 
         let pp = ui.painter().clone();
-        pp.rect_filled(popup_rect, CornerRadius::same(4), tokens::DROPDOWN_BG);
+        pp.rect_filled(popup_rect, CornerRadius::same(4), tokens::DROPDOWN_BG());
         pp.rect_stroke(
             popup_rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, tokens::DROPDOWN_BORDER),
+            Stroke::new(1.0, tokens::DROPDOWN_BORDER()),
             StrokeKind::Inside,
         );
 
@@ -196,7 +196,7 @@ pub fn multi_select(
             let row_resp = ui.interact(row_rect, ui.id().with(("ms_row", i)), Sense::click());
             let is_checked = selected.contains(&i);
             if row_resp.hovered() {
-                pp.rect_filled(row_rect, CornerRadius::same(3), tokens::LIST_HOVER_BG);
+                pp.rect_filled(row_rect, CornerRadius::same(3), tokens::LIST_HOVER_BG());
             }
 
             // Checkbox: 14×14, vertically centred, 8 px from left edge.
@@ -205,11 +205,11 @@ pub fn multi_select(
                 egui::pos2(row_rect.left() + 8.0 + box_size * 0.5, row_rect.center().y),
                 Vec2::splat(box_size),
             );
-            pp.rect_filled(box_rect, CornerRadius::same(3), tokens::CHECKBOX_BG);
+            pp.rect_filled(box_rect, CornerRadius::same(3), tokens::CHECKBOX_BG());
             pp.rect_stroke(
                 box_rect,
                 CornerRadius::same(3),
-                Stroke::new(1.0, tokens::CHECKBOX_BORDER),
+                Stroke::new(1.0, tokens::CHECKBOX_BORDER()),
                 StrokeKind::Inside,
             );
             if is_checked {
@@ -218,7 +218,7 @@ pub fn multi_select(
                     Align2::CENTER_CENTER,
                     CHECK.to_string(),
                     codicon_font(11.0),
-                    tokens::FG,
+                    tokens::FG(),
                 );
             }
 
@@ -227,7 +227,7 @@ pub fn multi_select(
                 Align2::LEFT_CENTER,
                 *option,
                 FontId::proportional(13.0),
-                tokens::DROPDOWN_FG,
+                tokens::DROPDOWN_FG(),
             );
 
             if row_resp.clicked() {

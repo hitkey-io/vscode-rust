@@ -67,13 +67,13 @@ pub fn show(ui: &mut Ui, service: &mut ExtensionService) -> ExtensionsViewOutput
     let r = ui.interact(refresh, ui.id().with("ext_refresh"), Sense::click());
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Refresh"));
     if r.hovered() {
-        ui.painter().rect_filled(refresh, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG);
+        ui.painter().rect_filled(refresh, 5.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG());
     }
-    paint_codicon(ui, refresh.center(), "refresh", 16.0, Palette::FG);
+    paint_codicon(ui, refresh.center(), "refresh", 16.0, Palette::FG());
     if r.on_hover_text("Refresh").clicked() {
         out.refresh = true;
     }
-    paint_codicon(ui, egui::pos2(title.right() - 18.0, title.center().y), "ellipsis", 16.0, Palette::FG);
+    paint_codicon(ui, egui::pos2(title.right() - 18.0, title.center().y), "ellipsis", 16.0, Palette::FG());
 
     search_box(ui, service);
     ui.add_space(6.0);
@@ -166,8 +166,8 @@ fn search_box(ui: &mut Ui, service: &mut ExtensionService) {
     let mut focused = false;
     {
         let ui = &mut ui.new_child(egui::UiBuilder::new().max_rect(text_rect).layout(*ui.layout()));
-        ui.visuals_mut().weak_text_color = Some(Palette::VSCE_QUICK_INPUT_PLACEHOLDER_FG);
-        ui.visuals_mut().text_cursor.stroke.color = Palette::VSCE_QUICK_INPUT_BOX_FG;
+        ui.visuals_mut().weak_text_color = Some(Palette::VSCE_QUICK_INPUT_PLACEHOLDER_FG());
+        ui.visuals_mut().text_cursor.stroke.color = Palette::VSCE_QUICK_INPUT_BOX_FG();
         let resp = ui.add_sized(
             text_rect.size(),
             egui::TextEdit::singleline(&mut query)
@@ -176,7 +176,7 @@ fn search_box(ui: &mut Ui, service: &mut ExtensionService) {
                 .margin(egui::Margin::ZERO)
                 .hint_text("Search Extensions in Marketplace")
                 .font(FontId::proportional(13.0))
-                .text_color(Palette::VSCE_QUICK_INPUT_BOX_FG)
+                .text_color(Palette::VSCE_QUICK_INPUT_BOX_FG())
                 .vertical_align(egui::Align::Center),
         );
         focused = resp.has_focus();
@@ -188,10 +188,10 @@ fn search_box(ui: &mut Ui, service: &mut ExtensionService) {
         egui::epaint::RectShape::new(
             box_rect,
             CornerRadius::same(6),
-            Palette::VSCE_QUICK_INPUT_BOX_BG,
+            Palette::VSCE_QUICK_INPUT_BOX_BG(),
             Stroke::new(
                 1.0,
-                if focused { Palette::VSCE_QUICK_INPUT_FOCUS_BORDER } else { Palette::INPUT_BORDER },
+                if focused { Palette::VSCE_QUICK_INPUT_FOCUS_BORDER() } else { Palette::INPUT_BORDER() },
             ),
             StrokeKind::Inside,
         ),
@@ -205,9 +205,9 @@ fn search_box(ui: &mut Ui, service: &mut ExtensionService) {
     let c = ui.interact(clear, ui.id().with("ext_clear"), Sense::click());
     c.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Clear Extensions Search Results"));
     if c.hovered() {
-        ui.painter().rect_filled(clear, 4.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG);
+        ui.painter().rect_filled(clear, 4.0, Palette::VSCE_QUICK_INPUT_ACTION_HOVER_BG());
     }
-    paint_codicon(ui, clear.center(), "clear-all", 16.0, Palette::FG);
+    paint_codicon(ui, clear.center(), "clear-all", 16.0, Palette::FG());
     if c.on_hover_text("Clear Extensions Search Results").clicked() {
         service.marketplace.set_query(String::new());
     }
@@ -216,7 +216,7 @@ fn search_box(ui: &mut Ui, service: &mut ExtensionService) {
         egui::pos2(box_rect.right() - 13.0, box_rect.center().y),
         "filter",
         16.0,
-        Palette::FG,
+        Palette::FG(),
     );
 }
 
@@ -229,27 +229,27 @@ fn section(ui: &mut Ui, title: &str, count: Option<usize>, collapsed: &mut bool)
     }
     let p = ui.painter();
     if rect.top() > ui.min_rect().top() + 1.0 {
-        p.hline(rect.x_range(), rect.top(), Stroke::new(1.0, Palette::BORDER));
+        p.hline(rect.x_range(), rect.top(), Stroke::new(1.0, Palette::BORDER()));
     }
     paint_codicon(
         ui,
         egui::pos2(rect.left() + 12.0, rect.center().y),
         if *collapsed { "chevron-right" } else { "chevron-down" },
         16.0,
-        Palette::SIDEBAR_SECTION_HEADER_FG,
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
     );
     ui.painter().text(
         egui::pos2(rect.left() + 22.0, rect.center().y),
         Align2::LEFT_CENTER,
         title,
         crate::ui_font::bold(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG,
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
     );
     if let Some(n) = count {
         let text = n.to_string();
         let w = ui
             .painter()
-            .layout_no_wrap(text.clone(), FontId::proportional(11.0), Palette::FG)
+            .layout_no_wrap(text.clone(), FontId::proportional(11.0), Palette::FG())
             .size()
             .x
             + 10.0;
@@ -257,7 +257,7 @@ fn section(ui: &mut Ui, title: &str, count: Option<usize>, collapsed: &mut bool)
             egui::pos2(rect.right() - 12.0 - w.max(18.0) / 2.0, rect.center().y),
             egui::vec2(w.max(18.0), 18.0),
         );
-        ui.painter().rect_filled(badge, 9.0, Palette::VSCE_BADGE_2026_BG);
+        ui.painter().rect_filled(badge, 9.0, Palette::VSCE_BADGE_2026_BG());
         ui.painter().text(badge.center(), Align2::CENTER_CENTER, text, FontId::proportional(11.0), egui::Color32::WHITE);
     }
     !*collapsed
@@ -271,7 +271,7 @@ fn message(ui: &mut Ui, text: &str) {
         Align2::LEFT_CENTER,
         text,
         FontId::proportional(13.0),
-        Palette::FG_DESCRIPTION,
+        Palette::FG_DESCRIPTION(),
     );
     ui.add_space(6.0);
 }
@@ -305,7 +305,7 @@ fn row_frame(ui: &mut Ui, a11y: String) -> (egui::Rect, egui::Response) {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.clone()));
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
     }
     (rect, resp)
 }
@@ -326,7 +326,7 @@ fn paint_row(ui: &mut Ui, rect: egui::Rect, icon: Option<&egui::TextureHandle>, 
                 Align2::CENTER_CENTER,
                 crate::icons::EXTENSIONS.to_string(),
                 codicon_font(34.0),
-                Palette::FG_DESCRIPTION,
+                Palette::FG_DESCRIPTION(),
             );
         }
     }
@@ -340,50 +340,50 @@ fn paint_row(ui: &mut Ui, rect: egui::Rect, icon: Option<&egui::TextureHandle>, 
     let small = FontId::proportional(11.0);
     if let Some(ms) = t.activation_ms {
         // `ExtensionRuntimeStatusWidget`: history icon + "23ms".
-        let g = p.layout_no_wrap(format!("{ms}ms"), small.clone(), Palette::FG);
+        let g = p.layout_no_wrap(format!("{ms}ms"), small.clone(), Palette::FG());
         stats_left -= g.size().x;
-        p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG);
+        p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG());
         stats_left -= 16.0;
-        paint_codicon(ui, egui::pos2(stats_left + 7.0, line1), "history", 14.0, Palette::FG);
+        paint_codicon(ui, egui::pos2(stats_left + 7.0, line1), "history", 14.0, Palette::FG());
     } else if let Some(v) = t.version {
-        let g = p.layout_no_wrap(format!("v{v}"), small.clone(), Palette::FG_DESCRIPTION);
+        let g = p.layout_no_wrap(format!("v{v}"), small.clone(), Palette::FG_DESCRIPTION());
         stats_left -= g.size().x;
-        p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG_DESCRIPTION);
+        p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG_DESCRIPTION());
     } else {
         if let Some(r) = t.rating.filter(|r| *r > 0.0) {
             let text = format!("{}", (r * 10.0).round() / 10.0);
-            let g = p.layout_no_wrap(text, small.clone(), Palette::FG);
+            let g = p.layout_no_wrap(text, small.clone(), Palette::FG());
             stats_left -= g.size().x;
-            p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG);
+            p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG());
             stats_left -= 16.0;
-            paint_codicon(ui, egui::pos2(stats_left + 7.0, line1), "star-full", 14.0, Palette::VSCE_EXTENSION_STAR_FG);
+            paint_codicon(ui, egui::pos2(stats_left + 7.0, line1), "star-full", 14.0, Palette::VSCE_EXTENSION_STAR_FG());
             stats_left -= 6.0;
         }
         if let Some(d) = t.downloads {
-            let g = p.layout_no_wrap(format_count(d), small.clone(), Palette::FG);
+            let g = p.layout_no_wrap(format_count(d), small.clone(), Palette::FG());
             stats_left -= g.size().x;
-            p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG);
+            p.galley(egui::pos2(stats_left, line1 - g.size().y / 2.0), g, Palette::FG());
             stats_left -= 18.0;
-            paint_codicon(ui, egui::pos2(stats_left + 8.0, line1), "cloud-download", 14.0, Palette::FG);
+            paint_codicon(ui, egui::pos2(stats_left + 8.0, line1), "cloud-download", 14.0, Palette::FG());
         }
     }
 
     // Name (bold), clipped before the stats.
     let name_clip = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(stats_left - 6.0, rect.bottom()));
-    let name = p.layout_no_wrap(t.name.to_string(), crate::ui_font::bold(13.0), Palette::FG);
+    let name = p.layout_no_wrap(t.name.to_string(), crate::ui_font::bold(13.0), Palette::FG());
     let name_h = name.size().y;
-    ui.painter_at(name_clip).galley(egui::pos2(x, line1 - name_h / 2.0), name, Palette::FG);
+    ui.painter_at(name_clip).galley(egui::pos2(x, line1 - name_h / 2.0), name, Palette::FG());
 
     // Description, one line.
     let desc_rect = egui::Rect::from_min_max(egui::pos2(x, rect.top() + 26.0), egui::pos2(right, rect.top() + 46.0));
-    let desc = p.layout_no_wrap(t.description.to_string(), FontId::proportional(13.0), Palette::FG);
-    ui.painter_at(desc_rect).galley(desc_rect.min, desc, Palette::FG);
+    let desc = p.layout_no_wrap(t.description.to_string(), FontId::proportional(13.0), Palette::FG());
+    ui.painter_at(desc_rect).galley(desc_rect.min, desc, Palette::FG());
 
     // Publisher, with the verified badge.
     let line3 = rect.bottom() - 15.0;
     let mut px = x;
     if t.verified {
-        paint_codicon(ui, egui::pos2(px + 7.0, line3), "verified-filled", 14.0, Palette::VSCE_EXTENSION_VERIFIED_FG);
+        paint_codicon(ui, egui::pos2(px + 7.0, line3), "verified-filled", 14.0, Palette::VSCE_EXTENSION_VERIFIED_FG());
         px += 17.0;
     }
     ui.painter_at(rect).text(
@@ -391,7 +391,7 @@ fn paint_row(ui: &mut Ui, rect: egui::Rect, icon: Option<&egui::TextureHandle>, 
         Align2::LEFT_CENTER,
         t.publisher,
         crate::ui_font::bold(12.0),
-        if t.disabled { Palette::VSCE_DISABLED_FG } else { Palette::FG_DESCRIPTION },
+        if t.disabled { Palette::VSCE_DISABLED_FG() } else { Palette::FG_DESCRIPTION() },
     );
 }
 
@@ -403,9 +403,9 @@ fn manage_gear(ui: &mut Ui, rect: egui::Rect, id: egui::Id) -> Option<egui::Pos2
     let resp = ui.interact(r, id, Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Manage"));
     if resp.hovered() {
-        ui.painter().rect_filled(r, CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG);
+        ui.painter().rect_filled(r, CornerRadius::same(5), Palette::VSCE_TOOLBAR_HOVER_BG());
     }
-    paint_codicon(ui, r.center(), "gear", 16.0, Palette::FG);
+    paint_codicon(ui, r.center(), "gear", 16.0, Palette::FG());
     let clicked = resp.clicked();
     resp.on_hover_text("Manage");
     clicked.then(|| egui::pos2(r.left(), r.bottom() + 2.0))
@@ -414,8 +414,8 @@ fn manage_gear(ui: &mut Ui, rect: egui::Rect, id: egui::Id) -> Option<egui::Pos2
 /// `ExtensionStatusAction` in a row: an error or warning icon left of ⚙.
 fn status_icon(ui: &mut Ui, rect: egui::Rect, state: &Activation) {
     let (name, color, tip) = match state {
-        Activation::Failed(e) => ("error", Palette::VSCE_EDITOR_ERROR_FG, format!("Activating the extension failed: {e}")),
-        Activation::NeedsNode => ("warning", Palette::VSCE_EDITOR_WARNING_FG, "This extension needs Node.js to run, and it wasn't found.".to_string()),
+        Activation::Failed(e) => ("error", Palette::VSCE_EDITOR_ERROR_FG(), format!("Activating the extension failed: {e}")),
+        Activation::NeedsNode => ("warning", Palette::VSCE_EDITOR_WARNING_FG(), "This extension needs Node.js to run, and it wasn't found.".to_string()),
         _ => return,
     };
     let r = egui::Rect::from_min_size(egui::pos2(rect.right() - PAD_RIGHT - 20.0 - 6.0 - 20.0, rect.bottom() - 15.0 - 9.0), egui::vec2(20.0, 18.0));
@@ -435,16 +435,16 @@ fn row_button(ui: &mut Ui, rect: egui::Rect, label: &str, id: egui::Id, enabled:
     let resp = ui.interact(r, id, sense);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     let fill = match (prominent, resp.hovered() && enabled) {
-        (true, false) => Palette::VSCE_EXTENSION_BUTTON_PROMINENT_BG,
-        (true, true) => Palette::VSCE_EXTENSION_BUTTON_PROMINENT_HOVER_BG,
-        (false, true) => Palette::VSCE_BUTTON_2026_SECONDARY_HOVER_BG,
+        (true, false) => Palette::VSCE_EXTENSION_BUTTON_PROMINENT_BG(),
+        (true, true) => Palette::VSCE_EXTENSION_BUTTON_PROMINENT_HOVER_BG(),
+        (false, true) => Palette::VSCE_BUTTON_2026_SECONDARY_HOVER_BG(),
         (false, false) => egui::Color32::TRANSPARENT,
     };
     ui.painter().rect(
         r,
         CornerRadius::same(2),
         fill,
-        Stroke::new(1.0, if prominent { egui::Color32::TRANSPARENT } else { Palette::VSCE_BUTTON_2026_BORDER }),
+        Stroke::new(1.0, if prominent { egui::Color32::TRANSPARENT } else { Palette::VSCE_BUTTON_2026_BORDER() }),
         StrokeKind::Inside,
     );
     ui.painter().text(
@@ -452,7 +452,7 @@ fn row_button(ui: &mut Ui, rect: egui::Rect, label: &str, id: egui::Id, enabled:
         Align2::CENTER_CENTER,
         label,
         font,
-        if prominent { egui::Color32::WHITE } else { Palette::FG },
+        if prominent { egui::Color32::WHITE } else { Palette::FG() },
     );
     enabled && resp.clicked()
 }

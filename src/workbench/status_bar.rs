@@ -11,18 +11,18 @@ fn plain(ui: &mut Ui, text: &str) -> egui::Response {
     ui.add_space(6.0);
     let g = ui
         .painter()
-        .layout_no_wrap(text.to_string(), FontId::proportional(11.5), Palette::FG);
+        .layout_no_wrap(text.to_string(), FontId::proportional(11.5), Palette::FG());
     let w = g.size().x + 6.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,
         text,
         FontId::proportional(11.5),
-        Palette::FG,
+        Palette::FG(),
     );
     resp
 }
@@ -35,12 +35,12 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
     let text_font = FontId::proportional(11.5);
     let icon_w = ui
         .painter()
-        .layout_no_wrap(glyph.to_string(), icon_font.clone(), Palette::FG)
+        .layout_no_wrap(glyph.to_string(), icon_font.clone(), Palette::FG())
         .size()
         .x;
     let text_w = ui
         .painter()
-        .layout_no_wrap(text.to_string(), text_font.clone(), Palette::FG)
+        .layout_no_wrap(text.to_string(), text_font.clone(), Palette::FG())
         .size()
         .x;
     let gap = 4.0;
@@ -50,7 +50,7 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
         ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
     if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG);
+            .rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
     let cy = rect.center().y;
     let p = ui.painter();
@@ -59,14 +59,14 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
         Align2::LEFT_CENTER,
         glyph.to_string(),
         icon_font,
-        Palette::FG,
+        Palette::FG(),
     );
     p.text(
         egui::pos2(rect.left() + pad + icon_w + gap, cy),
         Align2::LEFT_CENTER,
         text,
         text_font,
-        Palette::FG,
+        Palette::FG(),
     );
     resp.on_hover_text(tip)
 }
@@ -98,20 +98,20 @@ fn extension_segment(ui: &mut Ui, item: &crate::extensions::StatusItem) -> egui:
     let galleys: Vec<_> = parts
         .iter()
         .map(|part| match part {
-            icons::LabelPart::Text(t) => ui.painter().layout_no_wrap(t.clone(), text_font.clone(), Palette::FG),
-            icons::LabelPart::Icon(g) => ui.painter().layout_no_wrap(g.to_string(), icon_font.clone(), Palette::FG),
+            icons::LabelPart::Text(t) => ui.painter().layout_no_wrap(t.clone(), text_font.clone(), Palette::FG()),
+            icons::LabelPart::Icon(g) => ui.painter().layout_no_wrap(g.to_string(), icon_font.clone(), Palette::FG()),
         })
         .collect();
     let w = pad * 2.0 + galleys.iter().map(|g| g.size().x).sum::<f32>();
     let sense = if item.command.is_some() { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), sense);
     if resp.hovered() && item.command.is_some() {
-        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG);
+        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
     let mut x = rect.left() + pad;
     for g in galleys {
         let size = g.size();
-        ui.painter().galley(egui::pos2(x, rect.center().y - size.y / 2.0), g, Palette::FG);
+        ui.painter().galley(egui::pos2(x, rect.center().y - size.y / 2.0), g, Palette::FG());
         x += size.x;
     }
     let label = item.text.clone();
@@ -170,13 +170,13 @@ pub fn show_with_extensions(
     let mut out = StatusBarOutput::default();
     let rect = ui.max_rect();
     let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, Palette::STATUS_BAR_BG);
+    painter.rect_filled(rect, 0.0, Palette::STATUS_BAR_BG());
 
     let top_border = egui::Rect::from_min_size(
         egui::pos2(rect.left(), rect.top()),
         egui::vec2(rect.width(), 1.0),
     );
-    painter.rect_filled(top_border, 0.0, Palette::BORDER);
+    painter.rect_filled(top_border, 0.0, Palette::BORDER());
 
     let row = egui::Rect::from_min_size(
         egui::pos2(rect.left(), rect.top() + 1.0),
@@ -253,7 +253,7 @@ pub fn show_with_extensions(
                 ui.add_space(4.0);
                 label(
                     ui,
-                    &LabelProps::new(message).normal().size(11.5).color(Palette::FG),
+                    &LabelProps::new(message).normal().size(11.5).color(Palette::FG()),
                 );
             }
             // Right: document + editor state, right-to-left so the first item

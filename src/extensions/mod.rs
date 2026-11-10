@@ -1492,14 +1492,14 @@ pub fn css_color(v: &Value) -> Option<egui::Color32> {
 fn theme_color(id: &str) -> Option<egui::Color32> {
     use crate::theme::Palette;
     Some(match id {
-        "editor.findMatchHighlightBackground" => Palette::FIND_MATCH_HL_BG,
-        "editor.findMatchBackground" => Palette::FIND_MATCH_BG,
-        "editorError.foreground" | "errorForeground" => Palette::VSCE_NOTIFICATIONS_ERROR_ICON,
-        "editorWarning.foreground" => Palette::VSCE_NOTIFICATIONS_WARNING_ICON,
-        "editorInfo.foreground" => Palette::VSCE_NOTIFICATIONS_INFO_ICON,
-        "descriptionForeground" | "editorCodeLens.foreground" | "editorInlayHint.foreground" => Palette::FG_DESCRIPTION,
-        "foreground" | "editor.foreground" => Palette::FG,
-        "textLink.foreground" => Palette::VSCE_EXTENSION_VERIFIED_FG,
+        "editor.findMatchHighlightBackground" => Palette::FIND_MATCH_HL_BG(),
+        "editor.findMatchBackground" => Palette::FIND_MATCH_BG(),
+        "editorError.foreground" | "errorForeground" => Palette::VSCE_NOTIFICATIONS_ERROR_ICON(),
+        "editorWarning.foreground" => Palette::VSCE_NOTIFICATIONS_WARNING_ICON(),
+        "editorInfo.foreground" => Palette::VSCE_NOTIFICATIONS_INFO_ICON(),
+        "descriptionForeground" | "editorCodeLens.foreground" | "editorInlayHint.foreground" => Palette::FG_DESCRIPTION(),
+        "foreground" | "editor.foreground" => Palette::FG(),
+        "textLink.foreground" => Palette::VSCE_EXTENSION_VERIFIED_FG(),
         _ => return None,
     })
 }
