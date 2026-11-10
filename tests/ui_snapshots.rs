@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use egui::{CentralPanel, FontId, Vec2};
 use egui_kittest::Harness;
 
-use vscode_rust::app::welcome_screen;
 use vscode_rust::editor::Document;
 use vscode_rust::fs::FileNode;
 use vscode_rust::search::SearchState;
@@ -60,6 +59,8 @@ fn make_doc(name: &str, contents: &str, dirty: bool) -> Document {
         webview: None,
         preview: false,
         read_only: false,
+        untitled: false,
+        welcome: false,
     };
     if dirty {
         doc.text.push_str("\n// edited");
@@ -395,7 +396,10 @@ fn full_app_welcome() {
         egui::CentralPanel::default()
             .frame(Frame::default().fill(theme::Palette::EDITOR_BG()).inner_margin(Margin::ZERO))
             .show(ctx, |ui| {
-                let _ = welcome_screen(ui);
+                let _ = vscode_rust::workbench::welcome::show(
+                    ui,
+                    &vscode_rust::workbench::welcome::WelcomeModel { git_available: true, recent: &[], show_on_startup: true },
+                );
             });
     });
     let mut harness = Harness::builder()

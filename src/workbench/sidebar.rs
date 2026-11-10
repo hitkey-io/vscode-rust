@@ -13,6 +13,8 @@ use super::ActivityView;
 #[derive(Default)]
 pub struct SidebarOutput {
     pub file_to_open: Option<PathBuf>,
+    /// `file_to_open` was double-clicked: keep the editor (not a preview).
+    pub keep_open: bool,
     pub open_folder_requested: bool,
     pub navigate_to: Option<(PathBuf, usize, usize)>,
     /// Source Control events (multi-repo). Default = no-op.
@@ -36,6 +38,7 @@ pub fn show(
 ) -> SidebarOutput {
     let mut out = SidebarOutput {
         file_to_open: None,
+        keep_open: false,
         open_folder_requested: false,
         navigate_to: None,
         scm: super::source_control::ScmOutput::default(),
@@ -450,7 +453,10 @@ fn render_node(
         );
     }
 
-    if response.clicked() {
+    if response.double_clicked() && !node.is_dir {
+        out.file_to_open = Some(node.path.clone());
+        out.keep_open = true;
+    } else if response.clicked() {
         if node.is_dir {
             node.toggle();
         } else {

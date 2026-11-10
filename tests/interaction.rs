@@ -80,8 +80,11 @@ fn welcome_screen_renders() {
     harness.run();
     harness.run();
 
-    // The Welcome content offers an "Open Folder…" link.
-    let _open = harness.get_by_label_contains("Open Folder");
+    // The Welcome page's Start entries (VS Code 1.145 on macOS).
+    let _new = harness.get_by_label("New File...");
+    let _open = harness.get_by_label("Open...");
+    let _connect = harness.get_by_label("Connect to...");
+    let _startup = harness.get_by_label("Show welcome page on startup");
     harness.snapshot("interaction_welcome");
 }
 

@@ -95,6 +95,12 @@ palette! {
     /// The tab strip behind connected editor tabs.
     CONNECTED_TABS_BG = OneOf(&["editorGroupHeader.connectedTabsBackground", "editorGroupHeader.tabsBackground"]);
 
+    // ── Welcome page ──────────────────────────────────────────────────────
+    WELCOME_TILE_BG = Id("welcomePage.tileBackground");
+    WELCOME_TILE_HOVER_BG = Id("welcomePage.tileHoverBackground");
+    WELCOME_PROGRESS_BG = Id("welcomePage.progress.background");
+    WELCOME_PROGRESS_FG = Id("welcomePage.progress.foreground");
+
     // ── Foreground ────────────────────────────────────────────────────────
     FG = Id("foreground");
     /// Emphasised text and icons on hover.

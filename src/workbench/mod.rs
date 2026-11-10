@@ -11,6 +11,7 @@ pub mod source_control;
 pub mod status_bar;
 pub mod tabs;
 pub mod webviews;
+pub mod welcome;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ActivityView {

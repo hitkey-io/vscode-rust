@@ -29,6 +29,10 @@ const BOLD: &str = "SF-Bold";
 /// Family for bold UI text (`font-weight: bold`).
 const BOLD_FAMILY: &str = "ui-bold";
 const SEMIBOLD: &str = "SF-SemiBold";
+const HEADING: &str = "SF-SemiBold-Display";
+/// Family for large semibold headings (Welcome page title): SF's optical
+/// size follows the point size there, as WebKit does, so it's narrower.
+const HEADING_FAMILY: &str = "ui-heading";
 /// Family for semibold UI text (`--vscode-fontWeight-semiBold`, 600).
 const SEMIBOLD_FAMILY: &str = "ui-semibold";
 /// SF's "Text" optical size, used for every UI size (11–13px).
@@ -44,6 +48,12 @@ pub fn bold(size: f32) -> FontId {
 /// Falls back to the regular UI font where SF isn't available.
 pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD_FAMILY.into()))
+}
+
+/// SemiBold heading at `size` (≥ 18px) with SF's Display optical size,
+/// e.g. the Welcome page's "Visual Studio Code".
+pub fn heading(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(HEADING_FAMILY.into()))
 }
 
 /// Italic UI text at `size`, e.g. a preview editor's tab title.
@@ -64,6 +74,7 @@ pub fn register(fonts: &mut FontDefinitions) {
     let mut bold_family = fallback.clone();
     let mut italic_family = fallback.clone();
     let mut semibold_family = fallback.clone();
+    let mut heading_family = fallback.clone();
     if let Some(italic) = std::fs::read(SYSTEM_UI_ITALIC).ok().and_then(|b| instance(&b, 400.0)) {
         fonts.font_data.insert(ITALIC.to_owned(), std::sync::Arc::new(italic));
         italic_family.insert(0, ITALIC.to_owned());
@@ -86,6 +97,10 @@ pub fn register(fonts: &mut FontDefinitions) {
             fonts.font_data.insert(SEMIBOLD.to_owned(), std::sync::Arc::new(semibold));
             semibold_family.insert(0, SEMIBOLD.to_owned());
         }
+        if let Some(heading) = instance_at(&bytes, 600.0, 28.0) {
+            fonts.font_data.insert(HEADING.to_owned(), std::sync::Arc::new(heading));
+            heading_family.insert(0, HEADING.to_owned());
+        }
     }
     fonts
         .families
@@ -96,16 +111,24 @@ pub fn register(fonts: &mut FontDefinitions) {
     fonts
         .families
         .insert(FontFamily::Name(SEMIBOLD_FAMILY.into()), semibold_family);
+    fonts
+        .families
+        .insert(FontFamily::Name(HEADING_FAMILY.into()), heading_family);
 }
 
 /// SF at `weight` and the Text optical size: outlines through the tweak's
 /// coordinates, advances baked into `hmtx`.
 fn instance(bytes: &[u8], weight: f32) -> Option<FontData> {
-    let data = with_advances_at(bytes, &[("wght", weight), ("opsz", OPTICAL_SIZE)])?;
+    instance_at(bytes, weight, OPTICAL_SIZE)
+}
+
+/// SF at `weight` and optical size `opsz`.
+fn instance_at(bytes: &[u8], weight: f32, opsz: f32) -> Option<FontData> {
+    let data = with_advances_at(bytes, &[("wght", weight), ("opsz", opsz)])?;
     Some(FontData::from_owned(data).tweak(FontTweak {
         coords: egui::epaint::text::VariationCoords::new([
             (b"wght", weight),
-            (b"opsz", OPTICAL_SIZE),
+            (b"opsz", opsz),
         ]),
         ..Default::default()
     }))

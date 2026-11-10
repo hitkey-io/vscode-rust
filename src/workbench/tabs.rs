@@ -16,6 +16,9 @@ pub struct TabsAction {
     pub toggle_pin: Option<usize>,
     /// A tab was double-clicked: keep its preview editor open.
     pub keep: Option<usize>,
+    /// "More Actions..." (`…`) at the strip's right end: where to open its
+    /// menu.
+    pub more_actions: Option<egui::Pos2>,
 }
 
 pub fn show(
@@ -31,6 +34,7 @@ pub fn show(
         right_clicked: None,
         toggle_pin: None,
         keep: None,
+        more_actions: None,
     };
 
     let rect = ui.max_rect();
@@ -70,7 +74,13 @@ pub fn show(
     for (idx, label) in labels.iter().enumerate() {
         // File-type icon from the Seti theme (codicon file glyph as fallback).
         let extension_page = docs[idx].webview.is_some_and(|h| h >= crate::workbench::webviews::INTERNAL_HANDLE_BASE);
+        let welcome_logo = docs[idx]
+            .welcome
+            .then(|| crate::assets::svg_texture_in_colour(ui.ctx(), "vscode-logo", crate::assets::VSCODE_LOGO, 32))
+            .flatten();
         let mut t = match crate::file_icons::icon_for(&docs[idx].path) {
+            // The Welcome page: the product logo.
+            _ if welcome_logo.is_some() => Tab::new(label).image(welcome_logo.as_ref().map(|t| t.id()).unwrap()),
             // The extension editor's tab shows the Extensions icon.
             _ if extension_page => Tab::new(label).icon(icons::codicon_by_name("extensions").unwrap_or(icons::FILE)),
             Some((glyph, color)) => Tab::new(label).seti_icon(glyph, color),
@@ -143,6 +153,26 @@ pub fn show(
     // AccessKit labels for kittest queries.
     response_widget_info_helper(ui, &items, show_welcome_tab);
 
+    // Editor title actions (`editor/title`): Split Editor Right and More
+    // Actions..., 27px apart, the last centred 15px from the right edge.
+    let cy = rect.top() + rect.height() / 2.0 - 0.5;
+    for (i, (name, tip)) in [("split-horizontal", "Split Editor Right (⌘\\)"), ("ellipsis", "More Actions...")].into_iter().enumerate() {
+        let centre = egui::pos2(rect.right() - 42.0 + 27.0 * i as f32, cy);
+        let r = egui::Rect::from_center_size(centre, egui::vec2(22.0, 22.0));
+        let resp = ui.interact(r, ui.id().with(("editor-title-action", i)), egui::Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(r, 4.0, Palette::VSCE_TOOLBAR_HOVER_BG());
+        }
+        let glyph = icons::codicon_by_name(name).unwrap_or('?');
+        ui.painter().text(centre, egui::Align2::CENTER_CENTER, glyph.to_string(), icons::codicon_font(16.0), Palette::VSCE_ICON_2026_FG());
+        let label = tip.to_string();
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+        let resp = resp.on_hover_text(tip);
+        if i == 1 && resp.clicked() {
+            action.more_actions = Some(r.left_bottom());
+        }
+    }
+
     action
 }
 
@@ -162,7 +192,9 @@ fn response_widget_info_helper(ui: &mut Ui, items: &[Tab<'_>], welcome_shown: bo
         };
         // Allocate a 0×0 rect with the label so kittest can find it. This
         // doesn't paint anything visible but registers an AccessKit node.
-        let resp = ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover());
+        // An interaction without layout: allocating would push the row wider.
+        let at = egui::Rect::from_min_size(ui.max_rect().min, egui::Vec2::ZERO);
+        let resp = ui.interact(at, ui.id().with(("tab-a11y", idx)), egui::Sense::hover());
         resp.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
         });

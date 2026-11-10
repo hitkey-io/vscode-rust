@@ -252,7 +252,8 @@ fn draw_single_tab(
 
     // Preview tabs (opened with one click, not kept yet) are italic.
     let label_font = if tab.preview { crate::ui_font::italic(13.0) } else { FontId::proportional(13.0) };
-    let label_galley = ui.painter().layout_no_wrap(tab.label.to_string(), label_font, Color32::WHITE);
+    // PLACEHOLDER: painted in the tab's foreground below.
+    let label_galley = ui.painter().layout_no_wrap(tab.label.to_string(), label_font, Color32::PLACEHOLDER);
 
     let mut content_w = label_galley.size().x;
     if tab.icon.is_some() || tab.seti_icon.is_some() || tab.image.is_some() {
@@ -381,7 +382,9 @@ fn draw_single_tab(
             // caller decides whether that means "unpin" or "close".
             close_clicked = true;
         }
-    } else if tab.closable || tab.dirty {
+    } else if (tab.closable && (!props.connected || is_active || hovered)) || tab.dirty {
+        // Connected tabs show the close button on the active and the
+        // hovered tab only (`tabActionCloseVisibility`); a dirty dot always.
         let close_center = egui::pos2(rect.right() - if props.connected { 16.0 } else { 12.0 }, cy);
         let close_rect = egui::Rect::from_center_size(close_center, Vec2::splat(16.0));
         let close_resp =

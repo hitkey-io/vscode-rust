@@ -12,14 +12,24 @@ use crate::theme::Palette;
 use super::buffer::Document;
 use super::highlight::line_runs;
 
-/// Minimap column width in logical points (VS Code's default sits near this for
-/// typical content).
-pub const WIDTH: f32 = 72.0;
+/// The minimap's width (editorOptions `_computeMinimapLayout`, scale 1 at
+/// a 2x display: 1px per character, `maxColumn` 120, 8px gutter) for the
+/// width left after the editor's gutter; 0 when nothing fits.
+pub fn width(remaining: f32, char_w: f32) -> f32 {
+    const MAX_COLUMN: f32 = 120.0;
+    const GUTTER: f32 = 8.0;
+    const SCROLLBAR: f32 = 14.0;
+    let w = ((remaining - SCROLLBAR - 2.0) / (char_w + 1.0)).floor().max(0.0);
+    if w < 1.0 {
+        return 0.0;
+    }
+    w.min(MAX_COLUMN) + GUTTER
+}
 
-// VS Code's minimap at scale 1 spends ~2 device px per line; at our 2x DPR
-// that is ~2.2 logical points per source line, micro-glyphs slightly larger.
-const LINE_H: f32 = 2.2;
-const PAD: f32 = 4.0;
+/// 2 device px per line at scale 1 on a 2x display.
+const LINE_H: f32 = 2.0;
+/// Each character is a 1px column.
+const CHAR_W: f32 = 1.0;
 
 /// Paint the minimap into `area` (the right-hand strip of the editor). `top`
 /// and `rows` describe the editor's currently visible line window for the
@@ -29,48 +39,40 @@ pub fn show(ui: &Ui, area: Rect, doc: &Document, top_line: usize, visible_rows: 
     p.rect_filled(area, 0.0, Palette::EDITOR_BG());
 
     let runs = line_runs(&doc.text, doc.language);
-    let max_rows = ((area.height() - PAD) / LINE_H).floor() as usize;
+    let max_rows = (area.height() / LINE_H).floor() as usize;
+    let right = area.right() - 8.0;
 
-    // Each run renders as real (micro) text in the editor's monospace font —
-    // tiny letterforms like VS Code's renderCharacters minimap, instead of
-    // flat blocks. Tabs expand so indentation stays proportional.
-    let micro = crate::icons::editor_mono_font(LINE_H + 0.4);
+    // renderCharacters: each non-blank character is a 1×2px cell in its
+    // token colour (VS Code's prerendered minimap font at this scale reads
+    // as short bars); blanks stay empty, tabs are 4 wide.
     for (i, line) in runs.iter().enumerate() {
         if i >= max_rows {
             break;
         }
-        let y = area.top() + PAD + i as f32 * LINE_H;
-        let mut x = area.left() + PAD;
+        let y = area.top() + i as f32 * LINE_H;
+        let mut x = area.left();
         for (text, color) in line {
-            if x > area.right() - 2.0 {
-                break;
+            // A cell holds a downscaled glyph: about half covered.
+            let c = color.gamma_multiply(0.45);
+            for ch in text.chars() {
+                if x >= right {
+                    break;
+                }
+                let w = if ch == '\t' { 4.0 * CHAR_W } else { CHAR_W };
+                if !ch.is_whitespace() {
+                    p.rect_filled(Rect::from_min_size(egui::pos2(x + 0.15, y + 0.4), egui::vec2(CHAR_W * 0.7, LINE_H - 0.8)), 0.0, c);
+                }
+                x += w;
             }
-            let txt = text.replace('\t', "    ");
-            let c = color.gamma_multiply(0.85);
-            let galley = p.layout_no_wrap(txt, micro.clone(), c);
-            let w = galley.size().x.min(area.right() - 2.0 - x);
-            p.with_clip_rect(Rect::from_min_size(
-                egui::pos2(x, y),
-                egui::vec2(w, LINE_H),
-            ))
-            .galley(egui::pos2(x, y), galley.clone(), c);
-            x += galley.size().x;
         }
     }
 
-    // Viewport slider.
-    if visible_rows > 0 && !runs.is_empty() {
-        let sy = area.top() + PAD + top_line as f32 * LINE_H;
+    // `minimap.showSlider: mouseover`: the viewport slider while hovered.
+    if visible_rows > 0 && !runs.is_empty() && ui.rect_contains_pointer(area) {
+        let sy = area.top() + top_line as f32 * LINE_H;
         let sh = (visible_rows as f32 * LINE_H).min(area.height());
-        let slider = Rect::from_min_size(
-            egui::pos2(area.left(), sy),
-            egui::vec2(area.width(), sh),
-        );
-        ui.painter().rect_filled(
-            slider,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x10),
-        );
+        let slider = Rect::from_min_size(egui::pos2(area.left(), sy), egui::vec2(area.width(), sh));
+        ui.painter().rect_filled(slider, 0.0, Palette::MINIMAP_SLIDER_BG());
     }
 
     // Left divider hairline.

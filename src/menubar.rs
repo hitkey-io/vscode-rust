@@ -12,6 +12,7 @@ use muda::{
 
 #[derive(Clone)]
 pub struct MenuIds {
+    pub new_file: MenuId,
     pub open_folder: MenuId,
     pub open_file: MenuId,
     pub close_folder: MenuId,
@@ -67,6 +68,11 @@ pub fn install() -> InstalledMenu {
 
     // File menu
     let file_m = Submenu::new("File", true);
+    let new_file = MenuItem::new(
+        "New Text File",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
+    );
     let open_folder = MenuItem::new("Open Folder…", true, None);
     let open_file = MenuItem::new("Open File…", true, None);
     let close_folder = MenuItem::new("Close Folder", true, None);
@@ -90,6 +96,8 @@ pub fn install() -> InstalledMenu {
     );
     let close_all = MenuItem::new("Close All Editors", true, None);
     let _ = file_m.append_items(&[
+        &new_file,
+        &PredefinedMenuItem::separator(),
         &open_folder,
         &open_file,
         &PredefinedMenuItem::separator(),
@@ -183,6 +191,7 @@ pub fn install() -> InstalledMenu {
     }
 
     let ids = MenuIds {
+        new_file: new_file.id().clone(),
         open_folder: open_folder.id().clone(),
         open_file: open_file.id().clone(),
         close_folder: close_folder.id().clone(),

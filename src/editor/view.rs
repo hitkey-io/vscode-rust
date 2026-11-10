@@ -15,6 +15,13 @@ use super::highlight::build_layout_job;
 const EDITOR_FONT_SIZE: f32 = 12.0;
 const LINE_HEIGHT: f32 = EDITOR_FONT_SIZE * 1.5;
 const CHEVRON_W: f32 = 16.0;
+/// The TextEdit's own left inset before the first character.
+const TEXT_PAD: f32 = 6.0;
+/// `scrollbar.verticalScrollbarSize`: the strip right of the minimap.
+const SCROLLBAR_W: f32 = 14.0;
+/// Temp-data key: the editable view's (scroll id, offset, content height,
+/// viewport height) for `paint_scrollbar`.
+const SCROLL_INFO: &str = "vr-editor-scroll-info";
 /// Width of the diff decoration strip on the far left of the gutter.
 const DIFF_W: f32 = 3.0;
 
@@ -86,18 +93,22 @@ pub fn show_with_squiggles(
         .size()
         .x
         .max(6.0);
-    let number_w = (gutter_digits as f32 * char_w + 12.0).max(36.0);
-    let gutter_width = number_w + CHEVRON_W;
+    // editorOptions computeLayout, measured against VS Code 1.145.2: the
+    // numbers (≥ `lineNumbersMinChars` 5 digits) end 12px + their width in,
+    // the text starts 19px after them (the TextEdit adds `TEXT_PAD`).
+    let numbers = (gutter_digits.max(5) as f32 * char_w).round();
+    let number_w = 12.0 + numbers + 4.0;
+    let gutter_width = 12.0 + numbers + 18.0 - TEXT_PAD;
 
     let has_folds = !doc.folded.is_empty();
 
     // Split the editor area: code body on the left, minimap on the right.
     let full = ui.available_rect_before_wrap();
-    let show_minimap = full.width() > super::minimap::WIDTH + 200.0;
-    let mm_w = if show_minimap { super::minimap::WIDTH } else { 0.0 };
+    let mm_w = super::minimap::width(full.width() - gutter_width - TEXT_PAD, char_w);
+    let show_minimap = mm_w > 0.0;
     let editor_rect = egui::Rect::from_min_max(
         full.min,
-        egui::pos2(full.right() - mm_w, full.bottom()),
+        egui::pos2(full.right() - mm_w - SCROLLBAR_W, full.bottom()),
     );
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect).layout(*ui.layout()), |ui| {
@@ -110,11 +121,20 @@ pub fn show_with_squiggles(
 
     if show_minimap {
         let mm_rect = egui::Rect::from_min_max(
-            egui::pos2(full.right() - mm_w, full.top()),
-            full.max,
+            egui::pos2(full.right() - mm_w - SCROLLBAR_W, full.top()),
+            egui::pos2(full.right() - SCROLLBAR_W, full.bottom()),
         );
         let visible_rows = (editor_rect.height() / LINE_HEIGHT).ceil() as usize;
-        super::minimap::show(ui, mm_rect, doc, 0, visible_rows);
+        let top_line = ui
+            .ctx()
+            .data(|d| d.get_temp::<(egui::Id, f32, f32, f32)>(egui::Id::new(SCROLL_INFO)))
+            .map(|(_, off, _, _)| (off / LINE_HEIGHT) as usize)
+            .unwrap_or(0);
+        super::minimap::show(ui, mm_rect, doc, top_line, visible_rows);
+    }
+    if !has_folds {
+        let strip = egui::Rect::from_min_max(egui::pos2(full.right() - SCROLLBAR_W, full.top()), full.max);
+        paint_scrollbar(ui, strip, full, doc.cursor_line);
     }
     out
 }
@@ -203,7 +223,7 @@ fn paint_gutter(
     let mut toggled = None;
 
     for (row, &ln) in rows.iter().enumerate() {
-        let y = gutter_rect.top() + 4.0 + row as f32 * LINE_HEIGHT + LINE_HEIGHT / 2.0;
+        let y = gutter_rect.top() + row as f32 * LINE_HEIGHT + LINE_HEIGHT / 2.0;
 
         // Git diff decoration on the far-left edge of the gutter.
         if let Some(&kind) = diff.get(&ln) {
@@ -295,15 +315,21 @@ fn show_editable(
     let rows: Vec<usize> = (1..=line_count).collect();
     let mut toggled = None;
 
-    let output = egui::ScrollArea::both()
-        .id_salt("editor_scroll")
+    // `editor.scrollBeyondLastLine`: the last line can scroll to the top.
+    let viewport_h = ui.available_height();
+    let scroll = egui::ScrollArea::both()
+        // Per editor, like VS Code's view state (scroll and selection).
+        .id_salt(("editor_scroll", &doc.path))
         .auto_shrink([false, false])
+        // The vertical scrollbar is drawn right of the minimap
+        // (`paint_scrollbar`), the horizontal one isn't shown.
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
 
                 let (gutter_rect, _) = ui.allocate_exact_size(
-                    egui::vec2(gutter_width, LINE_HEIGHT * line_count as f32 + 8.0),
+                    egui::vec2(gutter_width, LINE_HEIGHT * line_count as f32 + (viewport_h - LINE_HEIGHT).max(0.0)),
                     Sense::hover(),
                 );
                 let gutter_hovered = ui.rect_contains_pointer(gutter_rect)
@@ -324,19 +350,24 @@ fn show_editable(
                 // painted under the TextEdit — whose frame is therefore
                 // transparent (the CentralPanel supplies the editor fill).
                 if cursor_line >= 1 {
-                    let hl_y =
-                        gutter_rect.top() + 4.0 + (cursor_line as f32 - 1.0) * LINE_HEIGHT;
+                    let hl_y = gutter_rect.top() + (cursor_line as f32 - 1.0) * LINE_HEIGHT;
+                    // `renderLineHighlight: line`: from the text's start to
+                    // the minimap.
                     ui.painter().rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(gutter_rect.right(), hl_y),
-                            egui::vec2(ui.available_width().max(200.0), LINE_HEIGHT),
+                        egui::Rect::from_min_max(
+                            egui::pos2(gutter_rect.right() + TEXT_PAD, hl_y),
+                            egui::pos2(ui.max_rect().right(), hl_y + LINE_HEIGHT),
                         ),
                         0.0,
                         Palette::LINE_HIGHLIGHT_BG(),
                     );
                 }
 
+                paint_indent_guides(ui, &doc.text, gutter_rect.right() + TEXT_PAD, gutter_rect.top(), cursor_line);
+
+                let text_id = ui.make_persistent_id(("editor_text", &doc.path));
                 TextEdit::multiline(&mut doc.text)
+                        .id(text_id)
                         .font(FontId::monospace(EDITOR_FONT_SIZE))
                         .code_editor()
                         .desired_rows(40)
@@ -345,14 +376,21 @@ fn show_editable(
                         .frame(
                             egui::Frame::default()
                                 .fill(egui::Color32::TRANSPARENT)
-                                .inner_margin(egui::Margin::symmetric(6, 4)),
+                                .inner_margin(egui::Margin { left: TEXT_PAD as i8, right: TEXT_PAD as i8, top: 0, bottom: 0 }),
                         )
                         .layouter(&mut layouter)
                         .show(ui)
             })
             .inner
         })
-        .inner;
+        ;
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new(SCROLL_INFO),
+            (scroll.id, scroll.state.offset.y, scroll.content_size.y, scroll.inner_rect.height()),
+        )
+    });
+    let output = scroll.inner;
     if let Some(before) = read_only_before {
         if doc.text != before {
             doc.text = before;
@@ -437,7 +475,7 @@ fn show_folded(
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
 
-                let body_h = LINE_HEIGHT * visible.len() as f32 + 8.0;
+                let body_h = LINE_HEIGHT * visible.len() as f32;
                 let (gutter_rect, _) =
                     ui.allocate_exact_size(egui::vec2(gutter_width, body_h), Sense::hover());
                 let gutter_hovered = true; // chevrons always visible while folded
@@ -475,10 +513,10 @@ fn show_folded(
                         None,
                     );
                     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
-                    let y = code_rect.top() + 4.0 + row as f32 * LINE_HEIGHT
+                    let y = code_rect.top() + row as f32 * LINE_HEIGHT
                         + (LINE_HEIGHT - galley.size().y) / 2.0;
                     ui.painter().galley(
-                        egui::pos2(code_rect.left() + 6.0, y),
+                        egui::pos2(code_rect.left() + TEXT_PAD, y),
                         galley,
                         Palette::FG(),
                     );
@@ -531,4 +569,141 @@ fn line_col_byte_to_char_offset(text: &str, target_line: usize, target_byte_in_l
         current_line += 1;
     }
     char_offset
+}
+
+/// Indentation unit in columns (`editor.detectIndentation`, simplified):
+/// the smallest indentation of a space-indented line, else 4.
+fn indent_size(text: &str) -> usize {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start_matches(' ').len())
+        .filter(|&n| n > 0)
+        .min()
+        .unwrap_or(4)
+        .min(8)
+}
+
+/// Leading whitespace in columns (tabs as 4).
+fn indent_columns(line: &str) -> usize {
+    let mut cols = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => cols += 1,
+            '\t' => cols += 4,
+            _ => break,
+        }
+    }
+    cols
+}
+
+/// `editor.guides.indentation`: a 1px line at each indentation level a line
+/// is inside (blank lines take the smaller level of their neighbours), the
+/// cursor's innermost block in `editorIndentGuide.activeBackground1`.
+fn paint_indent_guides(ui: &Ui, text: &str, content_left: f32, top: f32, cursor_line: usize) {
+    let unit = indent_size(text);
+    let char_w = ui
+        .painter()
+        .layout_no_wrap("0".into(), editor_mono_font(EDITOR_FONT_SIZE), Palette::FG())
+        .size()
+        .x;
+    let lines: Vec<&str> = text.split('\n').collect();
+    // Levels per line; blank lines get min(previous, next) of the non-blank.
+    let raw: Vec<Option<usize>> = lines
+        .iter()
+        .map(|l| (!l.trim().is_empty()).then(|| indent_columns(l) / unit))
+        .collect();
+    let mut levels = vec![0usize; lines.len()];
+    for i in 0..lines.len() {
+        levels[i] = match raw[i] {
+            Some(l) => l,
+            None => {
+                let prev = raw[..i].iter().rev().flatten().next().copied().unwrap_or(0);
+                let next = raw[i + 1..].iter().flatten().next().copied().unwrap_or(0);
+                prev.min(next)
+            }
+        };
+    }
+    // The active block: the cursor line's level, spread over its neighbours
+    // at that level or deeper.
+    let cur = cursor_line.saturating_sub(1).min(lines.len().saturating_sub(1));
+    let active_level = levels.get(cur).copied().unwrap_or(0);
+    let (mut a, mut b) = (cur, cur);
+    if active_level > 0 {
+        while a > 0 && levels[a - 1] >= active_level {
+            a -= 1;
+        }
+        while b + 1 < lines.len() && levels[b + 1] >= active_level {
+            b += 1;
+        }
+    }
+    let visible = ui.clip_rect();
+    for (i, &level) in levels.iter().enumerate() {
+        let y = top + i as f32 * LINE_HEIGHT;
+        if y > visible.bottom() || y + LINE_HEIGHT < visible.top() {
+            continue;
+        }
+        for g in 0..level {
+            let x = content_left + (g * unit) as f32 * char_w;
+            let active = active_level > 0 && g + 1 == active_level && i >= a && i <= b;
+            let colour = if active { Palette::INDENT_GUIDE_ACTIVE() } else { Palette::INDENT_GUIDE() };
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(1.0, LINE_HEIGHT)),
+                0.0,
+                colour,
+            );
+        }
+    }
+}
+
+/// The editor's vertical scrollbar in its 14px strip
+/// (`scrollbar.verticalScrollbarSize`): a `scrollbarSlider.*` slider shown
+/// while the pointer is over the editor, draggable.
+fn paint_scrollbar(ui: &mut Ui, strip: egui::Rect, editor: egui::Rect, cursor_line: usize) {
+    let Some((id, offset, content_h, view_h)) =
+        ui.ctx().data(|d| d.get_temp::<(egui::Id, f32, f32, f32)>(egui::Id::new(SCROLL_INFO)))
+    else {
+        return;
+    };
+    // The overview ruler shares the strip (decorationsOverviewRuler.ts):
+    // its left border and the cursor (2px, editorCursor.foreground at 70%).
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(strip.min, egui::vec2(1.0, strip.height())),
+        0.0,
+        Palette::OVERVIEW_RULER_BORDER(),
+    );
+    if content_h > 0.0 {
+        let y = strip.top() + (cursor_line.saturating_sub(1) as f32 * LINE_HEIGHT) / content_h * strip.height();
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(egui::pos2(strip.left() + 1.0, y), egui::vec2(strip.width() - 1.0, 2.0)),
+            0.0,
+            Palette::CURSOR_FG().gamma_multiply(0.7),
+        );
+    }
+    let range = content_h - view_h;
+    if range <= 0.5 {
+        return;
+    }
+    let slider_h = (view_h / content_h * strip.height()).max(20.0);
+    let travel = strip.height() - slider_h;
+    let y = strip.top() + offset / range * travel;
+    let slider = egui::Rect::from_min_size(egui::pos2(strip.left(), y), egui::vec2(strip.width(), slider_h));
+    let resp = ui.interact(slider, id.with("vscode-slider"), Sense::drag());
+    if resp.dragged() {
+        let dy = resp.drag_delta().y;
+        if let Some(mut state) = egui::scroll_area::State::load(ui.ctx(), id) {
+            state.offset.y = (state.offset.y + dy * range / travel.max(1.0)).clamp(0.0, range);
+            state.store(ui.ctx(), id);
+            ui.ctx().request_repaint();
+        }
+    }
+    if ui.rect_contains_pointer(editor) || resp.dragged() {
+        let colour = if resp.dragged() {
+            Palette::VSCE_SCROLLBAR_SLIDER_ACTIVE()
+        } else if resp.hovered() {
+            Palette::VSCE_SCROLLBAR_SLIDER_HOVER()
+        } else {
+            Palette::VSCE_SCROLLBAR_SLIDER_BG()
+        };
+        ui.painter().rect_filled(slider, 4.0, colour);
+    }
 }

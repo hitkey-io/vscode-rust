@@ -31,6 +31,11 @@ pub struct Document {
     /// Shown, never written: a version from git (HEAD, the index, a
     /// commit) or a diff. Edits are undone and Save does nothing.
     pub read_only: bool,
+    /// A new file not saved anywhere yet ("Untitled-1"): Save asks where.
+    pub untitled: bool,
+    /// The Welcome page (`GettingStartedInput`), shown in a tab like any
+    /// editor.
+    pub welcome: bool,
 }
 
 impl Document {
@@ -62,6 +67,8 @@ impl Document {
             webview: None,
             preview: false,
             read_only: false,
+            untitled: false,
+            welcome: false,
         })
     }
 
@@ -86,6 +93,8 @@ impl Document {
             webview: None,
             preview: false,
             read_only: true,
+            untitled: false,
+            welcome: false,
         }
     }
 
@@ -115,12 +124,38 @@ impl Document {
             webview: Some(handle),
             preview: false,
             read_only: true,
+            untitled: false,
+            welcome: false,
         }
+    }
+
+    /// The Welcome page's tab. It opens italic, as VS Code shows it.
+    pub fn welcome() -> Self {
+        let mut d = Self::read_only(PathBuf::from("Welcome"), String::new(), String::new());
+        d.diff_title = None;
+        d.language = "";
+        d.welcome = true;
+        d.preview = true;
+        d
+    }
+
+    /// `workbench.action.files.newUntitledFile`: an empty plain-text
+    /// document titled "Untitled-<n>".
+    pub fn untitled(n: usize) -> Self {
+        let mut d = Self::read_only(PathBuf::from(format!("Untitled-{n}")), String::new(), String::new());
+        d.diff_title = None;
+        d.read_only = false;
+        d.untitled = true;
+        d.language = "";
+        d
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {
         if self.read_only {
             return Ok(());
+        }
+        if self.untitled {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "untitled: choose where to save"));
         }
         std::fs::write(&self.path, &self.text)?;
         self.saved_text = self.text.clone();
@@ -208,7 +243,7 @@ fn is_known_binary(path: &Path) -> bool {
     )
 }
 
-fn detect_language(path: &Path) -> &'static str {
+pub fn detect_language(path: &Path) -> &'static str {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

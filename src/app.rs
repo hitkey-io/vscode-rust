@@ -25,6 +25,11 @@ pub struct App {
     sidebar_width: f32,
     status_message: String,
     palette: CommandPaletteState,
+    /// Recently opened folders, most recent first (the Welcome page's
+    /// Recent list), kept in `<user data>/User/globalStorage`.
+    recent_folders: Vec<PathBuf>,
+    /// `--user-data-dir`; `None` in tests (nothing is written).
+    user_data_dir: Option<PathBuf>,
     /// User settings (`settings.json`); in memory until
     /// `bootstrap_user_data` points at a folder.
     settings: crate::settings::Settings,
@@ -110,6 +115,9 @@ pub struct App {
     pending_scm_menu: Option<(crate::workbench::source_control::ScmMenu, egui::Pos2)>,
     /// What the items of the open Source Control menu do.
     scm_menu_actions: Vec<(muda::MenuId, ScmAction)>,
+    /// The editor title "…" menu asked for this frame, and its items.
+    pending_editor_menu: Option<egui::Pos2>,
+    editor_menu_actions: Vec<(muda::MenuId, EditorMenuAction)>,
     /// A Quick Access pick or input the Source Control view opened.
     git_prompt: Option<(u64, GitPrompt)>,
     /// `git.enableSmartCommit` ("Always" in the no-staged-changes prompt).
@@ -119,6 +127,15 @@ pub struct App {
 use crate::workbench::source_control::ScmAction;
 
 /// An entry of a native menu built for the Source Control view.
+/// The editor title's "More Actions..." menu (MenuId.EditorTitle, the
+/// entries that work here).
+#[derive(Clone, Copy, Debug)]
+enum EditorMenuAction {
+    CloseAll,
+    CloseSaved,
+    TogglePreview,
+}
+
 enum MenuEntry {
     Item(String, ScmAction),
     Check(String, ScmAction, bool),
@@ -320,6 +337,8 @@ impl App {
             status_message: String::new(),
             palette: CommandPaletteState::default(),
             settings: crate::settings::Settings::in_memory(),
+            recent_folders: Vec::new(),
+            user_data_dir: None,
             theme_pick: None,
             visuals_generation: 0,
             chord_k: None,
@@ -355,6 +374,8 @@ impl App {
             pending_ext_menu: None,
             pending_scm_menu: None,
             scm_menu_actions: Vec::new(),
+            pending_editor_menu: None,
+            editor_menu_actions: Vec::new(),
             git_prompt: None,
             smart_commit: false,
             next_internal_handle: crate::workbench::webviews::INTERNAL_HANDLE_BASE,
@@ -374,7 +395,10 @@ impl App {
 
     fn dispatch_menu_event(&mut self, ctx: &Context, id: &muda::MenuId) {
         let Some(ids) = self.menu_ids.clone() else { return };
-        let cmd = if id == &ids.open_folder {
+        let cmd = if id == &ids.new_file {
+            self.new_untitled_file();
+            None
+        } else if id == &ids.open_folder {
             Some(CommandId::OpenFolder)
         } else if id == &ids.open_file {
             Some(CommandId::OpenFile)
@@ -1649,10 +1673,10 @@ impl App {
         let docs: Vec<(PathBuf, &'static str, &str, bool)> = self
             .documents
             .iter()
-            .filter(|d| d.diff_base.is_none() && d.webview.is_none())
+            .filter(|d| d.diff_base.is_none() && d.webview.is_none() && !d.welcome)
             .map(|d| (d.path.clone(), d.language_id(), d.text.as_str(), d.dirty))
             .collect();
-        let active = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.diff_base.is_none() && d.webview.is_none()).map(|d| {
+        let active = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.diff_base.is_none() && d.webview.is_none() && !d.welcome).map(|d| {
             let line = d.cursor_line.saturating_sub(1);
             let ch = crate::extensions::text::char_col_to_utf16(&d.text, line, d.cursor_col.saturating_sub(1));
             (d.path.clone(), [line, ch, line, ch])
@@ -1763,6 +1787,7 @@ impl App {
     }
 
     fn set_workspace(&mut self, path: PathBuf) {
+        self.add_recent_folder(path.clone());
         self.workspace_root = Some(path.clone());
         self.file_tree = Some(FileNode::root(path.clone()));
         self.set_status(format!("Opened folder: {}", path.display()));
@@ -1915,12 +1940,21 @@ impl App {
     }
 
     fn open_file(&mut self, path: PathBuf) {
+        self.open_file_with(path, true);
+    }
+
+    /// Opens `path` in an editor: `pinned` keeps it, otherwise it takes the
+    /// preview slot (a single click in the Explorer).
+    fn open_file_with(&mut self, path: PathBuf, pinned: bool) {
         // Reveal the file in the Explorer tree (expand its ancestor folders),
         // matching VS Code's "reveal active file" behaviour.
         if let Some(root) = self.file_tree.as_mut() {
             root.reveal(&path);
         }
         if let Some(idx) = self.documents.iter().position(|d| d.path == path && d.diff_base.is_none() && !d.read_only && d.webview.is_none()) {
+            if pinned {
+                self.documents[idx].preview = false;
+            }
             self.active_doc = Some(idx);
             self.refresh_git_line_changes();
             self.track_recent_active();
@@ -1928,9 +1962,7 @@ impl App {
         }
         match Document::open(path.clone()) {
             Ok(doc) => {
-                self.documents.push(doc);
-                self.active_doc = Some(self.documents.len() - 1);
-                self.set_status(format!("Opened {}", path.display()));
+                self.open_tab(doc, pinned);
                 self.refresh_git_line_changes();
                 self.track_recent_active();
             }
@@ -2913,6 +2945,57 @@ impl App {
     }
 
     /// Open a Source Control menu natively, under the pointer or button.
+    /// `workbench.editor.enablePreview` (default true).
+    fn preview_enabled(&self) -> bool {
+        self.settings.get_bool("workbench.editor.enablePreview").unwrap_or(true)
+    }
+
+    fn show_pending_editor_menu(&mut self, frame: &eframe::Frame) {
+        use muda::ContextMenu;
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Some(pos) = self.pending_editor_menu.take() else { return };
+        let root = muda::Menu::new();
+        let mut actions = Vec::new();
+        let close_all = muda::MenuItem::new("Close All", true, None);
+        let close_saved = muda::MenuItem::new("Close Saved", true, None);
+        let preview = muda::CheckMenuItem::new("Enable Preview Editors", true, self.preview_enabled(), None);
+        actions.push((close_all.id().clone(), EditorMenuAction::CloseAll));
+        actions.push((close_saved.id().clone(), EditorMenuAction::CloseSaved));
+        actions.push((preview.id().clone(), EditorMenuAction::TogglePreview));
+        let _ = root.append_items(&[&close_all, &close_saved, &muda::PredefinedMenuItem::separator(), &preview]);
+        self.editor_menu_actions = actions;
+        let Ok(handle) = frame.window_handle() else { return };
+        if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+            let y = self.viewport_height - pos.y;
+            // SAFETY: the view belongs to the live editor window.
+            unsafe {
+                root.show_context_menu_for_nsview(
+                    appkit.ns_view.as_ptr() as *const std::ffi::c_void,
+                    Some(muda::dpi::Position::Logical(muda::dpi::LogicalPosition::new(pos.x as f64, y as f64))),
+                );
+            }
+        }
+    }
+
+    fn editor_menu_action(&mut self, action: EditorMenuAction) {
+        match action {
+            EditorMenuAction::CloseAll => {
+                self.close_all();
+                self.show_welcome = false;
+            }
+            EditorMenuAction::CloseSaved => {
+                while let Some(i) = self.documents.iter().position(|d| !d.dirty) {
+                    self.close_doc(i);
+                }
+                self.show_welcome = false;
+            }
+            EditorMenuAction::TogglePreview => {
+                let value = if self.preview_enabled() { Some(serde_json::json!(false)) } else { None };
+                let _ = self.settings.update("workbench.editor.enablePreview", value);
+            }
+        }
+    }
+
     fn show_pending_scm_menu(&mut self, frame: &eframe::Frame) {
         use muda::ContextMenu;
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -2986,6 +3069,8 @@ impl App {
     /// and file is reused (and refreshed).
     fn open_tab(&mut self, mut doc: Document, pinned: bool) {
         self.show_welcome = false;
+        self.keep_welcome();
+        let pinned = pinned || !self.preview_enabled();
         if let Some(i) = self.documents.iter().position(|d| {
             d.path == doc.path && d.diff_title == doc.diff_title && d.diff_base.is_some() == doc.diff_base.is_some() && d.webview.is_none()
         }) {
@@ -3112,6 +3197,14 @@ impl App {
     fn save_active(&mut self) {
         let mut msg: Option<String> = None;
         let mut saved_path: Option<PathBuf> = None;
+        if let Some(idx) = self.active_doc.filter(|&i| self.documents.get(i).is_some_and(|d| d.untitled)) {
+            if self.save_untitled(idx) {
+                let path = self.documents[idx].path.clone();
+                self.set_status(format!("Saved {}", path.display()));
+                self.extensions.document_saved(&path);
+            }
+            return;
+        }
         if let Some(idx) = self.active_doc {
             if let Some(doc) = self.documents.get_mut(idx) {
                 msg = Some(match doc.save() {
@@ -3280,7 +3373,87 @@ impl App {
     /// (`--user-data-dir`, like VS Code).
     pub fn bootstrap_user_data(&mut self, dir: PathBuf) {
         self.settings = crate::settings::Settings::load(&dir);
+        self.recent_folders = std::fs::read_to_string(Self::recent_folders_file(&dir))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Vec<PathBuf>>(&t).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| p.is_dir())
+            .collect();
+        self.user_data_dir = Some(dir);
         self.apply_theme_settings();
+        // `workbench.startupEditor`: "none" skips the Welcome page.
+        if self.settings.get_str("workbench.startupEditor") == Some("none") {
+            self.show_welcome = false;
+        }
+    }
+
+    fn recent_folders_file(dir: &std::path::Path) -> PathBuf {
+        dir.join("User").join("globalStorage").join("recent-folders.json")
+    }
+
+    /// Moves `folder` to the front of the recent folders and saves them.
+    fn add_recent_folder(&mut self, folder: PathBuf) {
+        self.recent_folders.retain(|p| p != &folder);
+        self.recent_folders.insert(0, folder);
+        self.recent_folders.truncate(50);
+        self.save_recent_folders();
+    }
+
+    fn save_recent_folders(&self) {
+        if let Some(dir) = &self.user_data_dir {
+            let file = Self::recent_folders_file(dir);
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&self.recent_folders) {
+                let _ = std::fs::write(file, json);
+            }
+        }
+    }
+
+    /// Shows the Welcome tab (opening it if it isn't open).
+    fn open_welcome(&mut self) {
+        if let Some(i) = self.documents.iter().position(|d| d.welcome) {
+            self.active_doc = Some(i);
+            return;
+        }
+        self.documents.push(crate::editor::Document::welcome());
+        self.active_doc = Some(self.documents.len() - 1);
+    }
+
+    /// Another editor is opening: the Welcome tab stops being a preview
+    /// (it stays open beside the new editor, as in VS Code).
+    fn keep_welcome(&mut self) {
+        for d in self.documents.iter_mut().filter(|d| d.welcome) {
+            d.preview = false;
+        }
+    }
+
+    /// `workbench.action.files.newUntitledFile` (⌘N, "New File..." with
+    /// only the built-in Text File entry): an empty "Untitled-<n>" editor.
+    fn new_untitled_file(&mut self) {
+        let n = (1..)
+            .find(|n| !self.documents.iter().any(|d| d.untitled && d.path == std::path::Path::new(&format!("Untitled-{n}"))))
+            .unwrap_or(1);
+        self.show_welcome = false;
+        self.open_tab(crate::editor::Document::untitled(n), true);
+    }
+
+    /// Save As for an untitled editor: the file chosen in the save dialog.
+    fn save_untitled(&mut self, idx: usize) -> bool {
+        let Some(doc) = self.documents.get(idx) else { return false };
+        let name = doc.display_name();
+        let mut dialog = rfd::FileDialog::new().set_file_name(&name);
+        if let Some(root) = &self.workspace_root {
+            dialog = dialog.set_directory(root);
+        }
+        let Some(path) = dialog.save_file() else { return false };
+        let doc = &mut self.documents[idx];
+        doc.path = path;
+        doc.untitled = false;
+        doc.language = crate::editor::buffer::detect_language(&doc.path);
+        doc.save().is_ok()
     }
 
     /// `workbench.colorTheme` + `workbench.colorCustomizations`.
@@ -3849,6 +4022,10 @@ impl App {
                 self.extension_page_action(&id, action);
                 continue;
             }
+            if let Some((_, action)) = self.editor_menu_actions.iter().find(|(m, _)| m == &ev.id).map(|(m, a)| (m.clone(), *a)) {
+                self.editor_menu_action(action);
+                continue;
+            }
             if let Some((_, action)) = self.scm_menu_actions.iter().find(|(m, _)| m == &ev.id).cloned() {
                 self.run_scm_action(action);
                 continue;
@@ -3871,6 +4048,11 @@ impl App {
         self.pump_extensions(ctx);
 
         self.handle_shortcuts(ctx);
+
+        // The Welcome page asked for (startup, Help ▸ Welcome) opens as a tab.
+        if std::mem::take(&mut self.show_welcome) {
+            self.open_welcome();
+        }
 
         // The shell behind the Modern UI cards, under every panel (gaps
         // between panels would otherwise show the clear colour).
@@ -4099,7 +4281,8 @@ impl App {
                 self.open_folder_dialog();
             }
             if let Some(path) = sidebar_output.file_to_open {
-                self.open_file(path);
+                // Explorer: one click = preview editor, double click keeps it.
+                self.open_file_with(path, sidebar_output.keep_open);
             }
             if let Some((path, line, col)) = sidebar_output.navigate_to {
                 self.navigate_to(path, line, col);
@@ -4111,6 +4294,7 @@ impl App {
         let mut welcome_pending_folder = false;
         let mut find_matches_for_widget: Vec<(usize, usize)> = Vec::new();
         let mut welcome_pending_file = false;
+        let mut welcome_action: Option<(crate::workbench::welcome::WelcomeAction, bool)> = None;
 
         // The editor card: 4px from its neighbours and the window, 1px
         // outline inside, 8px corners (editorBorder.css).
@@ -4124,9 +4308,9 @@ impl App {
             .show(ctx, |ui| {
                 ui.painter().rect_filled(ui.max_rect().expand(1.0), 0.0, Palette::EDITOR_BG());
                 ui.vertical(|ui| {
-                    let show_welcome_tab =
-                        self.show_welcome && self.documents.is_empty();
-                    let has_any_tab = !self.documents.is_empty() || show_welcome_tab;
+                    // The editor (or page) starts right under the tab strip.
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let has_any_tab = !self.documents.is_empty();
 
                     if has_any_tab {
                         let tabs_action = ui
@@ -4134,12 +4318,7 @@ impl App {
                                 egui::vec2(ui.available_width(), 32.0),
                                 egui::Layout::left_to_right(egui::Align::Min),
                                 |ui| {
-                                    tabs::show(
-                                        ui,
-                                        &self.documents,
-                                        self.active_doc,
-                                        show_welcome_tab,
-                                    )
+                                    tabs::show(ui, &self.documents, self.active_doc, false)
                                 },
                             )
                             .inner;
@@ -4155,6 +4334,9 @@ impl App {
                             if let Some(doc) = self.documents.get_mut(idx) {
                                 doc.preview = false;
                             }
+                        }
+                        if let Some(pos) = tabs_action.more_actions {
+                            self.pending_editor_menu = Some(pos);
                         }
                         if let Some(idx) = tabs_action.toggle_pin {
                             if let Some(doc) = self.documents.get_mut(idx) {
@@ -4183,9 +4365,19 @@ impl App {
                             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(13.0), Palette::FG_DESCRIPTION());
                         }
                         self.webview_host.place(handle, rect);
+                    } else if self.active_doc.and_then(|i| self.documents.get(i)).is_some_and(|d| d.welcome) {
+                        let show_on_startup = self.settings.get_str("workbench.startupEditor").unwrap_or("welcomePage") == "welcomePage";
+                        let model = crate::workbench::welcome::WelcomeModel {
+                            git_available: crate::git::available(),
+                            recent: &self.recent_folders,
+                            show_on_startup,
+                        };
+                        let act = crate::workbench::welcome::show(ui, &model);
+                        welcome_action = Some((act, show_on_startup));
                     } else if let Some(idx) = self.active_doc {
-                        // Breadcrumbs row (path of the active file), like VS Code.
-                        if let Some(doc) = self.documents.get(idx) {
+                        // Breadcrumbs row (path of the active file); an
+                        // untitled editor has none.
+                        if let Some(doc) = self.documents.get(idx).filter(|d| !d.untitled) {
                             crate::workbench::breadcrumbs::show(
                                 ui,
                                 &doc.path,
@@ -4236,17 +4428,6 @@ impl App {
                             editor_output = Some(out);
                         }
                         find_matches_for_widget = find_matches;
-                    } else if self.show_welcome {
-                        let act = welcome_screen(ui);
-                        if act.open_folder {
-                            welcome_pending_folder = true;
-                        }
-                        if act.open_file {
-                            welcome_pending_file = true;
-                        }
-                        if act.open_palette {
-                            self.palette.open();
-                        }
                     } else {
                         empty_editor_hints(ui);
                     }
@@ -4268,6 +4449,28 @@ impl App {
             );
         }
 
+        if let Some((act, show_on_startup)) = welcome_action {
+            use crate::workbench::welcome::StartEntry;
+            match act.start {
+                Some(StartEntry::NewFile) => self.new_untitled_file(),
+                Some(StartEntry::Open) => welcome_pending_folder = true,
+                Some(StartEntry::CloneRepository) => self.run_scm_action(ScmAction::CloneRepository),
+                Some(StartEntry::ConnectTo) => self.set_status("Remote development is not available"),
+                None => {}
+            }
+            if let Some(folder) = act.open_recent {
+                self.set_workspace(folder);
+            }
+            if let Some(folder) = act.remove_recent {
+                self.recent_folders.retain(|p| p != &folder);
+                self.save_recent_folders();
+            }
+            if act.toggle_show_on_startup {
+                // Unchecking writes "none"; checking restores the default.
+                let value = if show_on_startup { Some(serde_json::json!("none")) } else { None };
+                let _ = self.settings.update("workbench.startupEditor", value);
+            }
+        }
         if welcome_pending_folder {
             self.open_folder_dialog();
         }
@@ -4325,6 +4528,7 @@ impl eframe::App for App {
         }
         self.show_pending_extension_menu(frame);
         self.show_pending_scm_menu(frame);
+        self.show_pending_editor_menu(frame);
         self.webview_host.sync(frame, &mut self.extensions);
         if !self.extensions.webviews.is_empty() || !self.ext_pages.is_empty() {
             // Page messages arrive between frames.
@@ -4405,223 +4609,6 @@ pub fn empty_editor_hints(ui: &mut egui::Ui) {
             Palette::FG_DESCRIPTION(),
         );
     }
-}
-
-pub struct WelcomeAction {
-    pub open_folder: bool,
-    pub open_file: bool,
-    pub open_palette: bool,
-}
-
-pub fn welcome_screen(ui: &mut egui::Ui) -> WelcomeAction {
-    let mut action = WelcomeAction {
-        open_folder: false,
-        open_file: false,
-        open_palette: false,
-    };
-
-    ui.add_space(72.0);
-    ui.horizontal(|ui| {
-        let total = ui.available_width();
-        let content_w = 820.0_f32.min(total - 40.0);
-        let side_pad = ((total - content_w) / 2.0).max(20.0);
-        ui.add_space(side_pad);
-
-        ui.vertical(|ui| {
-            ui.set_width(content_w);
-
-            ui.label(
-                egui::RichText::new("Visual Studio Code")
-                    .size(36.0)
-                    .color(Palette::FG()),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("Editing evolved")
-                    .size(18.0)
-                    .color(Palette::FG_DESCRIPTION()),
-            );
-
-            ui.add_space(36.0);
-
-            // Left column: Start + Recent (stacked); right column: Walkthroughs.
-            let left_w = (content_w * 0.52).min(content_w - 260.0).max(220.0);
-            let right_w = content_w - left_w - 40.0;
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(left_w, 320.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new("Start").size(20.0).color(Palette::FG()).strong(),
-                        );
-                        ui.add_space(8.0);
-                        let _ = welcome_link_icon(ui, Some(crate::icons::NEW_FILE), "New File…");
-                        if welcome_link_icon(ui, Some(crate::icons::FILE), "Open File…").clicked() {
-                            action.open_file = true;
-                        }
-                        if welcome_link_icon(ui, Some(crate::icons::FOLDER_OPENED), "Open Folder…")
-                            .clicked()
-                        {
-                            action.open_folder = true;
-                        }
-                        let _ = welcome_link_icon(ui, Some(crate::icons::REPO), "Clone Git Repository…");
-                        if welcome_link_icon(ui, Some(crate::icons::SEARCH), "Show All Commands  ⇧⌘P")
-                            .clicked()
-                        {
-                            action.open_palette = true;
-                        }
-
-                        ui.add_space(28.0);
-                        ui.label(
-                            egui::RichText::new("Recent").size(20.0).color(Palette::FG()).strong(),
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("No recent folders")
-                                .color(Palette::FG_DESCRIPTION()),
-                        );
-                    },
-                );
-
-                ui.add_space(40.0);
-
-                ui.allocate_ui_with_layout(
-                    egui::vec2(right_w, 320.0),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new("Walkthroughs")
-                                .size(20.0)
-                                .color(Palette::FG())
-                                .strong(),
-                        );
-                        ui.add_space(10.0);
-                        walkthrough_card(
-                            ui,
-                            "Get Started with VS Code",
-                            "Customize your editor, learn the basics, and start coding",
-                        );
-                        ui.add_space(8.0);
-                        walkthrough_card(ui, "Learn the Fundamentals", "");
-                    },
-                );
-            });
-
-            ui.add_space(40.0);
-            let mut show_on_startup = true;
-            ui.checkbox(
-                &mut show_on_startup,
-                egui::RichText::new("Show welcome page on startup")
-                    .size(13.0)
-                    .color(Palette::FG_DESCRIPTION()),
-            );
-        });
-    });
-
-    action
-}
-
-/// A Walkthroughs card: codicon tile + title + optional subtitle.
-fn walkthrough_card(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    let h = if subtitle.is_empty() { 40.0 } else { 56.0 };
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-    let bg = if resp.hovered() {
-        Palette::LIST_HOVER_BG()
-    } else {
-        Palette::SIDEBAR_SECTION_HEADER_BG()
-    };
-    ui.painter().rect(
-        rect,
-        egui::CornerRadius::same(6),
-        bg,
-        egui::Stroke::new(1.0, Palette::BORDER()),
-        egui::StrokeKind::Inside,
-    );
-    let icon_c = egui::pos2(rect.left() + 22.0, rect.center().y);
-    ui.painter().text(
-        icon_c,
-        egui::Align2::CENTER_CENTER,
-        crate::icons::VSCODE.to_string(),
-        crate::icons::codicon_font(20.0),
-        Palette::ACCENT(),
-    );
-    let tx = rect.left() + 44.0;
-    if subtitle.is_empty() {
-        ui.painter().text(
-            egui::pos2(tx, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(13.5),
-            Palette::FG(),
-        );
-    } else {
-        ui.painter().text(
-            egui::pos2(tx, rect.top() + 16.0),
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(13.5),
-            Palette::FG(),
-        );
-        ui.painter().text(
-            egui::pos2(tx, rect.top() + 36.0),
-            egui::Align2::LEFT_CENTER,
-            subtitle,
-            egui::FontId::proportional(12.0),
-            Palette::FG_DESCRIPTION(),
-        );
-    }
-}
-
-fn welcome_link(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    welcome_link_icon(ui, None, text)
-}
-
-fn welcome_link_icon(ui: &mut egui::Ui, icon: Option<char>, text: &str) -> egui::Response {
-    let parts: Vec<&str> = text.splitn(2, "  ").collect();
-    let label = parts[0];
-    let shortcut = parts.get(1).copied().unwrap_or("");
-
-    let row_height = 26.0;
-    let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), row_height),
-        egui::Sense::click(),
-    );
-    let painter = ui.painter();
-    let color = if resp.hovered() {
-        Palette::FG_BRIGHT()
-    } else {
-        Palette::ACCENT()
-    };
-    let mut tx = rect.left();
-    if let Some(g) = icon {
-        painter.text(
-            egui::pos2(rect.left() + 8.0, rect.center().y),
-            egui::Align2::CENTER_CENTER,
-            g.to_string(),
-            crate::icons::codicon_font(15.0),
-            color,
-        );
-        tx += 24.0;
-    }
-    painter.text(
-        egui::pos2(tx, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(14.0),
-        color,
-    );
-    if !shortcut.is_empty() {
-        painter.text(
-            egui::pos2(tx + label.len() as f32 * 7.5 + 16.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            shortcut,
-            egui::FontId::proportional(12.0),
-            Palette::FG_DESCRIPTION(),
-        );
-    }
-    resp
 }
 
 /// Byte range of the word around `byte` (for hover cards without a range).

@@ -104,3 +104,17 @@ impl Model {
         }
     }
 }
+
+/// Whether a `git` executable runs (the git extension's `git.missing`
+/// context key, inverted). Checked once.
+pub fn available() -> bool {
+    static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
+}
