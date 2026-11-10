@@ -59,6 +59,7 @@ fn make_doc(name: &str, contents: &str, dirty: bool) -> Document {
         diff_title: None,
         webview: None,
         preview: false,
+        read_only: false,
     };
     if dirty {
         doc.text.push_str("\n// edited");

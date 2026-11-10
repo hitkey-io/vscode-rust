@@ -980,9 +980,7 @@ impl App {
         let mut doc = crate::editor::Document::webview(handle, format!("Extension: {title}"));
         doc.preview = !pinned;
         // The preview editor is replaced, as in VS Code.
-        let replace = self.documents.iter().position(|d| {
-            d.preview && d.webview.is_some_and(|h| h >= crate::workbench::webviews::INTERNAL_HANDLE_BASE)
-        });
+        let replace = self.documents.iter().position(|d| d.preview && !d.dirty);
         match replace {
             Some(i) => {
                 self.documents[i] = doc;
@@ -1897,7 +1895,7 @@ impl App {
         if let Some(root) = self.file_tree.as_mut() {
             root.reveal(&path);
         }
-        if let Some(idx) = self.documents.iter().position(|d| d.path == path) {
+        if let Some(idx) = self.documents.iter().position(|d| d.path == path && d.diff_base.is_none() && !d.read_only && d.webview.is_none()) {
             self.active_doc = Some(idx);
             self.refresh_git_line_changes();
             self.track_recent_active();
@@ -2081,9 +2079,9 @@ impl App {
         use crate::workbench::source_control::CommitScope;
         let mut dirty = true;
         match action {
-            ScmAction::OpenChange { root, rel, .. } => {
+            ScmAction::OpenChange { root, rel, staged, kind, pinned } => {
                 dirty = false;
-                self.open_diff(root.join(rel));
+                self.open_scm_change(&root, &rel, staged, kind, pinned);
             }
             ScmAction::OpenFile { root, rel } => {
                 dirty = false;
@@ -2365,9 +2363,9 @@ impl App {
                 dirty = false;
                 self.pending_copy = Some(t);
             }
-            ScmAction::OpenCommitDiff { root, rel, parent, commit } => {
+            ScmAction::OpenCommitDiff { root, rel, parent, commit, pinned } => {
                 dirty = false;
-                self.open_commit_diff(&root, &rel, &parent, &commit);
+                self.open_commit_diff(&root, &rel, &parent, &commit, pinned);
             }
             ScmAction::GraphFilterPick(root) => {
                 dirty = false;
@@ -2830,7 +2828,20 @@ impl App {
             ScmMenu::File { root, rel, kind, untracked } => {
                 let path = root.join(rel);
                 let mut v = vec![
-                    item("Open Changes", ScmAction::OpenChange { root: root.clone(), rel: rel.clone(), staged: *kind == K::Index }),
+                    item("Open Changes", ScmAction::OpenChange {
+                        root: root.clone(),
+                        rel: rel.clone(),
+                        staged: *kind == K::Index,
+                        kind: self
+                            .git_model
+                            .repo_for(root)
+                            .and_then(|r| {
+                                let list = if *kind == K::Index { &r.index } else { &r.working };
+                                list.iter().find(|f| &f.rel == rel).map(|f| f.kind)
+                            })
+                            .unwrap_or(crate::git::ChangeKind::Modified),
+                        pinned: true,
+                    }),
                     item("Open File", ScmAction::OpenFile { root: root.clone(), rel: rel.clone() }),
                 ];
                 if *kind != K::Merge {
@@ -2928,30 +2939,99 @@ impl App {
     /// Open a read-only diff tab for a file at a commit (its first parent on
     /// the left, the commit on the right) — VS Code's behaviour when you click
     /// a file under a commit in the GRAPH.
-    fn open_commit_diff(&mut self, root: &Path, rel: &str, parent: &str, commit: &str) {
-        let base = if parent.is_empty() {
-            String::new()
-        } else {
-            crate::git::blob_at(root, parent, rel).unwrap_or_default()
-        };
-        let working = crate::git::blob_at(root, commit, rel).unwrap_or_default();
-        let path = root.join(rel);
+    fn open_commit_diff(&mut self, root: &Path, rel: &str, parent: &str, commit: &str, pinned: bool) {
         let short = |r: &str| r.chars().take(7).collect::<String>();
-        let name = rel.rsplit('/').next().unwrap_or(rel);
-        let title = format!("{name} ({}) ↔ {name} ({})", short(parent), short(commit));
-        // Reuse an existing identical diff tab.
-        if let Some(idx) = self
-            .documents
-            .iter()
-            .position(|d| d.diff_title.as_deref() == Some(title.as_str()))
-        {
-            self.active_doc = Some(idx);
+        let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+        let path = root.join(rel);
+        let before = if parent.is_empty() { None } else { crate::git::blob_at(root, parent, rel) };
+        let after = crate::git::blob_at(root, commit, rel);
+        // As the git extension: an added or deleted file shows the one side
+        // that exists, read-only, titled with its commit.
+        let doc = match (before, after) {
+            (Some(b), Some(a)) => Document::diff(path, b, a, format!("{name} ({}) ↔ {name} ({})", short(parent), short(commit))),
+            (None, Some(a)) => Document::read_only(path, a, format!("{name} ({})", short(commit))),
+            (Some(b), None) => Document::read_only(path, b, format!("{name} ({})", short(parent))),
+            (None, None) => return,
+        };
+        self.open_tab(doc, pinned);
+    }
+
+    /// Open a tab as VS Code's preview editor (`pinned: false`: italic,
+    /// replaced by the next preview) or keep it. A tab with the same title
+    /// and file is reused (and refreshed).
+    fn open_tab(&mut self, mut doc: Document, pinned: bool) {
+        self.show_welcome = false;
+        if let Some(i) = self.documents.iter().position(|d| {
+            d.path == doc.path && d.diff_title == doc.diff_title && d.diff_base.is_some() == doc.diff_base.is_some() && d.webview.is_none()
+        }) {
+            let d = &mut self.documents[i];
+            if d.read_only {
+                d.text = doc.text;
+                d.saved_text = d.text.clone();
+                d.diff_base = doc.diff_base;
+            }
+            if pinned {
+                d.preview = false;
+            }
+            self.active_doc = Some(i);
             return;
         }
-        let doc = Document::diff(path, base, working, title);
-        self.documents.push(doc);
-        self.active_doc = Some(self.documents.len() - 1);
+        doc.preview = !pinned;
+        match self.documents.iter().position(|d| d.preview && !d.dirty) {
+            Some(i) => {
+                if let Some(h) = self.documents[i].webview {
+                    self.webview_host.remove_internal_page(h);
+                }
+                self.documents[i] = doc;
+                self.active_doc = Some(i);
+            }
+            None => {
+                self.documents.push(doc);
+                self.active_doc = Some(self.documents.len() - 1);
+            }
+        }
+        self.refresh_git_line_changes();
     }
+
+    /// Open a changed file from Source Control the way the git extension's
+    /// `ResourceCommandResolver` does: the diff of the right two versions
+    /// with "(Working Tree)" / "(Index)", or the one version that exists
+    /// ("(Deleted)", "(Untracked)", an added file's index copy).
+    fn open_scm_change(&mut self, root: &Path, rel: &str, staged: bool, kind: crate::git::ChangeKind, pinned: bool) {
+        use crate::git::ChangeKind as C;
+        let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
+        let path = root.join(rel);
+        let head = || crate::git::head_blob(root, rel).unwrap_or_default();
+        let index = || crate::git::index_blob(root, rel).unwrap_or_default();
+        let doc = match (staged, kind) {
+            (true, C::Added | C::Copied) => Document::read_only(path, index(), format!("{name} (Index)")),
+            (true, C::Deleted) | (false, C::Deleted) => Document::read_only(path, head(), format!("{name} (Deleted)")),
+            (true, _) => Document::diff(path, head(), index(), format!("{name} (Index)")),
+            (false, C::Untracked | C::Added | C::Conflicted | C::Ignored) => {
+                // The file itself, editable, labelled with its state.
+                let label = match kind {
+                    C::Untracked | C::Ignored => format!("{name} (Untracked)"),
+                    C::Added => format!("{name} (Intent to add)"),
+                    _ => name.clone(),
+                };
+                match Document::open(path.clone()) {
+                    Ok(mut d) => {
+                        d.diff_title = Some(label);
+                        d
+                    }
+                    Err(_) => return,
+                }
+            }
+            (false, _) => {
+                // Index ↔ working tree; a file that isn't staged compares with HEAD.
+                let left = crate::git::index_blob(root, rel).unwrap_or_else(head);
+                let right = std::fs::read_to_string(&path).unwrap_or_default();
+                Document::diff(path, left, right, format!("{name} (Working Tree)"))
+            }
+        };
+        self.open_tab(doc, pinned);
+    }
+
 
     /// Render the per-tab right-click context menu, if one is open.
     fn show_tab_context_menu(&mut self, ctx: &Context) {
@@ -3549,6 +3629,7 @@ impl App {
 
     fn render_impl(&mut self, ctx: &Context) {
         self.webview_host.begin_frame();
+        self.scm_ui.active_path = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.webview.is_none()).map(|d| d.path.clone());
         self.sync_webview_tabs();
         self.refresh_extension_pages();
         // Drain any native-menu events from the previous frame.

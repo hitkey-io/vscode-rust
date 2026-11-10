@@ -273,6 +273,8 @@ fn show_editable(
 ) -> EditorOutput {
     let mut out = EditorOutput::default();
     let pending = doc.pending_nav.take();
+    // A read-only document keeps its text: edits are undone below.
+    let read_only_before = doc.read_only.then(|| doc.text.clone());
     let ctx = ui.ctx().clone();
     let style = ui.style().clone();
     let language = doc.language;
@@ -351,6 +353,11 @@ fn show_editable(
             .inner
         })
         .inner;
+    if let Some(before) = read_only_before {
+        if doc.text != before {
+            doc.text = before;
+        }
+    }
     let galley = output.galley.clone();
     let origin = output.galley_pos;
     for sq in squiggles {
@@ -368,7 +375,7 @@ fn show_editable(
             out.command_clicked = Some(c.index);
         }
     }
-    out.changed = response.changed();
+    out.changed = response.changed() && !doc.read_only;
 
     if let Some(h) = toggled {
         doc.folded.insert(h);

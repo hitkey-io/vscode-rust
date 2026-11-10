@@ -114,6 +114,16 @@ impl Palette {
     // Diff editor line washes — exact diffEditor.* from themes/2026-dark.json.
     pub const DIFF_INSERTED_BG: Color32 = rgba(0x34, 0x7D, 0x39, 0x26);
     pub const DIFF_REMOVED_BG: Color32 = rgba(0xC9, 0x3C, 0x37, 0x26);
+    /// diffEditor.insertedTextBackground (2026-dark.json) — changed characters.
+    pub const DIFF_INSERTED_TEXT_BG: Color32 = rgba(0x57, 0xAB, 0x5A, 0x4D);
+    /// diffEditor.removedTextBackground (2026-dark.json).
+    pub const DIFF_REMOVED_TEXT_BG: Color32 = rgba(0xF4, 0x70, 0x67, 0x4D);
+    /// diffEditor.diagonalFill (editorColors.ts dark default `#cccccc33`).
+    pub const DIFF_DIAGONAL_FILL: Color32 = rgba(0xCC, 0xCC, 0xCC, 0x33);
+    /// The line between the diff editor's two sides and its overview ruler.
+    pub const DIFF_DIVIDER: Color32 = rgb(0x2A, 0x2B, 0x2C);
+    /// The overview ruler's view slider (scrollbarSlider.background).
+    pub const DIFF_RULER_SLIDER: Color32 = rgba(0x79, 0x79, 0x79, 0x33);
 
     // SCM graph lane palette (scmGraph.foreground1-5) + ref-badge colours.
     pub const SCM_GRAPH_LANES: [Color32; 5] = [
@@ -291,6 +301,12 @@ impl Palette {
     pub const VSCE_INPUT_2026_BG: Color32 = rgb(0x19, 0x1A, 0x1B);
     /// --vscode-input-placeholderForeground (2026-dark.json).
     pub const VSCE_INPUT_2026_PLACEHOLDER_FG: Color32 = rgb(0x55, 0x55, 0x55);
+    /// --vscode-list-activeSelectionBackground (2026-dark.json).
+    pub const VSCE_LIST_ACTIVE_SELECTION_2026_BG: Color32 = rgba(0x39, 0x94, 0xBC, 0x26);
+    /// --vscode-list-inactiveSelectionBackground (2026-dark.json).
+    pub const VSCE_LIST_INACTIVE_SELECTION_2026_BG: Color32 = rgb(0x2C, 0x2D, 0x2E);
+    /// --vscode-list-focusOutline (2026-dark.json).
+    pub const VSCE_LIST_FOCUS_OUTLINE_2026: Color32 = rgba(0x39, 0x94, 0xBC, 0xB3);
     /// --vscode-badge-foreground (2026-dark.json).
     pub const VSCE_BADGE_2026_FG: Color32 = rgb(0xFF, 0xFF, 0xFF);
     /// --vscode-toolbar-hoverBackground (2026-dark.json) behind a hovered

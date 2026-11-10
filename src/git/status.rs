@@ -351,6 +351,11 @@ pub fn head_blob(root: &Path, rel: &str) -> Option<String> {
     git(root, &["show", &format!("HEAD:{rel}")])
 }
 
+/// The staged (index) version of `rel` (`git show :rel`).
+pub fn index_blob(root: &Path, rel: &str) -> Option<String> {
+    git(root, &["show", &format!(":{rel}")])
+}
+
 /// Commit staged changes (or, with `all`, every tracked change via `-a`).
 /// Returns `Ok(())` or the captured stderr/stdout on failure.
 pub fn commit(root: &Path, message: &str, all: bool) -> Result<(), String> {

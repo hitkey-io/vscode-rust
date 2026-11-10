@@ -21,7 +21,7 @@ pub use history::{
 };
 pub use repository::{discover_repos, status_v2, Repository, ResourceGroupKind};
 pub use status::{
-    ahead_behind, branch, branches, checkout, commit, commit_with, discard, head_blob,
+    ahead_behind, branch, branches, checkout, commit, commit_with, discard, head_blob, index_blob,
     line_changes, line_changes_diff, pull, push, repo_root, stage, stage_all, unstage,
     unstage_all, ChangeKind, CommitMode, DiffKind, FileChange,
 };

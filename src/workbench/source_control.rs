@@ -56,6 +56,13 @@ pub struct ScmUiState {
     pub parent_repos: Vec<PathBuf>,
     /// Focus the commit input on the next frame.
     pub focus_input: bool,
+    /// The selected change: (repository, path, staged).
+    pub selected: Option<(PathBuf, String, bool)>,
+    /// The list has the keyboard focus (selection drawn as active).
+    pub list_focused: bool,
+    /// The active editor's file (`scm.autoReveal` selects its row).
+    pub active_path: Option<PathBuf>,
+    revealed_path: Option<PathBuf>,
     initialized: bool,
 }
 
@@ -77,6 +84,10 @@ impl Default for ScmUiState {
             folder_open: true,
             parent_repos: Vec::new(),
             focus_input: false,
+            selected: None,
+            list_focused: false,
+            active_path: None,
+            revealed_path: None,
             initialized: false,
         }
     }
@@ -112,7 +123,8 @@ impl GraphFilter {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScmAction {
     /// Open the diff of a changed file (`git.openChange`).
-    OpenChange { root: PathBuf, rel: String, staged: bool },
+    /// One click opens a preview editor, a double click (`pinned`) keeps it.
+    OpenChange { root: PathBuf, rel: String, staged: bool, kind: ChangeKind, pinned: bool },
     /// Open the file itself (`git.openFile`).
     OpenFile { root: PathBuf, rel: String },
     /// Open the file as it is in HEAD (`git.openHEADFile`).
@@ -164,7 +176,7 @@ pub enum ScmAction {
     CheckoutDetached { root: PathBuf, id: String },
     CherryPick { root: PathBuf, id: String },
     CopyText(String),
-    OpenCommitDiff { root: PathBuf, rel: String, parent: String, commit: String },
+    OpenCommitDiff { root: PathBuf, rel: String, parent: String, commit: String, pinned: bool },
     GraphFilterPick(PathBuf),
     GraphViewTree(bool),
     /// Show or hide a pane (`true` = CHANGES, `false` = GRAPH).
@@ -244,6 +256,24 @@ pub fn show(
             st.expanded.insert(r.root.clone());
         }
         st.initialized = true;
+    }
+    // `scm.autoReveal`: the active editor's file is selected in the list.
+    if st.active_path != st.revealed_path {
+        st.revealed_path = st.active_path.clone();
+        if let Some(path) = &st.active_path {
+            let found = model.repos.iter().find_map(|r| {
+                let rel = path.strip_prefix(&r.root).ok()?.to_string_lossy().into_owned();
+                let staged = r.working.iter().all(|f| f.rel != rel) && r.index.iter().any(|f| f.rel == rel);
+                (r.working.iter().chain(r.index.iter()).any(|f| f.rel == rel)).then(|| (r.root.clone(), rel, staged))
+            });
+            if found.is_some() {
+                st.selected = found;
+            }
+        }
+    }
+    // A click anywhere else takes the focus from the list.
+    if ui.input(|i| i.pointer.any_pressed()) && !ui.rect_contains_pointer(ui.max_rect()) {
+        st.list_focused = false;
     }
 
     let area = ui.available_rect_before_wrap();
@@ -758,19 +788,37 @@ fn group(
     let mut sorted: Vec<&FileChange> = files.iter().collect();
     sort_changes(&mut sorted);
     for fc in sorted {
-        file_row(ui, repo, kind, fc, out, indent);
+        file_row(ui, repo, kind, fc, st, out, indent);
     }
 }
 
 /// One changed file: Seti icon, name (struck through when deleted), its
 /// folder, inline actions on hover, the status letter.
-fn file_row(ui: &mut Ui, repo: &Repository, kind: ResourceGroupKind, fc: &FileChange, out: &mut ScmOutput, indent: f32) {
+fn file_row(
+    ui: &mut Ui,
+    repo: &Repository,
+    kind: ResourceGroupKind,
+    fc: &FileChange,
+    st: &mut ScmUiState,
+    out: &mut ScmOutput,
+    indent: f32,
+) {
     let staged = matches!(kind, ResourceGroupKind::Index);
     let untracked = matches!(fc.kind, ChangeKind::Untracked);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("scm:{}", fc.rel)));
     let hovered = ui.rect_contains_pointer(rect);
-    if hovered {
+    let selected = st.selected.as_ref().is_some_and(|(r, rel, s)| *r == repo.root && *rel == fc.rel && *s == staged);
+    if selected {
+        // list.activeSelectionBackground + focusOutline while the list has
+        // the focus, list.inactiveSelectionBackground otherwise.
+        if st.list_focused {
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_ACTIVE_SELECTION_2026_BG);
+            ui.painter().rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0, Palette::VSCE_LIST_FOCUS_OUTLINE_2026), egui::StrokeKind::Inside);
+        } else {
+            ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_INACTIVE_SELECTION_2026_BG);
+        }
+    } else if hovered {
         ui.painter().rect_filled(rect, 0.0, Palette::VSCE_LIST_HOVER_2026_BG);
     }
     let p = ui.painter();
@@ -827,8 +875,20 @@ fn file_row(ui: &mut Ui, repo: &Repository, kind: ResourceGroupKind, fc: &FileCh
             x -= 20.0;
         }
     }
-    if resp.clicked() && !acted {
-        out.act(ScmAction::OpenChange { root: repo.root.clone(), rel: fc.rel.clone(), staged });
+    if (resp.clicked() || resp.double_clicked()) && !acted {
+        st.selected = Some((repo.root.clone(), fc.rel.clone(), staged));
+        st.list_focused = true;
+        out.act(ScmAction::OpenChange {
+            root: repo.root.clone(),
+            rel: fc.rel.clone(),
+            staged,
+            kind: fc.kind,
+            pinned: resp.double_clicked(),
+        });
+    }
+    if resp.secondary_clicked() {
+        st.selected = Some((repo.root.clone(), fc.rel.clone(), staged));
+        st.list_focused = true;
     }
     if resp.secondary_clicked() {
         out.menu = Some((
@@ -991,12 +1051,13 @@ fn commit_files(ui: &mut Ui, root: &Path, row: &GraphRow, tree: bool, out: &mut 
             p.text(egui::pos2(nx + nw + 6.0, cy), Align2::LEFT_CENTER, folder, FontId::proportional(12.0), Palette::FG_DESCRIPTION);
         }
         p.text(egui::pos2(rect.right() - PAD_R - 8.0, cy), Align2::CENTER_CENTER, f.kind.badge(), FontId::proportional(12.0), with_alpha(Palette::FG, 0.75));
-        if resp.clicked() {
+        if resp.clicked() || resp.double_clicked() {
             out.act(ScmAction::OpenCommitDiff {
                 root: root.to_path_buf(),
                 rel: f.rel.clone(),
                 parent: parent.clone(),
                 commit: row.commit.id.clone(),
+                pinned: resp.double_clicked(),
             });
         }
     }

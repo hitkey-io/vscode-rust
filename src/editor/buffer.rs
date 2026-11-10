@@ -28,6 +28,9 @@ pub struct Document {
     /// A preview editor: opened with one click and replaced by the next
     /// one until it's kept (double-click on the tab). Italic tab title.
     pub preview: bool,
+    /// Shown, never written: a version from git (HEAD, the index, a
+    /// commit) or a diff. Edits are undone and Save does nothing.
+    pub read_only: bool,
 }
 
 impl Document {
@@ -58,6 +61,7 @@ impl Document {
             diff_title: None,
             webview: None,
             preview: false,
+            read_only: false,
         })
     }
 
@@ -81,10 +85,19 @@ impl Document {
             diff_title: Some(title),
             webview: None,
             preview: false,
+            read_only: true,
         }
     }
 
     /// A tab for an extension's webview panel.
+    /// A read-only view of `text` for `path` titled `title`, e.g.
+    /// "gone.txt (Deleted)" — the file as it is in HEAD or the index.
+    pub fn read_only(path: PathBuf, text: String, title: String) -> Self {
+        let mut d = Self::diff(path, String::new(), text, title);
+        d.diff_base = None;
+        d
+    }
+
     pub fn webview(handle: u64, title: String) -> Self {
         Self {
             saved_text: String::new(),
@@ -101,10 +114,14 @@ impl Document {
             diff_title: Some(title),
             webview: Some(handle),
             preview: false,
+            read_only: true,
         }
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {
+        if self.read_only {
+            return Ok(());
+        }
         std::fs::write(&self.path, &self.text)?;
         self.saved_text = self.text.clone();
         self.dirty = false;
