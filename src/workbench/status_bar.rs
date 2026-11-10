@@ -5,6 +5,16 @@ use crate::icons::{self, codicon_font};
 use crate::theme::Palette;
 use crate::vscode_widgets::primitives::{label, LabelProps};
 
+
+/// Space for one item with an id from its text, not the layout's auto id:
+/// auto ids shifted between egui's passes (a dialog's sizing pass) and
+/// tripped the "widget rect changed id" check.
+fn stable_item(ui: &mut Ui, width: f32, key: &str, sense: Sense) -> (egui::Rect, egui::Response) {
+    let (_, rect) = ui.allocate_space(egui::vec2(width, ui.available_height()));
+    let resp = ui.interact(rect, ui.id().with(("status-item", key)), sense);
+    (rect, resp)
+}
+
 /// A plain text status item with the standard horizontal padding (used in the
 /// right-to-left cluster: encoding, EOL, indentation, position).
 fn plain(ui: &mut Ui, text: &str) -> egui::Response {
@@ -13,7 +23,7 @@ fn plain(ui: &mut Ui, text: &str) -> egui::Response {
         .painter()
         .layout_no_wrap(text.to_string(), FontId::proportional(11.5), Palette::FG());
     let w = g.size().x + 6.0;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    let (rect, resp) = stable_item(ui, w, text, Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
@@ -47,7 +57,7 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
     let pad = 4.0;
     let w = pad + icon_w + gap + text_w + pad;
     let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+        stable_item(ui, w, tip, Sense::click());
     if resp.hovered() {
         ui.painter()
             .rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
@@ -74,7 +84,7 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
 /// An icon-only status item (the notifications bell): 16px codicon with
 /// the status bar's 5px item padding.
 fn icon_segment(ui: &mut Ui, glyph: char, tip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, ui.available_height()), Sense::click());
+    let (rect, resp) = stable_item(ui, 26.0, tip, Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
@@ -104,7 +114,7 @@ fn parts_segment(ui: &mut Ui, parts: &[(char, String)], tip: &str) -> egui::Resp
     let w = pad * 2.0
         + galleys.iter().map(|(i, t)| i.size().x + gap + t.size().x).sum::<f32>()
         + between * (galleys.len().saturating_sub(1)) as f32;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    let (rect, resp) = stable_item(ui, w, tip, Sense::click());
     if resp.hovered() {
         ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
@@ -151,7 +161,7 @@ fn prominent_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::R
     let tg = ui.painter().layout_no_wrap(text.to_string(), text_font, fg);
     let (pad, gap) = (8.0, 4.0);
     let w = pad + ig.size().x + gap + tg.size().x + pad;
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    let (rect, resp) = stable_item(ui, w, tip, Sense::click());
     let bg = if resp.hovered() { Palette::STATUS_BAR_PROMINENT_HOVER_BG() } else { Palette::STATUS_BAR_PROMINENT_BG() };
     ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, bg);
     let (isz, tsz) = (ig.size(), tg.size());
@@ -178,7 +188,7 @@ fn extension_segment(ui: &mut Ui, item: &crate::extensions::StatusItem) -> egui:
         .collect();
     let w = pad * 2.0 + galleys.iter().map(|g| g.size().x).sum::<f32>();
     let sense = if item.command.is_some() { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), sense);
+    let (rect, resp) = stable_item(ui, w, &format!("ext-{}", item.handle), sense);
     if resp.hovered() && item.command.is_some() {
         ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }

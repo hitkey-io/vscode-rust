@@ -28,6 +28,12 @@ pub struct MenuIds {
     pub welcome: MenuId,
     pub color_theme: MenuId,
     pub open_settings: MenuId,
+    pub toggle_panel: MenuId,
+    pub show_problems: MenuId,
+    pub show_output: MenuId,
+    pub show_debug_console: MenuId,
+    pub show_terminal: MenuId,
+    pub new_terminal: MenuId,
 }
 
 pub struct InstalledMenu {
@@ -160,13 +166,31 @@ pub fn install() -> InstalledMenu {
             Code::KeyF,
         )),
     );
+    // View ▸ Problems / Output / Debug Console / Terminal and the panel
+    // toggle (⌘J), as VS Code's View menu.
+    let toggle_panel = MenuItem::new("Toggle Panel", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyJ)));
+    let show_problems = MenuItem::new("Problems", true, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM)));
+    let show_output = MenuItem::new("Output", true, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyU)));
+    let show_debug_console = MenuItem::new("Debug Console", true, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyY)));
+    let show_terminal = MenuItem::new("Terminal", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Backquote)));
     let _ = view_m.append_items(&[
         &palette,
         &PredefinedMenuItem::separator(),
         &toggle_sidebar,
+        &toggle_panel,
         &show_explorer,
         &show_search,
+        &PredefinedMenuItem::separator(),
+        &show_problems,
+        &show_output,
+        &show_debug_console,
+        &show_terminal,
     ]);
+
+    // Terminal menu
+    let terminal_m = Submenu::new("Terminal", true);
+    let new_terminal = MenuItem::new("New Terminal", true, Some(Accelerator::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Backquote)));
+    let _ = terminal_m.append(&new_terminal);
 
     // Go menu
     let go_m = Submenu::new("Go", true);
@@ -182,7 +206,7 @@ pub fn install() -> InstalledMenu {
     let welcome = MenuItem::new("Welcome", true, None);
     let _ = help_m.append_items(&[&welcome]);
 
-    let _ = menu.append_items(&[&file_m, &edit_m, &view_m, &go_m, &help_m]);
+    let _ = menu.append_items(&[&file_m, &edit_m, &view_m, &go_m, &terminal_m, &help_m]);
 
     #[cfg(target_os = "macos")]
     {
@@ -210,6 +234,12 @@ pub fn install() -> InstalledMenu {
         welcome: welcome.id().clone(),
         color_theme: color_theme.id().clone(),
         open_settings: open_settings.id().clone(),
+        toggle_panel: toggle_panel.id().clone(),
+        show_problems: show_problems.id().clone(),
+        show_output: show_output.id().clone(),
+        show_debug_console: show_debug_console.id().clone(),
+        show_terminal: show_terminal.id().clone(),
+        new_terminal: new_terminal.id().clone(),
     };
 
     InstalledMenu { ids, menu }

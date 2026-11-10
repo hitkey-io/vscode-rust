@@ -1,0 +1,416 @@
+//! The Panel part (browser/parts/panel/panelPart.ts, the modern UI's
+//! floating card and pill tabs) with its default views: Problems, Output,
+//! Debug Console, Terminal and Ports. Measured against VS Code 1.145.2 at
+//! 1300 × 820:
+//!
+//! - a card under the editor's, as wide, 4px apart (default height a third
+//!   of the window, `LayoutStateKeys.PANEL_SIZE`), `panel.background`;
+//! - pill tabs 24px tall 5px in (8px padding, 4.5px apart, 13px text,
+//!   `modernTab.activeBackground` behind the active one,
+//!   `panelTitle.inactiveForeground` for the others);
+//! - actions from the right: Hide Panel 16px in, Maximize 42, a separator
+//!   at 57.5, then the view's own 26px apart from 77 (Problems: View as
+//!   Table, Collapse All and a 200 × 24 filter box ending 118px in; Output:
+//!   More, Turn Auto Scrolling Off, Clear Output, the channel dropdown
+//!   (170px, ending 144px in) and its filter; Debug Console: Clear Console,
+//!   Find and the filter; Terminal: More, Kill, Split, Launch Profile,
+//!   New Terminal);
+//! - content from 35px down: Problems' message 22px in, the Debug
+//!   Console's 21px input row at the bottom, Ports' message and its 300px
+//!   Forward a Port button, the terminal's 12px Menlo cells (14px rows)
+//!   20px in.
+
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+
+use crate::icons;
+use crate::terminal::Terminal;
+use crate::theme::Palette;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PanelView {
+    Problems,
+    Output,
+    DebugConsole,
+    #[default]
+    Terminal,
+    Ports,
+}
+
+impl PanelView {
+    pub const ALL: [PanelView; 5] = [PanelView::Problems, PanelView::Output, PanelView::DebugConsole, PanelView::Terminal, PanelView::Ports];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PanelView::Problems => "Problems",
+            PanelView::Output => "Output",
+            PanelView::DebugConsole => "Debug Console",
+            PanelView::Terminal => "Terminal",
+            PanelView::Ports => "Ports",
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct PanelState {
+    pub visible: bool,
+    pub view: PanelView,
+    pub maximized: bool,
+    /// The card's height once dragged (`None`: a third of the window).
+    pub height: Option<f32>,
+    pub terminals: Vec<Terminal>,
+    pub active_terminal: usize,
+    pub problems_filter: String,
+    pub output_filter: String,
+    pub debug_filter: String,
+    /// The terminal has the keyboard.
+    pub terminal_focused: bool,
+    dragging: bool,
+}
+
+#[derive(Default, Debug)]
+pub struct PanelOutput {
+    pub close: bool,
+    pub new_terminal: bool,
+    pub kill_terminal: bool,
+    pub forward_port: bool,
+}
+
+/// Default card height for a window `window_h` tall.
+pub fn default_height(window_h: f32) -> f32 {
+    (window_h / 3.0 - 15.0).round()
+}
+
+fn icon_button(ui: &mut Ui, painter: &egui::Painter, centre: Pos2, name: &str, tip: &str, id: egui::Id) -> bool {
+    let r = Rect::from_center_size(centre, Vec2::splat(22.0));
+    let resp = ui.interact(r, id.with(("action", name, tip)), Sense::click());
+    if resp.hovered() {
+        painter.rect_filled(r, 4.0, Palette::VSCE_TOOLBAR_HOVER_BG());
+    }
+    let size = if name == "chevron-down" { 12.0 } else { 16.0 };
+    painter.text(centre, Align2::CENTER_CENTER, icons::codicon_by_name(name).unwrap_or('?').to_string(), icons::codicon_font(size), Palette::FG());
+    let label = tip.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    resp.on_hover_text(tip).clicked()
+}
+
+/// A 24px filter box (`viewFilter`), `text` typed into it.
+fn filter_box(ui: &mut Ui, painter: &egui::Painter, rect: Rect, text: &mut String, placeholder: &str, funnel: bool, id: egui::Id) {
+    let slot = painter.add(egui::Shape::Noop);
+    let inner = Rect::from_min_max(Pos2::new(rect.left() + 7.0, rect.top() + 1.0), Pos2::new(rect.right() - if funnel { 22.0 } else { 6.0 }, rect.bottom() - 1.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.set_clip_rect(inner);
+    child.visuals_mut().weak_text_color = Some(Palette::INPUT_PLACEHOLDER_FG());
+    child.visuals_mut().text_cursor.stroke.color = Palette::INPUT_FG();
+    let resp = child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(text)
+            .id_salt(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .hint_text(placeholder)
+            .font(FontId::proportional(12.0))
+            .text_color(Palette::INPUT_FG())
+            .vertical_align(egui::Align::Center),
+    );
+    let border = if resp.has_focus() { Palette::FOCUS_BORDER() } else { Palette::INPUT_BORDER() };
+    painter.set(slot, egui::epaint::RectShape::new(rect, 4.0, Color32::TRANSPARENT, Stroke::new(1.0, border), egui::StrokeKind::Inside));
+    if funnel {
+        let c = Pos2::new(rect.right() - 8.5 - 3.0, rect.center().y);
+        painter.text(c, Align2::CENTER_CENTER, icons::codicon_by_name("filter").unwrap_or('?').to_string(), icons::codicon_font(16.0), Palette::FG());
+    }
+}
+
+/// Draws the panel card in `rect` (the area under the editor card).
+pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cwd_label: &str) -> PanelOutput {
+    let _ = cwd_label;
+    let mut out = PanelOutput::default();
+    let id = ui.id().with("panel");
+    let painter = ui.painter().clone();
+    let card = rect;
+    painter.rect(card, 8.0, Palette::PANEL_BG2(), Stroke::new(1.0, Palette::EDITOR_CARD_BORDER()), egui::StrokeKind::Inside);
+
+    // Resize sash along the top edge.
+    let sash = Rect::from_min_max(Pos2::new(card.left(), card.top() - 4.0), Pos2::new(card.right(), card.top() + 2.0));
+    let sresp = ui.interact(sash, id.with("sash"), Sense::drag());
+    if sresp.hovered() || sresp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    if sresp.drag_started() {
+        state.dragging = true;
+    }
+    if sresp.dragged() {
+        let h = state.height.unwrap_or(card.height()) - sresp.drag_delta().y;
+        state.height = Some(h.clamp(77.0, 2000.0));
+    }
+    if sresp.drag_stopped() {
+        state.dragging = false;
+    }
+
+    // Tabs.
+    let mut x = card.left() + 5.0;
+    let ty = card.top() + 5.0;
+    for view in PanelView::ALL {
+        let g = painter.layout_no_wrap(view.label().to_string(), FontId::proportional(13.0), Color32::PLACEHOLDER);
+        let r = Rect::from_min_size(Pos2::new(x, ty), Vec2::new(g.size().x + 16.0, 24.0));
+        let resp = ui.interact(r, id.with(("tab", view.label())), Sense::click());
+        let active = state.view == view;
+        let colour = if active {
+            painter.rect_filled(r, 4.0, Palette::MODERN_TAB_ACTIVE_BG());
+            Palette::MODERN_TAB_ACTIVE_FG()
+        } else if resp.hovered() {
+            painter.rect_filled(r, 4.0, Palette::MODERN_TAB_HOVER_BG());
+            Palette::MODERN_TAB_HOVER_FG()
+        } else {
+            Palette::PANEL_TITLE_INACTIVE_FG()
+        };
+        painter.galley(Pos2::new(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, colour);
+        let label = format!("panel:{}", view.label());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label.clone()));
+        if resp.clicked() {
+            state.view = view;
+            if view == PanelView::Terminal && state.terminals.is_empty() {
+                out.new_terminal = true;
+            }
+        }
+        x = r.right() + 4.5;
+    }
+
+    // Actions.
+    let cy = ty + 12.0;
+    let at = |from_right: f32| Pos2::new(card.right() - from_right, cy);
+    if icon_button(ui, &painter, at(16.0), "close", "Hide Panel (⌘J)", id) {
+        out.close = true;
+    }
+    let (max_icon, max_tip) = if state.maximized { ("screen-normal", "Restore Panel Size") } else { ("screen-full", "Maximize Panel Size") };
+    if icon_button(ui, &painter, at(42.0), max_icon, max_tip, id) {
+        state.maximized = !state.maximized;
+    }
+    let view_actions: &[(&str, &str)] = match state.view {
+        PanelView::Problems => &[("list-flat", "View as Table"), ("collapse-all", "Collapse All")],
+        PanelView::Output => &[("ellipsis", "More Actions..."), ("unlock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
+        PanelView::DebugConsole => &[("clear-all", "Clear Console"), ("search", "Find")],
+        PanelView::Terminal => &[("ellipsis", "More Actions..."), ("trash", "Kill Terminal"), ("split-horizontal", "Split Terminal (⌘\\)")],
+        PanelView::Ports => &[],
+    };
+    if !view_actions.is_empty() {
+        painter.vline(card.right() - 57.5, (cy - 8.0)..=(cy + 8.0), Stroke::new(1.0, Palette::FG().gamma_multiply(0.3)));
+    }
+    for (i, (name, tip)) in view_actions.iter().enumerate() {
+        let from = 77.0 + 25.75 * i as f32;
+        if icon_button(ui, &painter, at(from), name, tip, id) && *name == "trash" {
+            out.kill_terminal = true;
+        }
+    }
+    match state.view {
+        PanelView::Terminal => {
+            if icon_button(ui, &painter, at(152.0), "chevron-down", "Launch Profile...", id) {
+                out.new_terminal = true;
+            }
+            if icon_button(ui, &painter, at(168.5), "add", "New Terminal (⌃⇧`)", id) {
+                out.new_terminal = true;
+            }
+        }
+        PanelView::Problems | PanelView::DebugConsole => {
+            let r = Rect::from_min_max(Pos2::new(card.right() - 318.0, ty), Pos2::new(card.right() - 118.0, ty + 24.0));
+            let (text, placeholder, funnel) = if state.view == PanelView::Problems {
+                (&mut state.problems_filter, "Filter (e.g. text, **/*.ts, !**/node_modules/**)", true)
+            } else {
+                (&mut state.debug_filter, "Filter (e.g. text, !exclude, \\escape)", false)
+            };
+            filter_box(ui, &painter, r, text, placeholder, funnel, id.with(("filter", state.view.label())));
+        }
+        PanelView::Output => {
+            let dd = Rect::from_min_max(Pos2::new(card.right() - 314.0, ty), Pos2::new(card.right() - 144.0, ty + 24.0));
+            painter.rect(dd, 4.0, Palette::SETTINGS_DROPDOWN_BG(), Stroke::new(1.0, Palette::SETTINGS_DROPDOWN_BORDER()), egui::StrokeKind::Inside);
+            painter.text(Pos2::new(dd.left() + 7.0, dd.center().y), Align2::LEFT_CENTER, "Tasks", FontId::proportional(12.0), Palette::FG());
+            painter.text(Pos2::new(dd.right() - 12.0, dd.center().y), Align2::CENTER_CENTER, icons::codicon_by_name("chevron-down").unwrap_or('v').to_string(), icons::codicon_font(16.0), Palette::FG());
+            let r = Rect::from_min_max(Pos2::new(card.right() - 518.0, ty), Pos2::new(card.right() - 318.0, ty + 24.0));
+            filter_box(ui, &painter, r, &mut state.output_filter, "Filter (e.g. text, !excludeText, text1,text2)", false, id.with("filter-output"));
+        }
+        PanelView::Ports => {}
+    }
+
+    // Content.
+    let content = Rect::from_min_max(Pos2::new(card.left() + 1.0, card.top() + 35.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
+    match state.view {
+        PanelView::Problems => {
+            let text = if problems == 0 { "No problems have been detected in the workspace." } else { "Problems are shown in the editor (hover a squiggle)." };
+            painter.text(Pos2::new(card.left() + 22.0, card.top() + 45.0), Align2::LEFT_CENTER, text, FontId::proportional(13.0), Palette::FG());
+        }
+        PanelView::Output => {}
+        PanelView::DebugConsole => {
+            let row = Rect::from_min_max(Pos2::new(content.left(), card.bottom() - 22.0), Pos2::new(content.right(), card.bottom() - 1.0));
+            painter.hline(row.x_range(), row.top() + 0.5, Stroke::new(1.0, Palette::INPUT_BORDER()));
+            painter.text(Pos2::new(card.left() + 19.0, row.center().y + 0.5), Align2::CENTER_CENTER, icons::codicon_by_name("chevron-right").unwrap_or('>').to_string(), icons::codicon_font(14.0), Palette::FG());
+            painter.text(Pos2::new(card.left() + 33.0, row.center().y + 0.5), Align2::LEFT_CENTER, "Please start a debug session to evaluate expressions", crate::ui_font::mono(12.0), Palette::INPUT_PLACEHOLDER_FG());
+        }
+        PanelView::Ports => {
+            painter.text(
+                Pos2::new(card.left() + 22.0, card.top() + 56.0),
+                Align2::LEFT_CENTER,
+                "No forwarded ports. Forward a port to access your locally running services over the internet.",
+                FontId::proportional(13.0),
+                Palette::FG(),
+            );
+            let br = Rect::from_min_size(Pos2::new(card.left() + 21.0, card.top() + 77.0), Vec2::new(300.0, 26.0));
+            let resp = ui.interact(br, id.with("forward"), Sense::click());
+            painter.rect_filled(br, 4.0, if resp.hovered() { Palette::BUTTON_HOVER() } else { Palette::BUTTON_BG() });
+            painter.text(br.center(), Align2::CENTER_CENTER, "Forward a Port", FontId::proportional(13.0), Palette::BUTTON_FG());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Forward a Port"));
+            if resp.clicked() {
+                out.forward_port = true;
+            }
+        }
+        PanelView::Terminal => terminal_view(ui, &painter, content, state, id),
+    }
+    out
+}
+
+/// xterm's 256-colour palette entry `i` (16 theme colours, the 6×6×6 cube,
+/// 24 greys).
+fn ansi(i: u8) -> Color32 {
+    let theme = [
+        Palette::TERMINAL_ANSI_BLACK, Palette::TERMINAL_ANSI_RED, Palette::TERMINAL_ANSI_GREEN, Palette::TERMINAL_ANSI_YELLOW,
+        Palette::TERMINAL_ANSI_BLUE, Palette::TERMINAL_ANSI_MAGENTA, Palette::TERMINAL_ANSI_CYAN, Palette::TERMINAL_ANSI_WHITE,
+        Palette::TERMINAL_ANSI_BRIGHT_BLACK, Palette::TERMINAL_ANSI_BRIGHT_RED, Palette::TERMINAL_ANSI_BRIGHT_GREEN,
+        Palette::TERMINAL_ANSI_BRIGHT_YELLOW, Palette::TERMINAL_ANSI_BRIGHT_BLUE, Palette::TERMINAL_ANSI_BRIGHT_MAGENTA,
+        Palette::TERMINAL_ANSI_BRIGHT_CYAN, Palette::TERMINAL_ANSI_BRIGHT_WHITE,
+    ];
+    match i {
+        0..=15 => theme[i as usize](),
+        16..=231 => {
+            let n = i - 16;
+            let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+            Color32::from_rgb(level(n / 36), level((n / 6) % 6), level(n % 6))
+        }
+        _ => {
+            let g = 8 + (i - 232) * 10;
+            Color32::from_rgb(g, g, g)
+        }
+    }
+}
+
+fn colour(c: vt100::Color, default: Color32) -> Color32 {
+    match c {
+        vt100::Color::Default => default,
+        vt100::Color::Idx(i) => ansi(i),
+        vt100::Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
+    }
+}
+
+/// Terminal cells: Menlo 12px, 14px rows, 20px left padding.
+pub const CELL_H: f32 = 14.0;
+const PAD_LEFT: f32 = 20.0;
+const PAD_TOP: f32 = 6.0;
+
+fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mut PanelState, id: egui::Id) {
+    let font = icons::editor_mono_font(12.0);
+    let cell_w = ui.fonts_mut(|f| f.glyph_width(&font, 'W'));
+    let area = Rect::from_min_max(Pos2::new(content.left() + PAD_LEFT - 1.0, content.top() + PAD_TOP), Pos2::new(content.right() - 14.0, content.bottom() - 2.0));
+    let rows = ((area.height() / CELL_H).floor() as u16).max(1);
+    let cols = ((area.width() / cell_w).floor() as u16).max(2);
+    let tid = id.with("terminal");
+    let resp = ui.interact(content, tid, Sense::click());
+    if resp.clicked() {
+        resp.request_focus();
+    }
+    let focused = resp.has_focus();
+    state.terminal_focused = focused;
+    if focused {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(tid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
+        });
+    }
+    let Some(term) = state.terminals.get_mut(state.active_terminal) else { return };
+    term.resize(rows, cols);
+
+    // Keyboard → the shell.
+    if focused {
+        let app_cursor = term.application_cursor();
+        let events = ui.input(|i| i.events.clone());
+        for ev in events {
+            match ev {
+                egui::Event::Text(t) => term.write(t.as_bytes()),
+                egui::Event::Paste(t) => term.paste(&t),
+                egui::Event::Key { key, pressed: true, modifiers, .. } if !modifiers.mac_cmd && !modifiers.command => {
+                    if let Some(bytes) = crate::terminal::key_bytes(key, modifiers, app_cursor) {
+                        term.write(&bytes);
+                    }
+                }
+                egui::Event::Key { key: egui::Key::K, pressed: true, modifiers, .. } if modifiers.command => {
+                    // ⌘K: Terminal: Clear.
+                    term.write(b"\x0c");
+                }
+                _ => {}
+            }
+        }
+    }
+    // Wheel → scrollback.
+    if ui.rect_contains_pointer(content) {
+        let dy = ui.input(|i| i.smooth_scroll_delta.y);
+        if dy != 0.0 {
+            let lines = (dy / CELL_H).round() as isize;
+            term.scroll_offset = (term.scroll_offset as isize + lines).max(0) as usize;
+        }
+    }
+
+    let fg_default = Palette::TERMINAL_FG();
+    let bg_default = Palette::TERMINAL_BG();
+    let scrolled = term.scroll_offset > 0;
+    term.with_screen(|screen| {
+        let (cur_row, cur_col) = screen.cursor_position();
+        for r in 0..rows {
+            let y = area.top() + r as f32 * CELL_H;
+            let mut job = egui::text::LayoutJob::default();
+            for c in 0..cols {
+                let Some(cell) = screen.cell(r, c) else { continue };
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let (mut fg, mut bg) = (colour(cell.fgcolor(), fg_default), colour(cell.bgcolor(), bg_default));
+                if cell.bold() {
+                    if let vt100::Color::Idx(i @ 0..=7) = cell.fgcolor() {
+                        fg = ansi(i + 8);
+                    }
+                }
+                if cell.inverse() {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                let x = area.left() + c as f32 * cell_w;
+                if bg != bg_default {
+                    let w = if cell.is_wide() { 2.0 } else { 1.0 };
+                    painter.rect_filled(Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w * w, CELL_H)), 0.0, bg);
+                }
+                let text = if cell.has_contents() { cell.contents() } else { " ".to_string() };
+                job.append(
+                    &text,
+                    0.0,
+                    egui::TextFormat {
+                        font_id: font.clone(),
+                        color: fg,
+                        underline: if cell.underline() { Stroke::new(1.0, fg) } else { Stroke::NONE },
+                        italics: cell.italic(),
+                        line_height: Some(CELL_H),
+                        ..Default::default()
+                    },
+                );
+            }
+            let g = ui.fonts_mut(|f| f.layout_job(job));
+            painter.galley(Pos2::new(area.left(), y), g, fg_default);
+        }
+        // Cursor: a block while focused, an outline otherwise.
+        if !screen.hide_cursor() && !scrolled {
+            let r = Rect::from_min_size(Pos2::new(area.left() + cur_col as f32 * cell_w, area.top() + cur_row as f32 * CELL_H), Vec2::new(cell_w.ceil(), CELL_H));
+            if focused {
+                painter.rect_filled(r, 0.0, Palette::TERMINAL_CURSOR());
+                if let Some(cell) = screen.cell(cur_row, cur_col).filter(|c| c.has_contents()) {
+                    painter.text(r.left_top(), Align2::LEFT_TOP, cell.contents(), font.clone(), Palette::TERMINAL_BG());
+                }
+            } else {
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0, Palette::TERMINAL_CURSOR()), egui::StrokeKind::Inside);
+            }
+        }
+    });
+    let label = "Terminal 1".to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label.clone()));
+}

@@ -413,6 +413,27 @@ palette! {
     BANNER_ICON_FG = Id("banner.iconForeground");
     DEBUG_ICON_START_FG = Id("debugIcon.startForeground");
     EDITOR_ERROR_FG = Id("editorError.foreground");
+    // ── Integrated terminal (terminalColorRegistry.ts) ───────────────────
+    TERMINAL_BG = OneOf(&["terminal.background", "panel.background"]);
+    TERMINAL_FG = Id("terminal.foreground");
+    TERMINAL_CURSOR = OneOf(&["terminalCursor.foreground", "terminal.foreground"]);
+    TERMINAL_SELECTION_BG = Id("terminal.selectionBackground");
+    TERMINAL_ANSI_BLACK = Id("terminal.ansiBlack");
+    TERMINAL_ANSI_RED = Id("terminal.ansiRed");
+    TERMINAL_ANSI_GREEN = Id("terminal.ansiGreen");
+    TERMINAL_ANSI_YELLOW = Id("terminal.ansiYellow");
+    TERMINAL_ANSI_BLUE = Id("terminal.ansiBlue");
+    TERMINAL_ANSI_MAGENTA = Id("terminal.ansiMagenta");
+    TERMINAL_ANSI_CYAN = Id("terminal.ansiCyan");
+    TERMINAL_ANSI_WHITE = Id("terminal.ansiWhite");
+    TERMINAL_ANSI_BRIGHT_BLACK = Id("terminal.ansiBrightBlack");
+    TERMINAL_ANSI_BRIGHT_RED = Id("terminal.ansiBrightRed");
+    TERMINAL_ANSI_BRIGHT_GREEN = Id("terminal.ansiBrightGreen");
+    TERMINAL_ANSI_BRIGHT_YELLOW = Id("terminal.ansiBrightYellow");
+    TERMINAL_ANSI_BRIGHT_BLUE = Id("terminal.ansiBrightBlue");
+    TERMINAL_ANSI_BRIGHT_MAGENTA = Id("terminal.ansiBrightMagenta");
+    TERMINAL_ANSI_BRIGHT_CYAN = Id("terminal.ansiBrightCyan");
+    TERMINAL_ANSI_BRIGHT_WHITE = Id("terminal.ansiBrightWhite");
     LIST_ACTIVE_SELECTION_FG = OneOf(&["list.activeSelectionForeground", "foreground"]);
 }
 

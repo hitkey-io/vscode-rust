@@ -35,6 +35,12 @@ pub struct App {
     settings: crate::settings::Settings,
     /// The Color Theme picker while it's open.
     theme_pick: Option<ThemePick>,
+    /// The Panel (Problems, Output, Debug Console, Terminal, Ports).
+    panel: crate::workbench::panel::PanelState,
+    /// "Do you trust the authors…?" before a terminal starts in Restricted Mode.
+    terminal_trust_prompt: bool,
+    /// The "terminal failed to launch" toast (its Open Help button).
+    terminal_failed_toast: Option<u64>,
     /// Trusted folders and dismissed banners (Workspace Trust).
     trust: crate::workspace_trust::TrustStore,
     /// The Workspace Trust editor while it's open, in its modal.
@@ -405,6 +411,9 @@ impl App {
             editor_menu_actions: Vec::new(),
             settings_editor: None,
             trust: crate::workspace_trust::TrustStore::in_memory(),
+            panel: Default::default(),
+            terminal_trust_prompt: false,
+            terminal_failed_toast: None,
             trust_editor: None,
             workspace_settings: None,
             pending_settings_menu: None,
@@ -464,6 +473,26 @@ impl App {
             Some(CommandId::SelectColorTheme)
         } else if id == &ids.open_settings {
             Some(CommandId::OpenSettings)
+        } else if id == &ids.toggle_panel {
+            self.toggle_panel(ctx);
+            None
+        } else if id == &ids.show_problems {
+            self.show_panel_view(ctx, crate::workbench::panel::PanelView::Problems);
+            None
+        } else if id == &ids.show_output {
+            self.show_panel_view(ctx, crate::workbench::panel::PanelView::Output);
+            None
+        } else if id == &ids.show_debug_console {
+            self.show_panel_view(ctx, crate::workbench::panel::PanelView::DebugConsole);
+            None
+        } else if id == &ids.show_terminal {
+            self.show_panel_view(ctx, crate::workbench::panel::PanelView::Terminal);
+            None
+        } else if id == &ids.new_terminal {
+            self.panel.visible = true;
+            self.panel.view = crate::workbench::panel::PanelView::Terminal;
+            self.create_terminal(ctx);
+            None
         } else {
             None
         };
@@ -1799,6 +1828,20 @@ impl App {
     /// `workbench.action.openSettings` with a query).
     pub fn bootstrap_settings(&mut self, query: Option<&str>) {
         self.open_settings_editor(query);
+    }
+
+    /// Shows the Panel on `view` ("problems", "output", "debug", "terminal",
+    /// "ports"), as View ▸ Problems and friends do.
+    pub fn bootstrap_panel(&mut self, ctx: &Context, view: &str) {
+        use crate::workbench::panel::PanelView;
+        let view = match view {
+            "problems" => PanelView::Problems,
+            "output" => PanelView::Output,
+            "debug" => PanelView::DebugConsole,
+            "ports" => PanelView::Ports,
+            _ => PanelView::Terminal,
+        };
+        self.show_panel_view(ctx, view);
     }
 
     /// A value from user settings (`None` when it isn't set).
@@ -3824,6 +3867,7 @@ impl App {
 
     fn title_bar(&mut self, ctx: &Context) {
         let bar_height = 35.0;
+        let mut toggle_panel_clicked = false;
         // On macOS we leave space for native traffic lights on the left.
         #[cfg(target_os = "macos")]
         let left_inset = 78.0;
@@ -3905,7 +3949,7 @@ impl App {
                 let layout_items = [
                     ("layout", "Customize Layout...", true),
                     (if self.sidebar_visible { "layout-sidebar-left" } else { "layout-sidebar-left-off" }, "Toggle Primary Side Bar (⌘B)", true),
-                    ("layout-panel-off", "Toggle Panel (⌘J)", false),
+                    (if self.panel.visible { "layout-panel" } else { "layout-panel-off" }, "Toggle Panel (⌘J)", true),
                     ("layout-sidebar-right-off", "Toggle Secondary Side Bar (⌥⌘B)", false),
                 ];
                 let first = rect.right() - 23.0 - 26.0 * (layout_items.len() as f32 - 1.0);
@@ -3921,6 +3965,9 @@ impl App {
                     );
                     if i == 1 && resp.clicked() {
                         self.sidebar_visible = !self.sidebar_visible;
+                    }
+                    if i == 2 && resp.clicked() {
+                        toggle_panel_clicked = true;
                     }
                     let label = tip.to_string();
                     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
@@ -3962,6 +4009,9 @@ impl App {
 
                 let _ = left_inset; // silence unused on macOS
             });
+        if toggle_panel_clicked {
+            self.toggle_panel(ctx);
+        }
     }
 
     fn menu_file(&mut self, ui: &mut egui::Ui, ctx: &Context) {
@@ -4511,6 +4561,8 @@ impl App {
         // The editor card: 4px from its neighbours and the window, 1px
         // outline inside, 8px corners (editorBorder.css).
         let editor_margin = cards::MARGIN as i8;
+        self.panel_part(ctx);
+
         let editor_panel = egui::CentralPanel::default()
             .frame(
                 Frame::default()
@@ -4706,6 +4758,7 @@ impl App {
 
         self.settings_modal(ctx);
         self.trust_modal(ctx);
+        self.terminal_trust_dialog(ctx);
 
         self.track_recent_active();
         if self.palette.visible {
@@ -4727,7 +4780,163 @@ impl App {
         self.language_widgets(ctx);
 
         for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
+            if Some(d.id) == self.terminal_failed_toast && d.action == Some(0) {
+                let _ = std::process::Command::new("open").arg("https://code.visualstudio.com/docs/editor/workspace-trust").spawn();
+            }
             self.extensions.close_notification(d.id, d.action);
+        }
+    }
+}
+
+impl App {
+    /// View: Toggle Panel Visibility (⌘J). Showing the Terminal view with
+    /// no terminal starts one.
+    fn toggle_panel(&mut self, ctx: &Context) {
+        self.panel.visible = !self.panel.visible;
+        if self.panel.visible && self.panel.view == crate::workbench::panel::PanelView::Terminal && self.panel.terminals.is_empty() {
+            self.create_terminal(ctx);
+        }
+    }
+
+    /// View: Problems / Output / Debug Console / Terminal.
+    fn show_panel_view(&mut self, ctx: &Context, view: crate::workbench::panel::PanelView) {
+        if self.panel.visible && self.panel.view == view {
+            // The shortcut again hides it (`toggle` commands).
+            self.panel.visible = false;
+            return;
+        }
+        self.panel.visible = true;
+        self.panel.view = view;
+        if view == crate::workbench::panel::PanelView::Terminal && self.panel.terminals.is_empty() {
+            self.create_terminal(ctx);
+        }
+    }
+
+    /// Terminal: Create New Terminal. In Restricted Mode it asks for trust
+    /// first (`terminalProcessManager`'s trust request).
+    fn create_terminal(&mut self, ctx: &Context) {
+        if !self.workspace_trusted() {
+            self.terminal_trust_prompt = true;
+            return;
+        }
+        let wake = ctx.clone();
+        match crate::terminal::Terminal::spawn(self.workspace_root.as_deref(), 24, 80, move || wake.request_repaint()) {
+            Ok(t) => {
+                self.panel.terminals.push(t);
+                self.panel.active_terminal = self.panel.terminals.len() - 1;
+                self.panel.view = crate::workbench::panel::PanelView::Terminal;
+                self.panel.visible = true;
+                self.panel.terminal_focused = true;
+            }
+            Err(e) => {
+                self.extensions.notify_error(format!("The terminal process failed to launch: {e}"));
+            }
+        }
+    }
+
+    fn panel_part(&mut self, ctx: &Context) {
+        use crate::workbench::panel;
+        // Exited shells close their terminal; the last one hides the panel.
+        let before = self.panel.terminals.len();
+        self.panel.terminals.retain_mut(|t| !t.has_exited());
+        if self.panel.terminals.len() < before {
+            self.panel.active_terminal = self.panel.active_terminal.min(self.panel.terminals.len().saturating_sub(1));
+            if self.panel.terminals.is_empty() && self.panel.view == panel::PanelView::Terminal {
+                self.panel.visible = false;
+            }
+        }
+        if !self.panel.visible {
+            return;
+        }
+        let window_h = ctx.content_rect().height();
+        let card_h = if self.panel.maximized {
+            window_h - self.title_bar_offset() - 28.0 - 4.0 - 4.0
+        } else {
+            self.panel.height.unwrap_or_else(|| panel::default_height(window_h))
+        };
+        let problems = { let (e, w) = self.extensions.problem_counts(); e + w };
+        let out = TopBottomPanel::bottom("panel")
+            .exact_height(card_h + cards::MARGIN)
+            .show_separator_line(false)
+            .frame(Frame::NONE)
+            .show(ctx, |ui| {
+                let r = ui.max_rect();
+                let card = egui::Rect::from_min_max(
+                    egui::pos2(r.left() + cards::MARGIN, r.top()),
+                    egui::pos2(r.right() - cards::MARGIN, r.bottom() - cards::MARGIN),
+                );
+                panel::show(ui, card, &mut self.panel, problems, "")
+            })
+            .inner;
+        if out.close {
+            self.panel.visible = false;
+        }
+        if out.new_terminal {
+            self.create_terminal(ctx);
+        }
+        if out.kill_terminal && !self.panel.terminals.is_empty() {
+            let i = self.panel.active_terminal.min(self.panel.terminals.len() - 1);
+            self.panel.terminals.remove(i);
+            self.panel.active_terminal = i.saturating_sub(1);
+            if self.panel.terminals.is_empty() {
+                self.panel.visible = false;
+            }
+        }
+        if out.forward_port {
+            self.set_status("Port forwarding needs a remote tunnel, which this build doesn't have");
+        }
+    }
+
+    /// "Do you trust the authors of the files in this folder?" before a
+    /// terminal starts in Restricted Mode (workspace.contribution.ts
+    /// `onDidInitiateWorkspaceTrustRequest`).
+    fn terminal_trust_dialog(&mut self, ctx: &Context) {
+        use crate::workbench::dialog::{self, Dialog, DialogResult};
+        if let Some(id) = self.terminal_failed_toast {
+            if !self.extensions.notifications.iter().any(|n| n.id == id) {
+                self.terminal_failed_toast = None;
+            }
+        }
+        if !self.terminal_trust_prompt {
+            return;
+        }
+        let d = Dialog {
+            icon: "shield",
+            message: "Do you trust the authors of the files in this folder?",
+            details: &[
+                "Creating a terminal process requires executing code",
+                "If you don't trust the authors of these files, we do not recommend continuing as the files may be malicious. See [our docs](https://aka.ms/vscode-workspace-trust) to learn more.",
+            ],
+            buttons: &["Manage", "Cancel", "Trust Folder & Continue"],
+        };
+        match dialog::show(ctx, egui::Id::new("terminal-trust-dialog"), &d) {
+            Some(DialogResult::Button(2)) => {
+                self.terminal_trust_prompt = false;
+                if let Some(folder) = self.workspace_root.clone() {
+                    self.trust.trust(&folder);
+                    self.refresh_git();
+                }
+                self.create_terminal(ctx);
+            }
+            Some(DialogResult::Button(0)) => {
+                self.terminal_trust_prompt = false;
+                self.open_trust_editor();
+            }
+            Some(DialogResult::Link(url)) => {
+                let _ = std::process::Command::new("open").arg(&url).spawn();
+            }
+            Some(_) => {
+                // Cancel: the terminal can't start, the panel goes away.
+                self.terminal_trust_prompt = false;
+                if self.panel.terminals.is_empty() && self.panel.view == crate::workbench::panel::PanelView::Terminal {
+                    self.panel.visible = false;
+                }
+                self.terminal_failed_toast = Some(self.extensions.notify_error_with_actions(
+                    "The terminal process failed to launch: Cannot launch a terminal process in an untrusted workspace.".into(),
+                    vec!["Open Help".into()],
+                ));
+            }
+            None => {}
         }
     }
 }

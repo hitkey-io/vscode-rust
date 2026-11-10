@@ -531,3 +531,36 @@ fn restricted_mode_until_the_folder_is_trusted() {
     assert!(harness.query_by_label("Learn More").is_none());
     let _ = harness.get_by_label("Don't Trust");
 }
+
+#[test]
+fn panel_terminal_asks_for_trust_in_restricted_mode() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            let mut a = App::for_testing(ctx);
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_panel(ctx, "problems");
+            app = Some(a);
+            return;
+        }
+        app.as_mut().unwrap().render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    harness.run();
+    harness.run();
+    for tab in ["Problems", "Output", "Debug Console", "Terminal", "Ports"] {
+        let _ = harness.get_by_label(&format!("panel:{tab}"));
+    }
+    harness.snapshot("interaction_panel_problems");
+    // The terminal needs trust first: VS Code's request dialog.
+    harness.get_by_label("panel:Terminal").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Trust Folder & Continue");
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("Trust Folder & Continue").is_none());
+    // The panel goes away with the terminal that couldn't start.
+    assert!(harness.query_by_label("panel:Terminal").is_none());
+}

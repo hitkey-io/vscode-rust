@@ -15,6 +15,8 @@ pub mod tabs;
 pub mod webviews;
 pub mod welcome;
 pub mod banner;
+pub mod dialog;
+pub mod panel;
 pub mod workspace_trust_editor;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

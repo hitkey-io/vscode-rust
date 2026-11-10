@@ -611,6 +611,13 @@ impl ExtensionService {
         self.notify(Severity::Error, text, Vec::new(), None, None);
     }
 
+    /// An error toast with buttons; returns its id (the action comes back
+    /// through `close_notification`).
+    pub fn notify_error_with_actions(&mut self, text: String, actions: Vec<String>) -> u64 {
+        self.notify(Severity::Error, text, actions, None, None);
+        self.next_notification
+    }
+
     pub fn is_running(&self) -> bool {
         self.host.is_some()
     }
