@@ -17,6 +17,28 @@ pub fn show(
     sidebar_visible: &mut bool,
     scm_count: usize,
 ) -> bool {
+    show_with_containers(ui, current, sidebar_visible, scm_count, &[], &mut None)
+}
+
+/// An extension's activity bar entry (`viewsContainers`).
+pub struct ContainerIcon {
+    pub id: String,
+    pub title: String,
+    /// White mask tinted like the built-in icons, if the file loaded.
+    pub icon: Option<egui::TextureHandle>,
+}
+
+/// [`show`] plus the extensions' containers below the built-in views;
+/// `selected` is the container showing when `current` is
+/// `ActivityView::ExtensionContainer`.
+pub fn show_with_containers(
+    ui: &mut Ui,
+    current: &mut ActivityView,
+    sidebar_visible: &mut bool,
+    scm_count: usize,
+    containers: &[ContainerIcon],
+    selected: &mut Option<String>,
+) -> bool {
     let mut palette_requested = false;
     let painter = ui.painter();
     let rect = ui.max_rect();
@@ -106,6 +128,50 @@ pub fn show(
                         *sidebar_visible = false;
                     } else {
                         *current = view;
+                        *sidebar_visible = true;
+                    }
+                }
+            }
+            for c in containers {
+                let is_selected = *current == ActivityView::ExtensionContainer
+                    && selected.as_deref() == Some(c.id.as_str())
+                    && *sidebar_visible;
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ITEM_HEIGHT, ITEM_HEIGHT), egui::Sense::click());
+                let tint = if is_selected || resp.hovered() {
+                    Palette::ACTIVITY_BAR_FG
+                } else {
+                    Palette::ACTIVITY_BAR_INACTIVE_FG
+                };
+                if is_selected {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
+                        0.0,
+                        Palette::ACTIVITY_BAR_FG,
+                    );
+                }
+                let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0));
+                match &c.icon {
+                    Some(tex) => {
+                        ui.painter().image(
+                            tex.id(),
+                            icon_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            tint,
+                        );
+                    }
+                    None => {
+                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, icons::EXTENSIONS.to_string(), icons::codicon_font(24.0), tint);
+                    }
+                }
+                let title = c.title.clone();
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title.clone()));
+                let resp = resp.on_hover_text(&c.title);
+                if resp.clicked() {
+                    if is_selected {
+                        *sidebar_visible = false;
+                    } else {
+                        *current = ActivityView::ExtensionContainer;
+                        *selected = Some(c.id.clone());
                         *sidebar_visible = true;
                     }
                 }

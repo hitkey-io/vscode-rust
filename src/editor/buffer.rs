@@ -22,6 +22,9 @@ pub struct Document {
     /// Optional tab-title override for diff tabs
     /// (e.g. `env.ts (a1b2c) ↔ env.ts (d4e5f)`).
     pub diff_title: Option<String>,
+    /// When `Some`, this tab shows an extension's webview panel (that
+    /// handle) instead of text; `diff_title` holds its title.
+    pub webview: Option<u64>,
 }
 
 impl Document {
@@ -50,6 +53,7 @@ impl Document {
             folded: std::collections::BTreeSet::new(),
             diff_base: None,
             diff_title: None,
+            webview: None,
         })
     }
 
@@ -71,6 +75,26 @@ impl Document {
             folded: std::collections::BTreeSet::new(),
             diff_base: Some(base),
             diff_title: Some(title),
+            webview: None,
+        }
+    }
+
+    /// A tab for an extension's webview panel.
+    pub fn webview(handle: u64, title: String) -> Self {
+        Self {
+            saved_text: String::new(),
+            text: String::new(),
+            dirty: false,
+            language: "",
+            path: PathBuf::from(format!("webview-panel:{handle}")),
+            cursor_line: 1,
+            cursor_col: 1,
+            pending_nav: None,
+            pinned: false,
+            folded: std::collections::BTreeSet::new(),
+            diff_base: None,
+            diff_title: Some(title),
+            webview: Some(handle),
         }
     }
 

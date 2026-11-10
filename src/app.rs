@@ -80,6 +80,11 @@ pub struct App {
     marketplace_allowed: bool,
     /// Extension language features in the editor.
     lang: LanguageState,
+    /// Native web views for extension webviews.
+    webview_host: crate::workbench::webviews::WebviewHost,
+    /// The extension container showing when the view is
+    /// `ActivityView::ExtensionContainer`.
+    ext_container: Option<String>,
 }
 
 /// Completion, hover and go-to-definition requests and what they show.
@@ -156,6 +161,8 @@ impl App {
             extensions_pending_start: false,
             marketplace_allowed: false,
             lang: LanguageState::default(),
+            webview_host: Default::default(),
+            ext_container: None,
         }
     }
 
@@ -276,6 +283,18 @@ impl App {
                     self.show_welcome = false;
                     self.open_file(path);
                     self.sync_extension_documents();
+                    self.extensions.answer(request_id, serde_json::json!(true));
+                }
+                crate::extensions::EditorRequest::OpenDiff { request_id, path, base, text, title } => {
+                    self.show_welcome = false;
+                    self.documents.push(crate::editor::Document::diff(path, base, text, title));
+                    self.active_doc = Some(self.documents.len() - 1);
+                    self.extensions.answer(request_id, serde_json::json!(true));
+                }
+                crate::extensions::EditorRequest::CloseTabs { request_id, paths } => {
+                    while let Some(i) = self.documents.iter().position(|d| paths.contains(&d.path)) {
+                        self.close_doc(i);
+                    }
                     self.extensions.answer(request_id, serde_json::json!(true));
                 }
                 crate::extensions::EditorRequest::SaveDocument { request_id, path } => {
@@ -687,21 +706,143 @@ impl App {
         }
     }
 
+    /// Keep webview panel tabs in step with the extensions: open tabs for
+    /// new panels, close tabs of disposed ones, follow title changes, and
+    /// tell extensions when the user closed a panel's tab.
+    fn sync_webview_tabs(&mut self) {
+        for handle in std::mem::take(&mut self.extensions.opened_panels) {
+            let Some(w) = self.extensions.webviews.get(&handle) else { continue };
+            self.documents.push(crate::editor::Document::webview(handle, w.title.clone()));
+            self.active_doc = Some(self.documents.len() - 1);
+            self.show_welcome = false;
+        }
+        for handle in std::mem::take(&mut self.extensions.closed_panels) {
+            if let Some(i) = self.documents.iter().position(|d| d.webview == Some(handle)) {
+                self.documents.remove(i);
+                self.active_doc = match self.active_doc {
+                    _ if self.documents.is_empty() => None,
+                    Some(a) if a > i => Some(a - 1),
+                    Some(a) => Some(a.min(self.documents.len() - 1)),
+                    None => None,
+                };
+            }
+        }
+        // Tabs the user closed.
+        let open: std::collections::BTreeSet<u64> = self.documents.iter().filter_map(|d| d.webview).collect();
+        let gone: Vec<u64> = self
+            .extensions
+            .webviews
+            .values()
+            .filter(|w| matches!(w.kind, crate::extensions::WebviewKind::Panel { .. }) && !open.contains(&w.handle))
+            .map(|w| w.handle)
+            .collect();
+        for h in gone {
+            self.extensions.close_webview(h);
+        }
+        // Titles, and `reveal()`.
+        let mut reveal = None;
+        for (i, d) in self.documents.iter_mut().enumerate() {
+            if let Some(w) = d.webview.and_then(|h| self.extensions.webviews.get_mut(&h)) {
+                if d.diff_title.as_deref() != Some(w.title.as_str()) {
+                    d.diff_title = Some(w.title.clone());
+                }
+                if std::mem::take(&mut w.reveal) {
+                    reveal = Some(i);
+                }
+            }
+        }
+        if let Some(i) = reveal {
+            self.active_doc = Some(i);
+        }
+    }
+
+    /// A sidebar container from an extension: its views stacked, webview
+    /// views as native web views, tree views not yet.
+    fn extension_container_view(&mut self, ui: &mut egui::Ui) {
+        let containers = self.extensions.visible_containers();
+        let Some(c) = containers.into_iter().find(|c| Some(&c.id) == self.ext_container.as_ref()) else {
+            sidebar::title_bar(ui, "");
+            return;
+        };
+        sidebar::title_bar(ui, &c.title.to_uppercase());
+        let n = c.views.len().max(1);
+        // VS Code drops the section header when a container has one view.
+        let header_h = if n > 1 { 22.0 } else { 0.0 };
+        let avail = ui.available_rect_before_wrap();
+        let each = ((avail.height() - header_h * n as f32) / n as f32).max(40.0);
+        for v in &c.views {
+            if n > 1 {
+                let (h, _) = ui.allocate_exact_size(egui::vec2(avail.width(), header_h), egui::Sense::hover());
+                ui.painter().text(
+                    egui::pos2(h.left() + 20.0, h.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    v.name.to_uppercase(),
+                    crate::ui_font::bold(11.0),
+                    Palette::SIDEBAR_SECTION_HEADER_FG,
+                );
+            }
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(avail.width(), each), egui::Sense::hover());
+            let note = |ui: &egui::Ui, text: &str| {
+                ui.painter().text(
+                    egui::pos2(rect.left() + 20.0, rect.top() + 16.0),
+                    egui::Align2::LEFT_CENTER,
+                    text,
+                    egui::FontId::proportional(13.0),
+                    Palette::FG_DESCRIPTION,
+                );
+            };
+            if v.kind == "webview" {
+                match self.extensions.webview_for_view(&v.id, &v.name) {
+                    Some(handle) => {
+                        if self.extensions.webviews.get(&handle).is_some_and(|w| w.html.is_empty()) {
+                            note(ui, "Loading…");
+                        }
+                        self.webview_host.place(handle, rect);
+                    }
+                    None => note(ui, "Loading…"),
+                }
+            } else {
+                note(ui, "This kind of view isn't supported yet.");
+            }
+        }
+    }
+
     /// Send the open documents and the active editor's selection to the
     /// extension host (only what changed).
     fn sync_extension_documents(&mut self) {
         let docs: Vec<(PathBuf, &'static str, &str, bool)> = self
             .documents
             .iter()
-            .filter(|d| d.diff_base.is_none())
+            .filter(|d| d.diff_base.is_none() && d.webview.is_none())
             .map(|d| (d.path.clone(), d.language_id(), d.text.as_str(), d.dirty))
             .collect();
-        let active = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.diff_base.is_none()).map(|d| {
+        let active = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.diff_base.is_none() && d.webview.is_none()).map(|d| {
             let line = d.cursor_line.saturating_sub(1);
             let ch = crate::extensions::text::char_col_to_utf16(&d.text, line, d.cursor_col.saturating_sub(1));
             (d.path.clone(), [line, ch, line, ch])
         });
         self.extensions.sync_documents(&docs, active);
+        let tabs: Vec<serde_json::Value> = self
+            .documents
+            .iter()
+            .enumerate()
+            .map(|(i, d)| {
+                let view_type = d.webview.and_then(|h| self.extensions.webviews.get(&h)).and_then(|w| match &w.kind {
+                    crate::extensions::WebviewKind::Panel { view_type } => Some(view_type.clone()),
+                    _ => None,
+                });
+                serde_json::json!({
+                    "label": d.diff_title.clone().unwrap_or_else(|| d.display_name()),
+                    "path": d.path,
+                    "kind": if d.webview.is_some() { "webview" } else if d.diff_base.is_some() { "diff" } else { "text" },
+                    "viewType": view_type,
+                    "active": Some(i) == self.active_doc,
+                    "dirty": d.dirty,
+                    "pinned": d.pinned,
+                })
+            })
+            .collect();
+        self.extensions.sync_tabs(serde_json::Value::Array(tabs));
     }
 
     /// Apply an extension's edits to a file, opening it first if needed.
@@ -1786,6 +1927,8 @@ impl App {
     }
 
     fn render_impl(&mut self, ctx: &Context) {
+        self.webview_host.begin_frame();
+        self.sync_webview_tabs();
         // Drain any native-menu events from the previous frame.
         while let Some(ev) = crate::menubar::poll_event() {
             self.dispatch_menu_event(ctx, &ev.id);
@@ -1814,7 +1957,8 @@ impl App {
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
-                let active = self.active_doc.and_then(|i| self.documents.get(i));
+                // Webview tabs have no text: no cursor, language or encoding items.
+                let active = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| d.webview.is_none());
                 let has_workspace = self.workspace_root.is_some();
                 // Status bar reflects the active repository.
                 let active_root = self.active_repo_root();
@@ -1889,7 +2033,26 @@ impl App {
             .show(ctx, |ui| {
                 let prev_view = self.active_view;
                 let scm_count = self.git_model.total_changes();
-                if activity_bar::show(ui, &mut self.active_view, &mut self.sidebar_visible, scm_count) {
+                let containers: Vec<activity_bar::ContainerIcon> = self
+                    .extensions
+                    .visible_containers()
+                    .into_iter()
+                    .map(|c| activity_bar::ContainerIcon {
+                        icon: (!c.icon.starts_with("$(") && !c.icon.is_empty())
+                            .then(|| crate::assets::icon_mask_texture(ui.ctx(), std::path::Path::new(&c.icon), 48))
+                            .flatten(),
+                        id: c.id,
+                        title: c.title,
+                    })
+                    .collect();
+                if activity_bar::show_with_containers(
+                    ui,
+                    &mut self.active_view,
+                    &mut self.sidebar_visible,
+                    scm_count,
+                    &containers,
+                    &mut self.ext_container,
+                ) {
                     self.palette.open();
                 }
                 // Refresh Git when the user just switched to Source Control.
@@ -1909,6 +2072,7 @@ impl App {
                 ActivityView::Search => "sidebar_search",
                 ActivityView::SourceControl => "sidebar_scm",
                 ActivityView::Extensions => "sidebar_extensions",
+                ActivityView::ExtensionContainer => "sidebar_ext_container",
             };
             let sidebar_output: SidebarOutput;
             {
@@ -1923,6 +2087,12 @@ impl App {
                             .inner_margin(Margin::ZERO),
                     )
                     .show(ctx, |ui| {
+                        if self.active_view == ActivityView::ExtensionContainer {
+                            let rect = ui.max_rect();
+                            ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
+                            self.extension_container_view(ui);
+                            return SidebarOutput::default();
+                        }
                         if self.active_view == ActivityView::Extensions {
                             let rect = ui.max_rect();
                             ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG);
@@ -2033,7 +2203,16 @@ impl App {
                         self.show_tab_context_menu(ctx);
                     }
 
-                    if let Some(idx) = self.active_doc {
+                    let webview_tab = self.active_doc.and_then(|i| self.documents.get(i)).and_then(|d| d.webview);
+                    if let Some(handle) = webview_tab {
+                        // An extension's webview panel fills the editor area.
+                        let rect = ui.available_rect_before_wrap();
+                        ui.allocate_rect(rect, egui::Sense::hover());
+                        if self.extensions.webviews.get(&handle).is_some_and(|w| w.html.is_empty()) {
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(13.0), Palette::FG_DESCRIPTION);
+                        }
+                        self.webview_host.place(handle, rect);
+                    } else if let Some(idx) = self.active_doc {
                         // Breadcrumbs row (path of the active file), like VS Code.
                         if let Some(doc) = self.documents.get(idx) {
                             crate::workbench::breadcrumbs::show(
@@ -2135,6 +2314,12 @@ impl App {
         if let Some(out) = editor_output {
             self.after_editor(ctx, out);
         }
+        // Native web views sit above everything egui draws; hide them while a
+        // popup would overlap them.
+        self.webview_host.suppressed = self.palette.visible
+            || self.tab_menu.is_some()
+            || self.branch_picker.is_some()
+            || self.commit_menu.is_some();
         self.language_widgets(ctx);
 
         for d in crate::workbench::notifications::show(ctx, &self.extensions.notifications) {
@@ -2148,8 +2333,14 @@ impl eframe::App for App {
         // UI is registered via panels in `update`, not via the root Ui.
     }
 
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, frame: &mut eframe::Frame) {
         self.render(ctx);
+        self.webview_host.forward_page_messages(&mut self.extensions);
+        self.webview_host.sync(frame, &mut self.extensions);
+        if !self.extensions.webviews.is_empty() {
+            // Page messages arrive between frames.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 }
 

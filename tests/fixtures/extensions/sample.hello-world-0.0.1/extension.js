@@ -106,6 +106,46 @@ function activate(context) {
 	context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(lint));
 	context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => lint(e.document)));
 
+	// Webviews: a sidebar view and an editor panel sharing one page.
+	const page = webview => {
+		const script = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'page.js'));
+		return `<!DOCTYPE html><html><head>
+			<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline';">
+			</head><body><h3>Hello webview</h3><button id="send">Send</button><p id="reply"></p>
+			<script src="${script}"></script></body></html>`;
+	};
+	const wire = webview => {
+		webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')] };
+		webview.html = page(webview);
+		webview.onDidReceiveMessage(m => {
+			if (m.text === 'loaded') { return; }
+			vscode.window.showInformationMessage(`Page says ${m.text}`);
+			webview.postMessage({ reply: `Got ${m.text}` });
+		});
+	};
+	context.subscriptions.push(vscode.window.registerWebviewViewProvider('helloWorld.view', {
+		resolveWebviewView(view) { wire(view.webview); },
+	}));
+	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.openPanel', () => {
+		const panel = vscode.window.createWebviewPanel('helloPanel', 'Hello Panel', vscode.ViewColumn.One, { enableScripts: true });
+		wire(panel.webview);
+		panel.onDidDispose(() => vscode.window.showInformationMessage('Panel closed'));
+	}));
+	// Virtual documents and diffs, like extensions that propose edits.
+	context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('hello-orig', {
+		provideTextDocumentContent(uri) { return `old ${uri.path}\n`; },
+	}));
+	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.showDiff', async () => {
+		const right = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'README.md');
+		await vscode.commands.executeCommand('vscode.diff', vscode.Uri.parse('hello-orig:/README.md'), right, 'README (proposed)');
+	}));
+	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.listTabs', () => {
+		const group = vscode.window.tabGroups.activeTabGroup;
+		const labels = group.tabs.map(t => `${t.label}${t.input instanceof vscode.TabInputText ? '' : '?'}`).join(', ');
+		vscode.window.showInformationMessage(`Tabs: ${labels}; active ${group.activeTab && group.activeTab.label}`);
+	}));
+	vscode.commands.executeCommand('setContext', 'helloWorld.ready', true);
+
 	console.log('hello-world activated');
 }
 

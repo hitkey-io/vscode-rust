@@ -14,8 +14,21 @@
       { "command": "helloWorld.fail", "title": "Fail", "category": "Hello" },
       { "command": "helloWorld.upperFirstLine", "title": "Upper-case First Line", "category": "Hello" },
       { "command": "helloWorld.pick", "title": "Pick a Fruit", "category": "Hello" },
+      { "command": "helloWorld.openPanel", "title": "Open Panel", "category": "Hello" },
+      { "command": "helloWorld.showDiff", "title": "Show Diff", "category": "Hello" },
+      { "command": "helloWorld.listTabs", "title": "List Tabs", "category": "Hello" },
       { "command": "helloWorld.internal", "title": "Internal" }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "hello-sidebar", "title": "Hello", "icon": "media/hello.svg" },
+        { "id": "hello-hidden", "title": "Hidden", "icon": "media/hello.svg", "when": "helloWorld.showHidden" }
+      ]
+    },
+    "views": {
+      "hello-sidebar": [ { "type": "webview", "id": "helloWorld.view", "name": "Greeter" } ],
+      "hello-hidden": [ { "type": "webview", "id": "helloWorld.hiddenView", "name": "Hidden" } ]
+    },
     "menus": {
       "commandPalette": [ { "command": "helloWorld.internal", "when": "false" } ]
     },

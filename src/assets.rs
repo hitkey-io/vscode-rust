@@ -116,3 +116,48 @@ pub fn paint_letterpress(
         tint,
     );
 }
+
+/// An icon file (SVG or PNG) as a white mask to tint at draw time, the way
+/// VS Code paints contributed activity bar icons (`mask-image`, coloured by
+/// `activityBar.inactiveForeground`). `size_px` is the square edge in
+/// physical pixels. Cached by path and size.
+pub fn icon_mask_texture(ctx: &Context, path: &std::path::Path, size_px: u32) -> Option<TextureHandle> {
+    static MASKS: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, u32), Option<TextureHandle>>>> =
+        once_cell::sync::Lazy::new(Default::default);
+    let key = (path.to_path_buf(), size_px);
+    if let Some(hit) = MASKS.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        return hit;
+    }
+    let rgba: Option<Vec<u8>> = (|| {
+        let bytes = std::fs::read(path).ok()?;
+        let is_svg = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+        if is_svg {
+            let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default()).ok()?;
+            let size = tree.size();
+            let scale = size_px as f32 / size.width().max(size.height());
+            let mut pixmap = tiny_skia::Pixmap::new(size_px, size_px)?;
+            let dx = (size_px as f32 - size.width() * scale) / 2.0;
+            let dy = (size_px as f32 - size.height() * scale) / 2.0;
+            resvg::render(&tree, tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, dx, dy), &mut pixmap.as_mut());
+            // Premultiplied → straight alpha is irrelevant for a mask.
+            Some(pixmap.data().to_vec())
+        } else {
+            let img = image::load_from_memory(&bytes).ok()?;
+            let img = img.resize_exact(size_px, size_px, image::imageops::FilterType::Triangle).to_rgba8();
+            Some(img.into_raw())
+        }
+    })();
+    let tex = rgba.map(|mut px| {
+        for p in px.chunks_exact_mut(4) {
+            p[0] = 255;
+            p[1] = 255;
+            p[2] = 255;
+        }
+        let image = ColorImage::from_rgba_unmultiplied([size_px as usize, size_px as usize], &px);
+        ctx.load_texture(format!("icon-mask::{}::{size_px}", path.display()), image, TextureOptions::LINEAR)
+    });
+    if let Ok(mut m) = MASKS.lock() {
+        m.insert(key, tex.clone());
+    }
+    tex
+}

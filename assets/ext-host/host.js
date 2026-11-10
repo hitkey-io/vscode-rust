@@ -229,8 +229,13 @@ const commands = {
 		return commands.registerCommand(id, (...args) => callback.call(thisArg, undefined, undefined, ...args));
 	},
 	async executeCommand(id, ...args) {
-		// Context keys drive `when` clauses, which the editor doesn't evaluate yet.
-		if (id === 'setContext') { return undefined; }
+		// Context keys drive `when` clauses (which views show, menus…).
+		if (id === 'vscode.diff') { return openDiff(args[0], args[1], args[2]); }
+		if (id === 'vscode.open') { await showTextDocument(args[0]); return undefined; }
+		if (id === 'setContext') {
+			send({ type: 'setContext', key: String(args[0]), value: safeJson(args[1]) });
+			return undefined;
+		}
 		if (state.commands.has(id) || await activateForCommand(id)) {
 			const c = state.commands.get(id);
 			if (c) {
@@ -558,9 +563,36 @@ function editorFor(doc) {
 	return editors.get(doc.fileName);
 }
 
+/** `workspace.registerTextDocumentContentProvider`: scheme -> provider. */
+const contentProviders = new Map();
+
+/** The text behind `uri`: an open document, a content provider, or disk. */
+async function contentOf(uri) {
+	if (uri.scheme !== 'file' && uri.scheme !== 'untitled') {
+		const provider = contentProviders.get(uri.scheme);
+		if (!provider) { return ''; }
+		return String((await provider.provideTextDocumentContent(uri, new CancellationTokenSource().token)) || '');
+	}
+	const open = docs.get(uri.fsPath);
+	if (open) { return open.getText(); }
+	try { return await fs.promises.readFile(uri.fsPath, 'utf8'); } catch { return ''; }
+}
+
+/** `vscode.diff`: show two documents side by side (here: an inline diff tab). */
+async function openDiff(left, right, title) {
+	const [base, text] = await Promise.all([contentOf(left), contentOf(right)]);
+	const target = right.scheme === 'file' ? right.fsPath : (left.scheme === 'file' ? left.fsPath : right.path);
+	await request({ type: 'openDiff', path: target, base, text, title: title || path.basename(target) });
+}
+
 async function openTextDocument(arg) {
 	if (arg && typeof arg === 'object' && !(arg instanceof Uri) && !arg.scheme) {
 		const d = new TextDocument(`Untitled-${docs.size + 1}`, arg.language || 'plaintext', 1, arg.content || '', true);
+		return d;
+	}
+	if (arg instanceof Uri && arg.scheme !== 'file') {
+		const d = new TextDocument(arg.path, languageIdFor(arg.path), 1, await contentOf(arg), false);
+		d.uri = arg;
 		return d;
 	}
 	const fsPath = typeof arg === 'string' ? path.resolve(arg) : arg.fsPath;
@@ -668,6 +700,216 @@ function handleDocumentMessage(msg) {
 	return false;
 }
 
+// ---------------------------------------------------------------------------
+// Tabs (extHostEditorTabs.ts): one group mirroring the editor's tabs.
+// ---------------------------------------------------------------------------
+
+class TabInputText { constructor(uri) { this.uri = uri; } }
+class TabInputTextDiff { constructor(original, modified) { this.original = original; this.modified = modified; } }
+class TabInputWebview { constructor(viewType) { this.viewType = viewType; } }
+class TabInputCustom { constructor(uri, viewType) { this.uri = uri; this.viewType = viewType; } }
+class TabInputNotebook { constructor(uri, notebookType) { this.uri = uri; this.notebookType = notebookType; } }
+class TabInputTerminal { constructor() { } }
+
+const tabsChanged = new EventEmitter();
+const tabGroupsChanged = new EventEmitter();
+const tabGroup = { tabs: [], activeTab: undefined, isActive: true, viewColumn: 1 };
+const tabGroups = {
+	get all() { return [tabGroup]; },
+	get activeTabGroup() { return tabGroup; },
+	onDidChangeTabGroups: tabGroupsChanged.event,
+	onDidChangeTabs: tabsChanged.event,
+	async close(tabOrTabs) {
+		const list = (Array.isArray(tabOrTabs) ? tabOrTabs : [tabOrTabs]).filter(t => t && t._path);
+		if (!list.length) { return false; }
+		return !!(await request({ type: 'closeTabs', paths: list.map(t => t._path) }));
+	},
+};
+
+function setTabs(wire) {
+	const before = tabGroup.tabs;
+	tabGroup.tabs = wire.map(t => {
+		let input;
+		if (t.kind === 'webview') { input = new TabInputWebview(t.viewType || ''); }
+		else if (t.kind === 'diff') { input = new TabInputTextDiff(Uri.file(t.path), Uri.file(t.path)); }
+		else { input = new TabInputText(Uri.file(t.path)); }
+		return { label: t.label, input, isActive: !!t.active, isDirty: !!t.dirty, isPinned: !!t.pinned, isPreview: false, group: tabGroup, _path: t.path };
+	});
+	tabGroup.activeTab = tabGroup.tabs.find(t => t.isActive);
+	const opened = tabGroup.tabs.filter(t => !before.some(b => b._path === t._path));
+	const closed = before.filter(b => !tabGroup.tabs.some(t => t._path === b._path));
+	const changed = tabGroup.tabs.filter(t => before.some(b => b._path === t._path && (b.isActive !== t.isActive || b.isDirty !== t.isDirty)));
+	tabsChanged.fire({ opened, closed, changed });
+	tabGroupsChanged.fire({ opened: [], closed: [], changed: [tabGroup] });
+}
+
+// ---------------------------------------------------------------------------
+// Webviews (extHostWebview.ts, extHostWebviewPanels.ts, extHostWebviewView.ts)
+// ---------------------------------------------------------------------------
+
+let nextWebview = 1;
+const webviewsByHandle = new Map(); // handle -> { webview, panel?, view? }
+const viewProviders = new Map();     // viewId -> { provider, options, owner }
+const panelSerializers = new Map();
+
+/** The scheme the editor serves webview resources under. */
+const WEBVIEW_SCHEME = 'vscode-resource';
+
+class Webview {
+	constructor(handle, options, extensionPath) {
+		this._handle = handle;
+		this._html = '';
+		this._options = options || {};
+		this._messages = new EventEmitter();
+		this.onDidReceiveMessage = this._messages.event;
+		this._extensionPath = extensionPath;
+	}
+	get html() { return this._html; }
+	set html(value) {
+		this._html = String(value);
+		send({ type: 'webviewHtml', handle: this._handle, html: this._html });
+	}
+	get options() { return this._options; }
+	set options(value) {
+		this._options = value || {};
+		const roots = (this._options.localResourceRoots || []).map(u => u.fsPath);
+		send({ type: 'webviewOptions', handle: this._handle, enableScripts: !!this._options.enableScripts, localResourceRoots: roots });
+	}
+	get cspSource() { return `${WEBVIEW_SCHEME}:`; }
+	asWebviewUri(uri) { return new Uri(WEBVIEW_SCHEME, `w${this._handle}`, uri.fsPath || uri.path, uri.query, uri.fragment); }
+	async postMessage(message) {
+		send({ type: 'webviewPostMessage', handle: this._handle, message: safeJson(message) });
+		return true;
+	}
+}
+
+function newWebview(options) {
+	const handle = nextWebview++;
+	const desc = state.extensions.find(e => e.id === currentExtensionId);
+	const webview = new Webview(handle, options, desc && desc.path);
+	const roots = ((options && options.localResourceRoots) || []).map(u => u.fsPath);
+	return { handle, webview, roots, extensionPath: desc ? desc.path : null };
+}
+
+function createWebviewPanel(viewType, title, showOptions, options) {
+	const { handle, webview, roots, extensionPath } = newWebview(options);
+	const disposed = new EventEmitter();
+	const viewState = new EventEmitter();
+	let currentTitle = title;
+	let isDisposed = false;
+	const panel = {
+		viewType,
+		webview,
+		get title() { return currentTitle; },
+		set title(t) { currentTitle = t; send({ type: 'webviewTitle', handle, title: String(t) }); },
+		iconPath: undefined,
+		options: options || {},
+		viewColumn: 1,
+		active: true,
+		visible: true,
+		onDidDispose: disposed.event,
+		onDidChangeViewState: viewState.event,
+		reveal() { send({ type: 'webviewReveal', handle }); },
+		dispose() {
+			if (isDisposed) { return; }
+			isDisposed = true;
+			send({ type: 'webviewDisposed', handle });
+			webviewsByHandle.delete(handle);
+			disposed.fire();
+		},
+		_fireDisposed() { if (!isDisposed) { isDisposed = true; webviewsByHandle.delete(handle); disposed.fire(); } },
+		_viewState: viewState,
+	};
+	webviewsByHandle.set(handle, { webview, panel });
+	send({
+		type: 'webviewCreated', handle, kind: 'panel', viewType, title: String(title),
+		extensionPath, localResourceRoots: roots, enableScripts: !!(options && options.enableScripts),
+		preserveFocus: !!(showOptions && showOptions.preserveFocus),
+	});
+	return panel;
+}
+
+function registerWebviewViewProvider(viewId, provider, options) {
+	viewProviders.set(viewId, { provider, options: options || {}, owner: currentExtensionId });
+	send({ type: 'webviewViewProvider', viewId });
+	return new Disposable(() => viewProviders.delete(viewId));
+}
+
+/** The editor shows a contributed webview view: let its provider fill it. */
+async function resolveWebviewView(viewId, title) {
+	if (!viewProviders.has(viewId)) { await activateByEvent(`onView:${viewId}`); }
+	const entry = viewProviders.get(viewId);
+	if (!entry) { send({ type: 'log', level: 'warn', text: `No provider for webview view ${viewId}` }); return; }
+	const previous = currentExtensionId;
+	currentExtensionId = entry.owner;
+	const { handle, webview, roots, extensionPath } = newWebview(entry.options.webviewOptions || {});
+	currentExtensionId = previous;
+	const disposed = new EventEmitter();
+	const visibility = new EventEmitter();
+	let currentTitle = title;
+	let description;
+	const view = {
+		viewType: viewId,
+		webview,
+		get title() { return currentTitle; },
+		set title(t) { currentTitle = t; send({ type: 'webviewTitle', handle, title: String(t || '') }); },
+		get description() { return description; },
+		set description(d) { description = d; },
+		badge: undefined,
+		visible: true,
+		onDidDispose: disposed.event,
+		onDidChangeVisibility: visibility.event,
+		show() { send({ type: 'webviewReveal', handle }); },
+		_fireDisposed() { disposed.fire(); },
+		_visibility: visibility,
+	};
+	webviewsByHandle.set(handle, { webview, view });
+	send({ type: 'webviewCreated', handle, kind: 'view', viewId, title: String(title || ''), extensionPath, localResourceRoots: roots, enableScripts: true });
+	try {
+		const prev = currentExtensionId;
+		currentExtensionId = entry.owner;
+		try { await entry.provider.resolveWebviewView(view, { state: undefined }, new CancellationTokenSource().token); }
+		finally { currentExtensionId = prev; }
+	} catch (err) { console.error(err); }
+}
+
+/** Messages from the editor about webviews. */
+function handleWebviewMessage(msg) {
+	switch (msg.type) {
+		case 'tabs':
+			setTabs(msg.tabs || []);
+			return true;
+		case 'resolveWebviewView':
+			resolveWebviewView(msg.viewId, msg.title).catch(err => console.error(err));
+			return true;
+		case 'webviewMessage': {
+			const entry = webviewsByHandle.get(msg.handle);
+			if (entry) { entry.webview._messages.fire(msg.message); }
+			return true;
+		}
+		case 'webviewClosed': {
+			const entry = webviewsByHandle.get(msg.handle);
+			if (entry) {
+				webviewsByHandle.delete(msg.handle);
+				if (entry.panel) { entry.panel._fireDisposed(); }
+				if (entry.view) { entry.view._fireDisposed(); }
+			}
+			return true;
+		}
+		case 'webviewVisible': {
+			const entry = webviewsByHandle.get(msg.handle);
+			if (entry && entry.view) { entry.view.visible = !!msg.visible; entry.view._visibility.fire(); }
+			if (entry && entry.panel) {
+				entry.panel.visible = !!msg.visible;
+				entry.panel.active = !!msg.visible;
+				entry.panel._viewState.fire({ webviewPanel: entry.panel });
+			}
+			return true;
+		}
+	}
+	return false;
+}
+
 const window = {
 	showInformationMessage: showMessage('info'),
 	showWarningMessage: showMessage('warning'),
@@ -713,13 +955,7 @@ const window = {
 	get activeTextEditor() { return activeEditor; },
 	get visibleTextEditors() { return activeEditor ? [activeEditor] : []; },
 	showTextDocument,
-	tabGroups: {
-		all: [],
-		activeTabGroup: { tabs: [], activeTab: undefined, isActive: true, viewColumn: 1 },
-		onDidChangeTabGroups: silentEvent,
-		onDidChangeTabs: silentEvent,
-		async close() { return false; },
-	},
+	tabGroups,
 	terminals: [],
 	state: { focused: true, active: true },
 	onDidChangeActiveTextEditor: activeEditorChanged.event,
@@ -734,7 +970,12 @@ const window = {
 	createTreeView() {
 		return { onDidChangeSelection: silentEvent, onDidChangeVisibility: silentEvent, onDidExpandElement: silentEvent, onDidCollapseElement: silentEvent, reveal: async () => { }, dispose() { } };
 	},
-	registerWebviewViewProvider() { return new Disposable(() => { }); },
+	createWebviewPanel,
+	registerWebviewViewProvider,
+	registerWebviewPanelSerializer(viewType, serializer) {
+		panelSerializers.set(viewType, serializer);
+		return new Disposable(() => panelSerializers.delete(viewType));
+	},
 	registerUriHandler() { return new Disposable(() => { }); },
 };
 
@@ -827,7 +1068,10 @@ const workspace = {
 	createFileSystemWatcher() {
 		return { onDidCreate: silentEvent, onDidChange: silentEvent, onDidDelete: silentEvent, dispose() { } };
 	},
-	registerTextDocumentContentProvider() { return new Disposable(() => { }); },
+	registerTextDocumentContentProvider(scheme, provider) {
+		contentProviders.set(scheme, provider);
+		return new Disposable(() => contentProviders.delete(scheme));
+	},
 	registerFileSystemProvider() { return new Disposable(() => { }); },
 };
 
@@ -1185,6 +1429,7 @@ const vscodeApi = {
 		constructor(items, idOrMetadata, metadata) { this.items = items; this.metadata = typeof idOrMetadata === 'object' ? idOrMetadata : metadata; }
 	},
 	TextEdit, WorkspaceEdit, TextDocument, TextLine, EndOfLine,
+	TabInputText, TabInputTextDiff, TabInputWebview, TabInputCustom, TabInputNotebook, TabInputTerminal,
 	SnippetString: class SnippetString {
 		constructor(value = '') { this.value = value; this._tab = 1; }
 		appendText(t) { this.value += t.replace(/[$}\\]/g, '\\$&'); return this; }
@@ -1473,6 +1718,7 @@ async function activateByEvent(event) {
 
 async function handle(msg) {
 	if (handleDocumentMessage(msg)) { return; }
+	if (handleWebviewMessage(msg)) { return; }
 	switch (msg.type) {
 		case 'init': {
 			state.extensions = msg.extensions || [];

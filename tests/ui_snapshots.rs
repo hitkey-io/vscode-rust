@@ -57,6 +57,7 @@ fn make_doc(name: &str, contents: &str, dirty: bool) -> Document {
         folded: std::collections::BTreeSet::new(),
         diff_base: None,
         diff_title: None,
+        webview: None,
     };
     if dirty {
         doc.text.push_str("\n// edited");

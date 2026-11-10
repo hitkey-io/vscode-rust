@@ -264,3 +264,71 @@ fn language_features_answer_through_the_host() {
     svc.sync_documents(&[(path.clone(), "markdown", "all good\n", true)], Some((path.clone(), [0, 0, 0, 0])));
     assert!(svc.wait_until(WAIT, |s| s.diagnostics_for(&path).is_empty()));
 }
+
+#[test]
+fn webview_views_and_panels_exchange_messages() {
+    let Some(mut svc) = started() else { return };
+    // The contributed container shows; the one behind a false `when` doesn't.
+    let ids: Vec<String> = svc.visible_containers().into_iter().map(|c| c.id).collect();
+    assert_eq!(ids, vec!["hello-sidebar".to_string()]);
+    assert!(svc.wait_until(WAIT, |s| s.context.get("helloWorld.ready") == Some(&serde_json::json!(true))));
+
+    // Showing the view asks its provider to fill it.
+    assert_eq!(svc.webview_for_view("helloWorld.view", "Greeter"), None);
+    assert!(svc.wait_until(WAIT, |s| s.webviews.values().any(|w| w.html.contains("Hello webview"))), "log: {:#?}", svc.log);
+    let handle = svc.webview_for_view("helloWorld.view", "Greeter").unwrap();
+    let w = &svc.webviews[&handle];
+    assert!(w.html.contains(&format!("vscode-resource://w{handle}/")), "asWebviewUri: {}", w.html);
+    assert!(w.html.contains("script-src vscode-resource:"), "cspSource");
+    assert!(w.roots.iter().any(|r| r.ends_with("media")));
+
+    // Page → extension → page.
+    svc.webview_message(handle, serde_json::json!({ "text": "hi" }));
+    assert!(svc.wait_until(WAIT, |s| s.notifications.iter().any(|n| n.text == "Page says hi")));
+    assert!(svc.wait_until(WAIT, |s| s.webviews.get(&handle).is_some_and(|w| !w.to_page.is_empty())));
+    assert_eq!(svc.take_page_messages(handle), vec![r#"{"reply":"Got hi"}"#.to_string()]);
+
+    // A panel opens as an editor tab and hears when it's closed.
+    svc.execute("helloWorld.openPanel", serde_json::json!([]));
+    assert!(svc.wait_until(WAIT, |s| !s.opened_panels.is_empty()));
+    let panel = svc.opened_panels[0];
+    assert_eq!(svc.webviews[&panel].title, "Hello Panel");
+    svc.close_webview(panel);
+    assert!(svc.wait_until(WAIT, |s| s.notifications.iter().any(|n| n.text == "Panel closed")));
+}
+
+#[test]
+fn tabs_and_diffs_reach_the_extension_and_back() {
+    let Some(mut svc) = started() else { return };
+    let readme = fixtures().join("workspace/README.md");
+    svc.sync_tabs(serde_json::json!([
+        { "label": "README.md", "path": readme, "kind": "text", "active": true, "dirty": false, "pinned": false },
+        { "label": "Hello Panel", "path": "webview-panel:9", "kind": "webview", "viewType": "helloPanel", "active": false, "dirty": false, "pinned": false },
+    ]));
+    svc.execute("helloWorld.listTabs", serde_json::json!([]));
+    assert!(
+        svc.wait_until(WAIT, |s| s.notifications.iter().any(|n| n.text == "Tabs: README.md, Hello Panel?; active README.md")),
+        "{:?}",
+        svc.notifications.iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+    );
+
+    svc.execute("helloWorld.showDiff", serde_json::json!([]));
+    let mut diff = None;
+    for _ in 0..200 {
+        for r in svc.take_requests() {
+            if let EditorRequest::OpenDiff { request_id, path, base, text, title } = r {
+                diff = Some((request_id, path, base, text, title));
+            }
+        }
+        if diff.is_some() {
+            break;
+        }
+        svc.wait_until(Duration::from_millis(30), |_| false);
+    }
+    let (request_id, path, base, text, title) = diff.expect("a diff request");
+    assert_eq!(path, readme);
+    assert_eq!(base, "old /README.md\n");
+    assert_eq!(text, std::fs::read_to_string(&readme).unwrap());
+    assert_eq!(title, "README (proposed)");
+    svc.answer(request_id, serde_json::json!(true));
+}

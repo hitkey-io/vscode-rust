@@ -23,6 +23,30 @@ pub struct ContributedCommand {
     pub hidden: bool,
 }
 
+/// A sidebar container an extension contributes (`viewsContainers`): an
+/// activity bar icon whose views fill the sidebar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewContainer {
+    pub id: String,
+    pub title: String,
+    /// Icon file (absolute) or `$(codicon)` name.
+    pub icon: String,
+    pub when: Option<String>,
+    /// Where VS Code puts it: `activitybar`, `secondarySidebar` or `panel`.
+    pub location: String,
+    pub views: Vec<ContributedView>,
+}
+
+/// A view inside a container (`views`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContributedView {
+    pub id: String,
+    pub name: String,
+    /// `webview` or `tree`.
+    pub kind: String,
+    pub when: Option<String>,
+}
+
 /// One installed extension.
 #[derive(Clone, Debug)]
 pub struct Extension {
@@ -44,6 +68,8 @@ pub struct Extension {
     pub config_defaults: BTreeMap<String, Value>,
     /// Required editor version (`engines.vscode`).
     pub engine: String,
+    /// Sidebar containers and their views.
+    pub view_containers: Vec<ViewContainer>,
     /// The raw manifest, handed to the extension as `packageJSON`.
     pub manifest: Value,
 }
@@ -118,7 +144,45 @@ impl Extension {
             }
         }
 
+        let mut view_containers = Vec::new();
+        if let Some(locations) = contributes.and_then(|c| c.get("viewsContainers")).and_then(Value::as_object) {
+            for (location, list) in locations {
+                for c in list.as_array().into_iter().flatten() {
+                    let Some(id) = c.get("id").and_then(Value::as_str) else { continue };
+                    let icon = c.get("icon").and_then(Value::as_str).unwrap_or_default();
+                    let icon = if icon.starts_with("$(") || icon.is_empty() {
+                        icon.to_string()
+                    } else {
+                        dir.join(icon).to_string_lossy().into_owned()
+                    };
+                    view_containers.push(ViewContainer {
+                        id: id.to_string(),
+                        title: text(c.get("title")),
+                        icon,
+                        when: c.get("when").and_then(Value::as_str).map(str::to_string),
+                        location: location.clone(),
+                        views: Vec::new(),
+                    });
+                }
+            }
+        }
+        if let Some(views) = contributes.and_then(|c| c.get("views")).and_then(Value::as_object) {
+            for (container_id, list) in views {
+                let Some(container) = view_containers.iter_mut().find(|c| &c.id == container_id) else { continue };
+                for v in list.as_array().into_iter().flatten() {
+                    let Some(id) = v.get("id").and_then(Value::as_str) else { continue };
+                    container.views.push(ContributedView {
+                        id: id.to_string(),
+                        name: text(v.get("name")),
+                        kind: v.get("type").and_then(Value::as_str).unwrap_or("tree").to_string(),
+                        when: v.get("when").and_then(Value::as_str).map(str::to_string),
+                    });
+                }
+            }
+        }
+
         Some(Self {
+            view_containers,
             id: format!("{publisher}.{name}"),
             description: text(manifest.get("description")),
             version: manifest.get("version").and_then(Value::as_str).unwrap_or("0.0.0").to_string(),

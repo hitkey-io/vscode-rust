@@ -11,6 +11,7 @@ pub mod host;
 pub mod manifest;
 pub mod marketplace;
 pub mod text;
+pub mod when;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -147,6 +148,33 @@ pub enum ProviderResult {
     Definition(Vec<SourceLocation>),
 }
 
+/// Where a webview lives.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WebviewKind {
+    /// `window.createWebviewPanel`: an editor tab.
+    Panel { view_type: String },
+    /// A contributed `"type": "webview"` view in a sidebar container.
+    View { view_id: String },
+}
+
+/// An extension's webview: its page and the messages for it.
+#[derive(Clone, Debug)]
+pub struct WebviewState {
+    pub handle: u64,
+    pub kind: WebviewKind,
+    pub title: String,
+    pub html: String,
+    /// Bumped on every `html` change, so the page reloads.
+    pub html_version: u64,
+    /// Folders the page may load files from (the extension's own folder,
+    /// `localResourceRoots`, the workspace).
+    pub roots: Vec<PathBuf>,
+    /// Messages for the page (JSON), in order.
+    pub to_page: Vec<String>,
+    /// The extension asked to show it (`reveal`, `show`).
+    pub reveal: bool,
+}
+
 /// Something the editor itself has to do for an extension.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorRequest {
@@ -162,6 +190,10 @@ pub enum EditorRequest {
     SetSelection { path: PathBuf, line: usize, character: usize },
     /// `window.showQuickPick`: answer with the index (or indices), or null.
     QuickPick { request_id: u64, items: Vec<PickItem>, placeholder: Option<String>, can_pick_many: bool },
+    /// `vscode.diff`: open a diff tab (base vs text), then respond.
+    OpenDiff { request_id: u64, path: PathBuf, base: String, text: String, title: String },
+    /// `window.tabGroups.close`: close these tabs, then respond.
+    CloseTabs { request_id: u64, paths: Vec<PathBuf> },
     /// `window.showInputBox`: answer with the text, or null.
     InputBox { request_id: u64, prompt: Option<String>, placeholder: Option<String>, value: String, password: bool },
     /// Run a built-in command (`commands.executeCommand` on an id no
@@ -222,6 +254,20 @@ pub struct ExtensionService {
     pub provider_kinds: BTreeSet<String>,
     /// Characters that open completions (`registerCompletionItemProvider`).
     pub completion_triggers: BTreeSet<String>,
+    /// Context keys set with `setContext` (for `when` clauses).
+    pub context: BTreeMap<String, Value>,
+    /// Open webviews by handle.
+    pub webviews: BTreeMap<u64, WebviewState>,
+    /// Webview views already asked for (`resolveWebviewView` sent).
+    requested_views: BTreeSet<String>,
+    /// Webview visibility last told to the host.
+    webview_visible: BTreeMap<u64, bool>,
+    /// Panels the extensions created / disposed since the editor last
+    /// looked (it opens / closes their tabs).
+    pub opened_panels: Vec<u64>,
+    pub closed_panels: Vec<u64>,
+    /// Tabs last sent to the host (`window.tabGroups`).
+    synced_tabs: Option<Value>,
 }
 
 impl ExtensionService {
@@ -309,12 +355,18 @@ impl ExtensionService {
         self.fired_events.clear();
         self.synced.clear();
         self.synced_active = None;
+        self.synced_tabs = None;
         self.decoration_types.clear();
         self.decorations.clear();
         self.diagnostics.clear();
         self.provider_results.clear();
         self.provider_kinds.clear();
         self.completion_triggers.clear();
+        self.context.clear();
+        self.closed_panels.extend(self.webviews.keys().copied());
+        self.webviews.clear();
+        self.requested_views.clear();
+        self.webview_visible.clear();
         let dirs = self.dirs.clone();
         self.load(&dirs);
         let workspace = self.workspace.clone();
@@ -453,6 +505,19 @@ impl ExtensionService {
         }
     }
 
+    /// Tell the host about the editor's tabs (`window.tabGroups`), when
+    /// they changed. Each tab: label, path, kind (`text`, `diff`,
+    /// `webview`), viewType, active, dirty, pinned.
+    pub fn sync_tabs(&mut self, tabs: Value) {
+        if !self.ready || self.synced_tabs.as_ref() == Some(&tabs) {
+            return;
+        }
+        if let Some(h) = self.host.as_mut() {
+            h.send(&json!({ "type": "tabs", "tabs": tabs }));
+        }
+        self.synced_tabs = Some(tabs);
+    }
+
     /// A file was saved.
     pub fn document_saved(&mut self, path: &Path) {
         if let Some(h) = self.host.as_mut() {
@@ -516,6 +581,75 @@ impl ExtensionService {
             }
         }
         counts
+    }
+
+    /// Sidebar containers the extensions contribute that their `when`
+    /// clauses allow now, with the views allowed in them. Containers meant
+    /// for VS Code's secondary sidebar join the activity bar here.
+    pub fn visible_containers(&self) -> Vec<manifest::ViewContainer> {
+        let ok = |w: &Option<String>| w.as_deref().is_none_or(|w| when::eval(w, &self.context));
+        self.extensions
+            .iter()
+            .flat_map(|e| e.view_containers.iter())
+            .filter(|c| c.location != "panel" && ok(&c.when))
+            .map(|c| {
+                let mut c = c.clone();
+                c.views.retain(|v| ok(&v.when));
+                c
+            })
+            .filter(|c| !c.views.is_empty())
+            .collect()
+    }
+
+    /// The webview showing contributed view `view_id`, asking its provider
+    /// to fill one the first time.
+    pub fn webview_for_view(&mut self, view_id: &str, title: &str) -> Option<u64> {
+        if let Some((h, _)) = self
+            .webviews
+            .iter()
+            .find(|(_, w)| w.kind == WebviewKind::View { view_id: view_id.to_string() })
+        {
+            return Some(*h);
+        }
+        if self.ready && self.requested_views.insert(view_id.to_string()) {
+            if let Some(h) = self.host.as_mut() {
+                h.send(&json!({ "type": "resolveWebviewView", "viewId": view_id, "title": title }));
+            }
+        }
+        None
+    }
+
+    /// A message from a webview page (`acquireVsCodeApi().postMessage`).
+    pub fn webview_message(&mut self, handle: u64, message: Value) {
+        if let Some(h) = self.host.as_mut() {
+            h.send(&json!({ "type": "webviewMessage", "handle": handle, "message": message }));
+        }
+    }
+
+    /// The user closed a webview panel's tab.
+    pub fn close_webview(&mut self, handle: u64) {
+        if self.webviews.remove(&handle).is_some() {
+            if let Some(h) = self.host.as_mut() {
+                h.send(&json!({ "type": "webviewClosed", "handle": handle }));
+            }
+        }
+        self.webview_visible.remove(&handle);
+    }
+
+    /// Tell the extension whether its webview is on screen (only changes).
+    pub fn set_webview_visible(&mut self, handle: u64, visible: bool) {
+        if self.webview_visible.get(&handle) == Some(&visible) {
+            return;
+        }
+        self.webview_visible.insert(handle, visible);
+        if let Some(h) = self.host.as_mut() {
+            h.send(&json!({ "type": "webviewVisible", "handle": handle, "visible": visible }));
+        }
+    }
+
+    /// Messages waiting for a webview page.
+    pub fn take_page_messages(&mut self, handle: u64) -> Vec<String> {
+        self.webviews.get_mut(&handle).map(|w| std::mem::take(&mut w.to_page)).unwrap_or_default()
     }
 
     /// Ask the host how much of the published API is implemented; the
@@ -777,6 +911,27 @@ impl ExtensionService {
                     out.push(EditorRequest::ApplyEdits { request_id, path: PathBuf::from(s("path")), edits });
                 }
             }
+            "openDiff" => {
+                if let Some(request_id) = request_id {
+                    out.push(EditorRequest::OpenDiff {
+                        request_id,
+                        path: PathBuf::from(s("path")),
+                        base: s("base"),
+                        text: s("text"),
+                        title: s("title"),
+                    });
+                }
+            }
+            "closeTabs" => {
+                if let Some(request_id) = request_id {
+                    let paths = msg
+                        .get("paths")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(Value::as_str).map(PathBuf::from).collect())
+                        .unwrap_or_default();
+                    out.push(EditorRequest::CloseTabs { request_id, paths });
+                }
+            }
             "openEditor" => {
                 if let Some(request_id) = request_id {
                     out.push(EditorRequest::OpenEditor { request_id, path: PathBuf::from(s("path")) });
@@ -796,6 +951,84 @@ impl ExtensionService {
                 let n = |i: usize| sel.and_then(|a| a.get(i)).and_then(Value::as_u64).unwrap_or(0) as usize;
                 out.push(EditorRequest::SetSelection { path: PathBuf::from(s("path")), line: n(2), character: n(3) });
             }
+            "setContext" => {
+                let value = msg.get("value").cloned().unwrap_or(Value::Null);
+                self.context.insert(s("key"), value);
+            }
+            "webviewCreated" => {
+                let Some(handle) = msg.get("handle").and_then(Value::as_u64) else { return };
+                let kind = if s("kind") == "view" {
+                    WebviewKind::View { view_id: s("viewId") }
+                } else {
+                    WebviewKind::Panel { view_type: s("viewType") }
+                };
+                let mut roots: Vec<PathBuf> = msg
+                    .get("localResourceRoots")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(PathBuf::from).collect())
+                    .unwrap_or_default();
+                if let Some(p) = msg.get("extensionPath").and_then(Value::as_str) {
+                    roots.push(PathBuf::from(p));
+                }
+                if let Some(w) = &self.workspace {
+                    roots.push(w.clone());
+                }
+                let is_panel = matches!(kind, WebviewKind::Panel { .. });
+                self.webviews.insert(
+                    handle,
+                    WebviewState {
+                        handle,
+                        kind,
+                        title: s("title"),
+                        html: String::new(),
+                        html_version: 0,
+                        roots,
+                        to_page: Vec::new(),
+                        reveal: true,
+                    },
+                );
+                if is_panel {
+                    self.opened_panels.push(handle);
+                }
+            }
+            "webviewHtml" => {
+                if let Some(w) = msg.get("handle").and_then(Value::as_u64).and_then(|h| self.webviews.get_mut(&h)) {
+                    w.html = s("html");
+                    w.html_version += 1;
+                }
+            }
+            "webviewOptions" => {
+                if let Some(w) = msg.get("handle").and_then(Value::as_u64).and_then(|h| self.webviews.get_mut(&h)) {
+                    for r in msg.get("localResourceRoots").and_then(Value::as_array).into_iter().flatten() {
+                        if let Some(p) = r.as_str() {
+                            w.roots.push(PathBuf::from(p));
+                        }
+                    }
+                }
+            }
+            "webviewPostMessage" => {
+                if let Some(w) = msg.get("handle").and_then(Value::as_u64).and_then(|h| self.webviews.get_mut(&h)) {
+                    w.to_page.push(msg.get("message").cloned().unwrap_or(Value::Null).to_string());
+                }
+            }
+            "webviewTitle" => {
+                if let Some(w) = msg.get("handle").and_then(Value::as_u64).and_then(|h| self.webviews.get_mut(&h)) {
+                    w.title = s("title");
+                }
+            }
+            "webviewReveal" => {
+                if let Some(w) = msg.get("handle").and_then(Value::as_u64).and_then(|h| self.webviews.get_mut(&h)) {
+                    w.reveal = true;
+                }
+            }
+            "webviewDisposed" => {
+                if let Some(handle) = msg.get("handle").and_then(Value::as_u64) {
+                    if self.webviews.remove(&handle).is_some() {
+                        self.closed_panels.push(handle);
+                    }
+                }
+            }
+            "webviewViewProvider" => {}
             "providerRegistered" => {
                 self.provider_kinds.insert(s("kind"));
                 if let Some(chars) = msg.get("triggerCharacters").and_then(Value::as_array) {

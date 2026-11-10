@@ -71,9 +71,8 @@ pub fn show(
                     scm_ui,
                 );
             }
-            // Drawn by the caller with `extensions_view::show`, which needs
-            // the extension service.
-            ActivityView::Extensions => {}
+            // Drawn by the caller, which owns the extension service.
+            ActivityView::Extensions | ActivityView::ExtensionContainer => {}
         }
     });
 
@@ -86,6 +85,7 @@ fn header(ui: &mut Ui, view: ActivityView) {
         ActivityView::Search => "SEARCH",
         ActivityView::SourceControl => "SOURCE CONTROL",
         ActivityView::Extensions => "EXTENSIONS",
+        ActivityView::ExtensionContainer => "",
     };
     title_bar(ui, title);
 }
