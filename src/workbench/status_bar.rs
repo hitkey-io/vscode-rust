@@ -15,7 +15,7 @@ fn plain(ui: &mut Ui, text: &str) -> egui::Response {
     let w = g.size().x + 6.0;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG());
+        ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
     ui.painter().text(
         rect.center(),
@@ -50,7 +50,7 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
         ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
     if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG());
+            .rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
     let cy = rect.center().y;
     let p = ui.painter();
@@ -68,6 +68,56 @@ fn status_segment(ui: &mut Ui, glyph: char, text: &str, tip: &str) -> egui::Resp
         text_font,
         Palette::FG(),
     );
+    resp.on_hover_text(tip)
+}
+
+/// An icon-only status item (the notifications bell): 16px codicon with
+/// the status bar's 5px item padding.
+fn icon_segment(ui: &mut Ui, glyph: char, tip: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, ui.available_height()), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
+    }
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, glyph.to_string(), codicon_font(16.0), Palette::STATUS_BAR_FG());
+    let label = tip.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    resp.on_hover_text(tip)
+}
+
+/// A status item made of several `$(icon) text` runs (the problems item),
+/// 5px padding, 4px between runs.
+fn parts_segment(ui: &mut Ui, parts: &[(char, String)], tip: &str) -> egui::Response {
+    let icon_font = codicon_font(14.0);
+    let text_font = FontId::proportional(12.0);
+    let pad = 5.0;
+    let galleys: Vec<_> = parts
+        .iter()
+        .map(|(g, t)| {
+            (
+                ui.painter().layout_no_wrap(g.to_string(), icon_font.clone(), Palette::STATUS_BAR_FG()),
+                ui.painter().layout_no_wrap(t.clone(), text_font.clone(), Palette::STATUS_BAR_FG()),
+            )
+        })
+        .collect();
+    let gap = 3.0;
+    let between = 4.0;
+    let w = pad * 2.0
+        + galleys.iter().map(|(i, t)| i.size().x + gap + t.size().x).sum::<f32>()
+        + between * (galleys.len().saturating_sub(1)) as f32;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
+    }
+    let mut x = rect.left() + pad;
+    for (i, t) in galleys {
+        let (iw, tw) = (i.size(), t.size());
+        ui.painter().galley(egui::pos2(x, rect.center().y - iw.y / 2.0), i, Palette::STATUS_BAR_FG());
+        x += iw.x + gap;
+        ui.painter().galley(egui::pos2(x, rect.center().y - tw.y / 2.0), t, Palette::STATUS_BAR_FG());
+        x += tw.x + between;
+    }
+    let label = tip.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
     resp.on_hover_text(tip)
 }
 
@@ -106,7 +156,7 @@ fn extension_segment(ui: &mut Ui, item: &crate::extensions::StatusItem) -> egui:
     let sense = if item.command.is_some() { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ui.available_height()), sense);
     if resp.hovered() && item.command.is_some() {
-        ui.painter().rect_filled(rect, 0.0, Palette::STATUS_BAR_ITEM_HOVER_BG());
+        ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::STATUS_BAR_ITEM_HOVER_BG());
     }
     let mut x = rect.left() + pad;
     for g in galleys {
@@ -168,25 +218,14 @@ pub fn show_with_extensions(
     let left_items = by_priority(false);
     let right_items = by_priority(true);
     let mut out = StatusBarOutput::default();
-    let rect = ui.max_rect();
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, Palette::STATUS_BAR_BG());
-
-    let top_border = egui::Rect::from_min_size(
-        egui::pos2(rect.left(), rect.top()),
-        egui::vec2(rect.width(), 1.0),
-    );
-    painter.rect_filled(top_border, 0.0, Palette::BORDER());
-
-    let row = egui::Rect::from_min_size(
-        egui::pos2(rect.left(), rect.top() + 1.0),
-        egui::vec2(rect.width(), rect.height() - 1.0),
-    );
+    // Modern UI: no top border (`.status-border-top::after` hidden); the
+    // panel's padding puts the 24px items 2px inside.
+    let row = ui.max_rect();
 
     ui.allocate_ui_at_rect(row, |ui| {
         ui.horizontal_centered(|ui| {
             // Far-left: remote indicator (`><`), like VS Code's status bar.
-            if status_segment(ui, icons::REMOTE, "", "Open a Remote Window").clicked() {
+            if icon_segment(ui, icons::REMOTE, "Open a Remote Window").clicked() {
                 out.palette_requested = true;
             }
             ui.add_space(2.0);
@@ -235,10 +274,9 @@ pub fn show_with_extensions(
             } else {
                 format!("Errors: {errors}, Warnings: {warnings}")
             };
-            if status_segment(ui, icons::ERROR_ICON, &errors.to_string(), &tip).clicked() {
-                out.palette_requested = true;
-            }
-            if status_segment(ui, icons::WARNING_ICON, &warnings.to_string(), &tip).clicked() {
+            // One item, as VS Code's `status.problems`: `$(error) 0 $(warning) 0`.
+            let parts = [(icons::ERROR_ICON, errors.to_string()), (icons::WARNING_ICON, warnings.to_string())];
+            if parts_segment(ui, &parts, &tip).clicked() {
                 out.palette_requested = true;
             }
             for item in &left_items {
@@ -259,16 +297,12 @@ pub fn show_with_extensions(
             // Right: document + editor state, right-to-left so the first item
             // added sits at the far right (feedback), matching VS Code order.
             ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+              // Notifications, always at the far right (VS Code 1.145).
+              if icon_segment(ui, icons::BELL, "No Notifications").clicked() {
+                  out.palette_requested = true;
+              }
               if let Some(doc) = active {
                 {
-                    ui.add_space(6.0);
-                    if status_segment(ui, icons::FEEDBACK, "", "Tweet Feedback").clicked() {
-                        out.palette_requested = true;
-                    }
-                    if status_segment(ui, icons::BELL, "", "No Notifications").clicked() {
-                        out.palette_requested = true;
-                    }
-                    ui.add_space(2.0);
                     if status_segment(
                         ui,
                         icons::JSON_BRACES,

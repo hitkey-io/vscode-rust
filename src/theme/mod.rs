@@ -76,6 +76,25 @@ palette! {
     MENU_SELECTION_FG = Id("menu.selectionForeground");
     MENU_SEPARATOR = Id("menu.separatorBackground");
 
+    // ── Modern UI (`workbench.experimental.modernUI`, on by default) ───────
+    /// Behind the floating cards (floatingPanels.css).
+    SHELL_BG = OneOf(&["modernUI.shellBackground", "titleBar.activeBackground"]);
+    /// The side bar card.
+    SURFACE_BG = OneOf(&["surface.background", "sideBar.background"]);
+    SURFACE_BORDER = OneOf(&["surface.border", "widget.border"]);
+    /// The editor card's outline (editorBorder.css).
+    EDITOR_CARD_BORDER = OneOf(&["editor.border", "surface.border", "widget.border"]);
+    MODERN_ACTIVITY_BAR_BG = OneOf(&["modernActivityBar.background", "activityBar.background"]);
+    MODERN_ACTIVITY_BAR_BORDER = OneOf(&["modernActivityBar.border", "surface.border", "widget.border"]);
+    /// A theme's `activityBar.activeBackground` wins over the modern colour
+    /// (activitybarPart.ts theming participant).
+    MODERN_ACTIVITY_ITEM_ACTIVE_BG = OneOf(&["activityBar.activeBackground", "modernActivityBarItem.activeBackground"]);
+    MODERN_ACTIVITY_ITEM_ACTIVE_FG = OneOf(&["modernActivityBarItem.activeForeground", "activityBar.foreground"]);
+    MODERN_ACTIVITY_ITEM_HOVER_BG = Id("modernActivityBarItem.hoverBackground");
+    MODERN_ACTIVITY_ITEM_HOVER_FG = OneOf(&["modernActivityBarItem.hoverForeground", "activityBar.foreground"]);
+    /// The tab strip behind connected editor tabs.
+    CONNECTED_TABS_BG = OneOf(&["editorGroupHeader.connectedTabsBackground", "editorGroupHeader.tabsBackground"]);
+
     // ── Foreground ────────────────────────────────────────────────────────
     FG = Id("foreground");
     /// Emphasised text and icons on hover.
@@ -457,7 +476,8 @@ pub fn apply(ctx: &egui::Context) {
     let mut visuals = if current().kind.is_dark() { Visuals::dark() } else { Visuals::light() };
 
     visuals.override_text_color = Some(Palette::FG());
-    visuals.panel_fill = Palette::EDITOR_BG();
+    // The window behind the floating cards.
+    visuals.panel_fill = Palette::SHELL_BG();
     visuals.window_fill = Palette::MENU_BG();
     visuals.extreme_bg_color = Palette::INPUT_BG();
     visuals.faint_bg_color = Palette::PANEL_BG();

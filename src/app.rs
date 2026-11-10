@@ -9,7 +9,7 @@ use crate::menubar::MenuIds;
 use crate::search::SearchState;
 use crate::theme::{self, Palette};
 use crate::workbench::command_palette::{self, CommandId, CommandPaletteState, PaletteAction};
-use crate::workbench::{
+use crate::workbench::{cards, 
     activity_bar,
     sidebar::{self, SidebarOutput},
     status_bar, tabs, ActivityView,
@@ -3474,79 +3474,59 @@ impl App {
             )
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
-                // bottom border
-                let bottom_border = egui::Rect::from_min_size(
-                    egui::pos2(rect.left(), rect.bottom() - 1.0),
-                    egui::vec2(rect.width(), 1.0),
-                );
-                ui.painter().rect_filled(bottom_border, 0.0, Palette::BORDER());
+                // Modern UI: no border; the cards start right below.
 
                 use crate::icons::codicon_font;
-                let p = ui.painter().clone();
-                let cy = rect.center().y;
+                // The title bar's items sit 2px lower in Modern UI
+                // (titlebar.css `padding-top: 2px`).
+                let cy = rect.top() + (bar_height + 2.0) / 2.0;
+                let icon = |name: &str| crate::icons::codicon_by_name(name).unwrap_or('?');
 
-                // Left: back / forward navigation arrows (after the traffic lights).
-                // Inert for now (no navigation history) — but they hover.
-                let nav_x = rect.left() + left_inset + 6.0;
-                for (i, glyph) in [crate::icons::ARROW_LEFT, crate::icons::ARROW_RIGHT].into_iter().enumerate() {
-                    let r = egui::Rect::from_center_size(
-                        egui::pos2(nav_x + 8.0 + i as f32 * 26.0, cy),
-                        egui::vec2(24.0, 22.0),
-                    );
-                    let resp = ui.interact(r, ui.id().with(("tnav", i)), egui::Sense::click());
-                    let (bg, fg) = if resp.hovered() {
-                        (Palette::COMMAND_CENTER_BG(), Palette::FG())
-                    } else {
-                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG())
-                    };
-                    ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
-                    ui.painter().text(
-                        r.center(), egui::Align2::CENTER_CENTER,
-                        glyph.to_string(), codicon_font(16.0), fg,
-                    );
-                    resp.on_hover_text(if i == 0 { "Go Back" } else { "Go Forward" });
-                }
-
-                // Centre: command-center pill (search icon + workspace name).
-                // Clicking it opens the command palette, matching VS Code.
+                // Centre: the command center in compact mode, as VS Code 1.145
+                // draws it with AI features off (commandCenterControl.ts):
+                // 38vw (≤ 600) × 22 + border, label left-aligned 8px in, no
+                // search icon; Back / Forward to its left. The group is centred.
                 let workspace_name = self
                     .workspace_root
                     .as_ref()
                     .and_then(|r| r.file_name())
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "vscode-rust".to_string());
-                let pill_w = 360.0_f32.min(rect.width() * 0.4);
-                let pill = egui::Rect::from_center_size(
-                    egui::pos2(rect.center().x, cy),
-                    egui::vec2(pill_w, 22.0),
-                );
+                let pill_w = (rect.width() * 0.38).min(600.0).floor() + 2.0;
+                let pill_left = (rect.center().x - pill_w / 2.0 + 26.0).round();
+                let pill = egui::Rect::from_min_size(egui::pos2(pill_left, cy - 12.0), egui::vec2(pill_w, 24.0));
+
+                // Back / Forward, centred 52px and 16px left of the box.
+                for (i, (name, tip, dx)) in
+                    [("arrow-left", "Go Back (⌃-)", 52.0), ("arrow-right", "Go Forward (⌃⇧-)", 16.0)].into_iter().enumerate()
+                {
+                    let r = egui::Rect::from_center_size(egui::pos2(pill.left() - dx, cy), egui::vec2(22.0, 22.0));
+                    let resp = ui.interact(r, ui.id().with(("tnav", i)), egui::Sense::click());
+                    // No navigation history yet: both stay disabled.
+                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, icon(name).to_string(), codicon_font(16.0), Palette::VSCE_DISABLED_FG());
+                    resp.on_hover_text(tip);
+                }
+
                 let pill_resp =
                     ui.interact(pill, ui.id().with("tcmdcenter"), egui::Sense::click());
-                let pill_bg = if pill_resp.hovered() {
-                    Palette::LIST_HOVER_BG()
+                let (pill_bg, pill_border, pill_fg) = if pill_resp.hovered() {
+                    (Palette::COMMAND_CENTER_ACTIVE_BG(), Palette::COMMAND_CENTER_ACTIVE_BORDER(), Palette::COMMAND_CENTER_ACTIVE_FG())
                 } else {
-                    Palette::COMMAND_CENTER_BG()
+                    (Palette::COMMAND_CENTER_BG(), Palette::COMMAND_CENTER_BORDER(), Palette::COMMAND_CENTER_FG())
                 };
                 ui.painter().rect(
                     pill,
                     egui::CornerRadius::same(6),
                     pill_bg,
-                    egui::Stroke::new(1.0, Palette::COMMAND_CENTER_BORDER()),
+                    egui::Stroke::new(1.0, pill_border),
                     egui::StrokeKind::Inside,
                 );
                 ui.painter().text(
                     egui::pos2(pill.left() + 10.0, cy),
                     egui::Align2::LEFT_CENTER,
-                    crate::icons::SEARCH.to_string(),
-                    codicon_font(13.0),
-                    Palette::COMMAND_CENTER_FG(),
-                );
-                ui.painter().text(
-                    pill.center(),
-                    egui::Align2::CENTER_CENTER,
                     &workspace_name,
-                    egui::FontId::proportional(12.5),
-                    Palette::COMMAND_CENTER_FG(),
+                    egui::FontId::proportional(12.0),
+                    pill_fg,
                 );
                 // VS Code's command center opens Quick Open (file search).
                 if pill_resp.clicked() {
@@ -3554,35 +3534,31 @@ impl App {
                 }
                 pill_resp.on_hover_text(format!("Search {workspace_name} (⌘P)"));
 
-                // Right: layout-control cluster. The leftmost icon
-                // (`layout-sidebar-left`) toggles the primary sidebar; the
-                // others are placeholders for parity with VS Code.
-                let mut rx = rect.right() - 22.0;
-                let layout_items: [(char, &str); 4] = [
-                    (crate::icons::LAYOUT, "Customize Layout…"),
-                    (crate::icons::LAYOUT_SIDEBAR_RIGHT, "Toggle Secondary Side Bar"),
-                    (crate::icons::LAYOUT_PANEL, "Toggle Panel"),
-                    (crate::icons::LAYOUT_SIDEBAR_LEFT, "Toggle Primary Side Bar (⌘B)"),
+                // Right: layout controls, 26px apart, the last centred 23px
+                // from the right edge; the toggles show their part's state.
+                let layout_items = [
+                    ("layout", "Customize Layout...", true),
+                    (if self.sidebar_visible { "layout-sidebar-left" } else { "layout-sidebar-left-off" }, "Toggle Primary Side Bar (⌘B)", true),
+                    ("layout-panel-off", "Toggle Panel (⌘J)", false),
+                    ("layout-sidebar-right-off", "Toggle Secondary Side Bar (⌥⌘B)", false),
                 ];
-                for (i, (glyph, tip)) in layout_items.into_iter().enumerate() {
-                    let r = egui::Rect::from_center_size(egui::pos2(rx, cy), egui::vec2(26.0, 22.0));
+                let first = rect.right() - 23.0 - 26.0 * (layout_items.len() as f32 - 1.0);
+                for (i, (name, tip, _)) in layout_items.into_iter().enumerate() {
+                    let r = egui::Rect::from_center_size(egui::pos2(first + 26.0 * i as f32, cy), egui::vec2(22.0, 22.0));
                     let resp = ui.interact(r, ui.id().with(("tlayout", i)), egui::Sense::click());
-                    let (bg, fg) = if resp.hovered() {
-                        (Palette::COMMAND_CENTER_BG(), Palette::FG())
-                    } else {
-                        (egui::Color32::TRANSPARENT, Palette::TITLE_BAR_INACTIVE_FG())
-                    };
-                    ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
+                    if resp.hovered() {
+                        ui.painter().rect_filled(r, egui::CornerRadius::same(4), Palette::VSCE_TOOLBAR_HOVER_BG());
+                    }
                     ui.painter().text(
                         r.center(), egui::Align2::CENTER_CENTER,
-                        glyph.to_string(), codicon_font(16.0), fg,
+                        icon(name).to_string(), codicon_font(16.0), Palette::TITLE_BAR_FG(),
                     );
-                    // Only the primary side bar toggle is wired up for now.
-                    if i == 3 && resp.clicked() {
+                    if i == 1 && resp.clicked() {
                         self.sidebar_visible = !self.sidebar_visible;
                     }
+                    let label = tip.to_string();
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
                     resp.on_hover_text(tip);
-                    rx -= 30.0;
                 }
 
                 // VS Code on macOS uses the native system menu bar (NSMenu) instead of an
@@ -3896,15 +3872,22 @@ impl App {
 
         self.handle_shortcuts(ctx);
 
+        // The shell behind the Modern UI cards, under every panel (gaps
+        // between panels would otherwise show the clear colour).
+        ctx.layer_painter(egui::LayerId::background())
+            .rect_filled(ctx.content_rect(), 0.0, Palette::SHELL_BG());
+
         self.title_bar(ctx);
 
+        // Modern UI status bar: 24px items with 2px / 12px padding
+        // (floatingPanels.css `.part.statusbar`).
         TopBottomPanel::bottom("status_bar")
-            .exact_height(22.0)
+            .exact_height(28.0)
             .show_separator_line(false)
             .frame(
                 Frame::default()
                     .fill(Palette::STATUS_BAR_BG())
-                    .inner_margin(Margin::ZERO),
+                    .inner_margin(Margin { left: 12, right: 12, top: 2, bottom: 2 }),
             )
             .show(ctx, |ui| {
                 // Webview tabs have no text: no cursor, language or encoding items.
@@ -3984,13 +3967,14 @@ impl App {
             });
 
 
+        // The activity bar card: 4px outer margin + 44px card.
         SidePanel::left("activity_bar")
             .exact_width(48.0)
             .resizable(false)
             .show_separator_line(false)
             .frame(
                 Frame::default()
-                    .fill(Palette::ACTIVITY_BAR_BG())
+                    .fill(Palette::SHELL_BG())
                     .inner_margin(Margin::ZERO),
             )
             .show(ctx, |ui| {
@@ -4035,6 +4019,8 @@ impl App {
             let panel_id = "sidebar";
             let sidebar_output: SidebarOutput;
             {
+                // The side bar card: 1px outline inside (its left edge is a
+                // seam with the activity bar), 4px above the status bar.
                 let resp = SidePanel::left(panel_id)
                     .resizable(true)
                     .show_separator_line(false)
@@ -4042,8 +4028,8 @@ impl App {
                     .default_width(self.sidebar_width)
                     .frame(
                         Frame::default()
-                            .fill(Palette::SIDEBAR_BG())
-                            .inner_margin(Margin::ZERO),
+                            .fill(Palette::SHELL_BG())
+                            .inner_margin(Margin { left: 1, right: 1, top: 1, bottom: 1 + cards::MARGIN as i8 }),
                     )
                     .show(ctx, |ui| {
                         if self.active_view == ActivityView::ExtensionContainer {
@@ -4096,6 +4082,17 @@ impl App {
                     });
                 sidebar_output = resp.inner;
                 self.sidebar_width = resp.response.rect.width().clamp(170.0, 420.0);
+                let r = resp.response.rect;
+                let card = egui::Rect::from_min_max(r.min, egui::pos2(r.right(), r.bottom() - cards::MARGIN));
+                let radius = egui::CornerRadius { nw: 0, sw: 0, ne: cards::RADIUS as u8, se: cards::RADIUS as u8 };
+                cards::finish(
+                    &ctx.layer_painter(egui::LayerId::background()),
+                    card,
+                    radius,
+                    Palette::SURFACE_BORDER(),
+                    Palette::SHELL_BG(),
+                    true,
+                );
             }
 
             if sidebar_output.open_folder_requested {
@@ -4115,13 +4112,17 @@ impl App {
         let mut find_matches_for_widget: Vec<(usize, usize)> = Vec::new();
         let mut welcome_pending_file = false;
 
-        egui::CentralPanel::default()
+        // The editor card: 4px from its neighbours and the window, 1px
+        // outline inside, 8px corners (editorBorder.css).
+        let editor_margin = cards::MARGIN as i8;
+        let editor_panel = egui::CentralPanel::default()
             .frame(
                 Frame::default()
-                    .fill(Palette::EDITOR_BG())
-                    .inner_margin(Margin::ZERO),
+                    .fill(Palette::SHELL_BG())
+                    .inner_margin(Margin { left: editor_margin + 1, right: editor_margin + 1, top: 1, bottom: editor_margin + 1 }),
             )
             .show(ctx, |ui| {
+                ui.painter().rect_filled(ui.max_rect().expand(1.0), 0.0, Palette::EDITOR_BG());
                 ui.vertical(|ui| {
                     let show_welcome_tab =
                         self.show_welcome && self.documents.is_empty();
@@ -4130,7 +4131,7 @@ impl App {
                     if has_any_tab {
                         let tabs_action = ui
                             .allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), 35.0),
+                                egui::vec2(ui.available_width(), 32.0),
                                 egui::Layout::left_to_right(egui::Align::Min),
                                 |ui| {
                                     tabs::show(
@@ -4251,6 +4252,21 @@ impl App {
                     }
                 });
             });
+        {
+            let r = editor_panel.response.rect;
+            let card = egui::Rect::from_min_max(
+                egui::pos2(r.left() + cards::MARGIN, r.top()),
+                egui::pos2(r.right() - cards::MARGIN, r.bottom() - cards::MARGIN),
+            );
+            cards::finish(
+                &ctx.layer_painter(egui::LayerId::background()),
+                card,
+                egui::CornerRadius::same(cards::RADIUS as u8),
+                Palette::EDITOR_CARD_BORDER(),
+                Palette::SHELL_BG(),
+                false,
+            );
+        }
 
         if welcome_pending_folder {
             self.open_folder_dialog();

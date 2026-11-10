@@ -34,7 +34,7 @@ pub fn show(
     };
 
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, Palette::TABS_STRIP_BG());
+    ui.painter().rect_filled(rect, 0.0, Palette::CONNECTED_TABS_BG());
 
     // Build the unified tab list: optional welcome tab, then every document.
     // The welcome tab is just a regular tab item with a distinct label and
@@ -60,7 +60,12 @@ pub fn show(
     let preview_flags: Vec<bool> = docs.iter().map(|d| d.preview).collect();
     let mut items: Vec<Tab<'_>> = Vec::with_capacity(docs.len() + 1);
     if show_welcome_tab {
-        items.push(Tab::new("Welcome").icon(icons::VSCODE).closable(true));
+        // The Welcome page opens as a preview editor (italic title).
+        let mut welcome = Tab::new("Welcome").icon(icons::VSCODE).closable(true).preview();
+        if let Some(logo) = crate::assets::svg_texture_in_colour(ui.ctx(), "vscode-logo", crate::assets::VSCODE_LOGO, 32) {
+            welcome = welcome.image(logo.id());
+        }
+        items.push(welcome);
     }
     for (idx, label) in labels.iter().enumerate() {
         // File-type icon from the Seti theme (codicon file glyph as fallback).
@@ -95,7 +100,7 @@ pub fn show(
 
     // The composite widget owns its own horizontal scroll area + scroll-into
     // view, so we hand it the full strip directly.
-    let response = vsce_tabs(ui, &TabsProps::default(), &items, &mut active_idx);
+    let response = vsce_tabs(ui, &TabsProps::connected(), &items, &mut active_idx);
 
     // Translate the composite-widget response into the workbench's action
     // shape. The welcome tab occupies slot 0 when present; everything else

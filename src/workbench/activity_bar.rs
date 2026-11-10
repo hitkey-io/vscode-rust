@@ -1,22 +1,32 @@
-use egui::{Align, Align2, FontId, Layout, Ui};
+//! The activity bar as VS Code 1.145 draws it with Modern UI on: a card on
+//! the shell background (`floatingPanels.css` `.part.activitybar`), 32px
+//! rounded item indicators for the checked and hovered entries
+//! (`contrib/modernUI/.../activityBar.css`), entries 44px apart. Geometry
+//! measured against VS Code 1.145.2.
 
+use egui::{Align2, CornerRadius, FontId, Rect, Sense, Ui};
+
+use super::cards;
+use super::ActivityView;
 use crate::icons;
 use crate::theme::Palette;
-use crate::vscode_widgets::primitives::{icon_button, IconButtonProps};
 
-use super::ActivityView;
-
-const ITEM_HEIGHT: f32 = 48.0;
+/// Distance between two entries (36px action + 8px gap).
+const PITCH: f32 = 44.0;
+/// The checked / hovered indicator (`--activity-bar-action-height` − 4).
+const INDICATOR: f32 = 32.0;
+/// From the card's top edge to the first indicator.
+const TOP: f32 = 6.0;
+/// From the card's left edge to the indicators.
+const LEFT: f32 = 6.0;
+/// From the card's bottom edge to the last indicator's bottom.
+const BOTTOM: f32 = 7.0;
+const ICON: f32 = 24.0;
 
 /// `scm_count` paints the Source Control count badge (VS Code `scm.countBadge`).
 /// Returns `true` if the user clicked one of the visual-only icons (Run/Debug,
-/// Extensions, Accounts, Manage gear); the caller opens the command palette.
-pub fn show(
-    ui: &mut Ui,
-    current: &mut ActivityView,
-    sidebar_visible: &mut bool,
-    scm_count: usize,
-) -> bool {
+/// Accounts, Manage gear); the caller opens the command palette.
+pub fn show(ui: &mut Ui, current: &mut ActivityView, sidebar_visible: &mut bool, scm_count: usize) -> bool {
     show_with_containers(ui, current, sidebar_visible, scm_count, &[], &mut None)
 }
 
@@ -26,6 +36,46 @@ pub struct ContainerIcon {
     pub title: String,
     /// White mask tinted like the built-in icons, if the file loaded.
     pub icon: Option<egui::TextureHandle>,
+}
+
+enum Glyph<'a> {
+    Codicon(char),
+    Texture(&'a egui::TextureHandle),
+}
+
+/// One entry: indicator when checked or hovered, the icon, its tooltip and
+/// accessible name.
+fn entry(ui: &mut Ui, top_left: egui::Pos2, glyph: Glyph<'_>, checked: bool, label: &str) -> egui::Response {
+    let indicator = Rect::from_min_size(top_left, egui::vec2(INDICATOR, INDICATOR));
+    // The action item is 36px square around the indicator.
+    let hit = indicator.expand(2.0);
+    let resp = ui.interact(hit, ui.id().with(("activity", label)), Sense::click());
+    let painter = ui.painter();
+    let fg = if checked {
+        painter.rect_filled(indicator, cards::RADIUS_SMALL, Palette::MODERN_ACTIVITY_ITEM_ACTIVE_BG());
+        Palette::MODERN_ACTIVITY_ITEM_ACTIVE_FG()
+    } else if resp.hovered() {
+        painter.rect_filled(indicator, cards::RADIUS_SMALL, Palette::MODERN_ACTIVITY_ITEM_HOVER_BG());
+        Palette::MODERN_ACTIVITY_ITEM_HOVER_FG()
+    } else {
+        Palette::ACTIVITY_BAR_INACTIVE_FG()
+    };
+    match glyph {
+        Glyph::Codicon(c) => {
+            painter.text(indicator.center(), Align2::CENTER_CENTER, c.to_string(), icons::codicon_font(ICON), fg);
+        }
+        Glyph::Texture(tex) => {
+            painter.image(
+                tex.id(),
+                Rect::from_center_size(indicator.center(), egui::vec2(ICON, ICON)),
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                fg,
+            );
+        }
+    }
+    let tip = label.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip.clone()));
+    resp.on_hover_text(label)
 }
 
 /// [`show`] plus the extensions' containers below the built-in views;
@@ -40,174 +90,87 @@ pub fn show_with_containers(
     selected: &mut Option<String>,
 ) -> bool {
     let mut palette_requested = false;
-    let painter = ui.painter();
-    let rect = ui.max_rect();
-    painter.rect_filled(rect, 0.0, Palette::ACTIVITY_BAR_BG());
-
-    let right_border = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - 1.0, rect.top()),
-        egui::vec2(1.0, rect.height()),
+    // The card: 4px from the window's left edge and from the status bar.
+    let full = ui.max_rect();
+    let card = Rect::from_min_max(
+        egui::pos2(full.left() + cards::MARGIN, full.top()),
+        egui::pos2(full.right(), full.bottom() - cards::MARGIN),
     );
-    painter.rect_filled(right_border, 0.0, Palette::BORDER());
+    let radius = CornerRadius { nw: cards::RADIUS as u8, ne: 0, sw: cards::RADIUS as u8, se: 0 };
+    ui.painter().rect_filled(full, 0.0, Palette::SHELL_BG());
+    ui.painter().rect_filled(card, radius, Palette::MODERN_ACTIVITY_BAR_BG());
 
-    ui.allocate_ui_with_layout(
-        ui.available_size(),
-        Layout::top_down(Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (view, glyph, label) in [
-                (ActivityView::Explorer, icons::FILES, "Explorer (⇧⌘E)"),
-                (ActivityView::Search, icons::SEARCH, "Search (⇧⌘F)"),
-                (
-                    ActivityView::SourceControl,
-                    icons::SOURCE_CONTROL,
-                    "Source Control (⌃⇧G)",
-                ),
-                (ActivityView::Extensions, icons::EXTENSIONS, "Extensions (⇧⌘X)"),
-            ] {
-                // Run & Debug sits between Source Control and Extensions
-                // (VS Code's default order). It has no view yet: clicking it
-                // opens the command palette.
-                if view == ActivityView::Extensions {
-                    let resp = icon_button(
-                        ui,
-                        &IconButtonProps::new(icons::DEBUG_ALT)
-                            .size(ITEM_HEIGHT)
-                            .icon_size(24.0)
-                            .no_hover_bg()
-                            .color(Palette::ACTIVITY_BAR_INACTIVE_FG())
-                            .hover_color(Palette::ACTIVITY_BAR_FG()),
-                    );
-                    if resp.clicked() {
-                        palette_requested = true;
-                    }
-                    resp.on_hover_text("Run and Debug (⇧⌘D)");
-                }
-                let is_selected = *current == view && *sidebar_visible;
-                let mut props = IconButtonProps::new(glyph)
-                    .size(ITEM_HEIGHT)
-                    .icon_size(24.0)
-                    .no_hover_bg()
-                    .color(Palette::ACTIVITY_BAR_INACTIVE_FG())
-                    .hover_color(Palette::ACTIVITY_BAR_FG());
-                if is_selected {
-                    props = props.active_stripe().color(Palette::ACTIVITY_BAR_FG());
-                }
-                let response = icon_button(ui, &props);
-
-                // Source Control count badge (blue pill, bottom-right of icon).
-                if view == ActivityView::SourceControl && scm_count > 0 {
-                    let r = response.rect;
-                    let center = egui::pos2(r.right() - 13.0, r.bottom() - 13.0);
-                    let txt = if scm_count > 99 { "99+".to_string() } else { scm_count.to_string() };
-                    let w = (txt.len() as f32 * 6.0 + 8.0).max(16.0);
-                    let badge = egui::Rect::from_center_size(center, egui::vec2(w, 16.0));
-                    ui.painter().rect_filled(
-                        badge,
-                        egui::CornerRadius::same(8),
-                        Palette::ACCENT(),
-                    );
-                    ui.painter().text(
-                        center,
-                        Align2::CENTER_CENTER,
-                        txt,
-                        FontId::proportional(10.5),
-                        Palette::FG_BRIGHT(),
-                    );
-                }
-
-                // Make the icon findable in the AccessKit tree (kittest get_by_label).
-                let tip = label.to_string();
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip.clone())
-                });
-                let response = response.on_hover_text(label);
-
-                if response.clicked() {
-                    if *current == view && *sidebar_visible {
-                        *sidebar_visible = false;
-                    } else {
-                        *current = view;
-                        *sidebar_visible = true;
-                    }
+    let x = card.left() + LEFT;
+    let mut y = card.top() + TOP;
+    // `None`: Run and Debug, which has no view yet.
+    let views = [
+        (Some(ActivityView::Explorer), icons::FILES, "Explorer (⇧⌘E)"),
+        (Some(ActivityView::Search), icons::SEARCH, "Search (⇧⌘F)"),
+        (Some(ActivityView::SourceControl), icons::SOURCE_CONTROL, "Source Control (⌃⇧G)"),
+        (None, icons::DEBUG_ALT, "Run and Debug (⇧⌘D)"),
+        (Some(ActivityView::Extensions), icons::EXTENSIONS, "Extensions (⇧⌘X)"),
+    ];
+    for (view, glyph, label) in views {
+        let checked = view == Some(*current) && *sidebar_visible;
+        let resp = entry(ui, egui::pos2(x, y), Glyph::Codicon(glyph), checked, label);
+        if view == Some(ActivityView::SourceControl) && scm_count > 0 {
+            badge(ui, Rect::from_min_size(egui::pos2(x, y), egui::vec2(INDICATOR, INDICATOR)), scm_count);
+        }
+        if resp.clicked() {
+            match view {
+                // No Run and Debug view yet: the command palette instead.
+                None => palette_requested = true,
+                Some(_) if checked => *sidebar_visible = false,
+                Some(v) => {
+                    *current = v;
+                    *sidebar_visible = true;
                 }
             }
-            for c in containers {
-                let is_selected = *current == ActivityView::ExtensionContainer
-                    && selected.as_deref() == Some(c.id.as_str())
-                    && *sidebar_visible;
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ITEM_HEIGHT, ITEM_HEIGHT), egui::Sense::click());
-                let tint = if is_selected || resp.hovered() {
-                    Palette::ACTIVITY_BAR_FG()
-                } else {
-                    Palette::ACTIVITY_BAR_INACTIVE_FG()
-                };
-                if is_selected {
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
-                        0.0,
-                        Palette::ACTIVITY_BAR_FG(),
-                    );
-                }
-                let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(24.0, 24.0));
-                match &c.icon {
-                    Some(tex) => {
-                        ui.painter().image(
-                            tex.id(),
-                            icon_rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            tint,
-                        );
-                    }
-                    None => {
-                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, icons::EXTENSIONS.to_string(), icons::codicon_font(24.0), tint);
-                    }
-                }
-                let title = c.title.clone();
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title.clone()));
-                let resp = resp.on_hover_text(&c.title);
-                if resp.clicked() {
-                    if is_selected {
-                        *sidebar_visible = false;
-                    } else {
-                        *current = ActivityView::ExtensionContainer;
-                        *selected = Some(c.id.clone());
-                        *sidebar_visible = true;
-                    }
-                }
+        }
+        y += PITCH;
+    }
+    for c in containers {
+        let checked = *current == ActivityView::ExtensionContainer
+            && selected.as_deref() == Some(c.id.as_str())
+            && *sidebar_visible;
+        let glyph = match &c.icon {
+            Some(tex) => Glyph::Texture(tex),
+            None => Glyph::Codicon(icons::EXTENSIONS),
+        };
+        if entry(ui, egui::pos2(x, y), glyph, checked, &c.title).clicked() {
+            if checked {
+                *sidebar_visible = false;
+            } else {
+                *current = ActivityView::ExtensionContainer;
+                *selected = Some(c.id.clone());
+                *sidebar_visible = true;
             }
-        },
-    );
+        }
+        y += PITCH;
+    }
 
-    // Bottom cluster: Accounts + Manage (gear), anchored to the bar's bottom.
-    let bottom = egui::Rect::from_min_max(
-        egui::pos2(rect.left(), rect.bottom() - 2.0 * ITEM_HEIGHT),
-        rect.max,
-    );
-    ui.scope_builder(
-        egui::UiBuilder::new().max_rect(bottom).layout(Layout::top_down(Align::Center)),
-        |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (glyph, label) in [
-                (icons::ACCOUNT, "Accounts"),
-                (icons::SETTINGS_GEAR, "Manage"),
-            ] {
-                let resp = icon_button(
-                    ui,
-                    &IconButtonProps::new(glyph)
-                        .size(ITEM_HEIGHT)
-                        .icon_size(24.0)
-                        .no_hover_bg()
-                        .color(Palette::ACTIVITY_BAR_INACTIVE_FG())
-                        .hover_color(Palette::ACTIVITY_BAR_FG()),
-                );
-                if resp.clicked() {
-                    palette_requested = true;
-                }
-                resp.on_hover_text(label);
-            }
-        },
-    );
+    // Accounts and Manage, anchored to the bottom.
+    let mut y = card.bottom() - BOTTOM - INDICATOR - PITCH;
+    for (glyph, label) in [(icons::ACCOUNT, "Accounts"), (icons::SETTINGS_GEAR, "Manage")] {
+        if entry(ui, egui::pos2(x, y), Glyph::Codicon(glyph), false, label).clicked() {
+            palette_requested = true;
+        }
+        y += PITCH;
+    }
 
+    // The right edge meets the side bar card (or is the card's own edge).
+    let right_radius = if *sidebar_visible { 0 } else { cards::RADIUS as u8 };
+    let radius = CornerRadius { ne: right_radius, se: right_radius, ..radius };
+    cards::finish(ui.painter(), card, radius, Palette::MODERN_ACTIVITY_BAR_BORDER(), Palette::SHELL_BG(), false);
     palette_requested
+}
+
+/// The Source Control count badge, bottom-right of the indicator.
+fn badge(ui: &Ui, indicator: Rect, count: usize) {
+    let txt = if count > 99 { "99+".to_string() } else { count.to_string() };
+    let w = (txt.len() as f32 * 6.0 + 8.0).max(16.0);
+    let centre = egui::pos2(indicator.right() - 3.0, indicator.bottom() - 4.0);
+    let rect = Rect::from_center_size(centre, egui::vec2(w, 16.0));
+    ui.painter().rect_filled(rect, CornerRadius::same(8), Palette::ACTIVITY_BAR_BADGE_BG());
+    ui.painter().text(centre, Align2::CENTER_CENTER, txt, FontId::proportional(10.5), Palette::ACTIVITY_BAR_BADGE_FG());
 }

@@ -326,6 +326,9 @@ fn full_app_welcome() {
 
     let app = with_setup(move |ctx| {
         use egui::{Frame, Margin, SidePanel, TopBottomPanel};
+        // The Modern UI shell behind the cards, as `App::render` paints it.
+        ctx.layer_painter(egui::LayerId::background())
+            .rect_filled(ctx.content_rect(), 0.0, theme::Palette::SHELL_BG());
 
         // Title bar
         TopBottomPanel::top("test_title_bar")
@@ -423,6 +426,9 @@ fn full_app_with_doc_and_palette() {
 
     let app = with_setup(move |ctx| {
         use egui::{Frame, Margin, SidePanel, TopBottomPanel};
+        // The Modern UI shell behind the cards, as `App::render` paints it.
+        ctx.layer_painter(egui::LayerId::background())
+            .rect_filled(ctx.content_rect(), 0.0, theme::Palette::SHELL_BG());
 
         TopBottomPanel::top("title")
             .exact_height(35.0)

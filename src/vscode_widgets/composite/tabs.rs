@@ -37,6 +37,8 @@ pub struct Tab<'a> {
     pub pinned: bool,
     /// Full path (or any longer description) shown as a hover tooltip.
     pub tooltip: Option<&'a str>,
+    /// A full-colour image in place of the icon (the Welcome tab's logo).
+    pub image: Option<egui::TextureId>,
 }
 
 impl<'a> Tab<'a> {
@@ -51,6 +53,7 @@ impl<'a> Tab<'a> {
             preview: false,
             pinned: false,
             tooltip: None,
+            image: None,
         }
     }
 
@@ -93,6 +96,11 @@ impl<'a> Tab<'a> {
         self.tooltip = Some(text);
         self
     }
+
+    pub fn image(mut self, texture: egui::TextureId) -> Self {
+        self.image = Some(texture);
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -101,6 +109,11 @@ pub struct TabsProps {
     pub height: f32,
     /// Minimum tab width (so single short labels still look like tabs).
     pub min_tab_width: f32,
+    /// VS Code 1.145's connected editor tabs (Modern UI,
+    /// `connectedEditorTabs.css`): the strip in
+    /// `editorGroupHeader.connectedTabsBackground` with a bottom border, the
+    /// active tab in the editor's colour joined to the editor below it.
+    pub connected: bool,
 }
 
 impl Default for TabsProps {
@@ -108,9 +121,24 @@ impl Default for TabsProps {
         Self {
             height: 35.0,
             min_tab_width: 80.0,
+            connected: false,
         }
     }
 }
+
+impl TabsProps {
+    /// The workbench's editor tabs in VS Code 1.145 (32px strip incl. its
+    /// bottom border).
+    pub fn connected() -> Self {
+        Self { height: 32.0, min_tab_width: 0.0, connected: true }
+    }
+}
+
+/// Active connected tab: top corner radius
+/// (`--modern-ui-connected-tab-cap-radius`, cornerRadius.medium + 1) and
+/// the fillet joining its right edge to the strip's bottom border.
+const CAP_RADIUS: f32 = 7.0;
+const SHOULDER_RADIUS: f32 = 6.0;
 
 #[derive(Debug, Default)]
 pub struct TabsResponse {
@@ -135,8 +163,18 @@ pub fn tabs(
     );
     // Paint the strip background once — individual tabs paint their own bg
     // on top.
-    ui.painter()
-        .rect_filled(row_rect, 0.0, tokens::TAB_INACTIVE_BG());
+    if props.connected {
+        ui.painter().rect_filled(row_rect, 0.0, crate::theme::Palette::CONNECTED_TABS_BG());
+        // The bottom border runs under every tab but the active one, which
+        // paints over it.
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(egui::pos2(row_rect.left(), row_rect.bottom() - 1.0), row_rect.max),
+            0.0,
+            crate::theme::Palette::TABS_STRIP_BORDER(),
+        );
+    } else {
+        ui.painter().rect_filled(row_rect, 0.0, tokens::TAB_INACTIVE_BG());
+    }
 
     // Track whether the active index changed this frame so we can scroll it
     // into view (VS Code keeps the active editor tab visible).
@@ -173,14 +211,16 @@ pub fn tabs(
             });
         });
 
-    // Bottom hairline matches workbench border.
-    ui.painter().line_segment(
-        [
-            egui::pos2(row_rect.left(), row_rect.bottom() - 0.5),
-            egui::pos2(row_rect.right(), row_rect.bottom() - 0.5),
-        ],
-        egui::Stroke::new(1.0, tokens::TAB_BORDER()),
-    );
+    if !props.connected {
+        // Bottom hairline matches workbench border.
+        ui.painter().line_segment(
+            [
+                egui::pos2(row_rect.left(), row_rect.bottom() - 0.5),
+                egui::pos2(row_rect.right(), row_rect.bottom() - 0.5),
+            ],
+            egui::Stroke::new(1.0, tokens::TAB_BORDER()),
+        );
+    }
 
     out
 }
@@ -215,13 +255,20 @@ fn draw_single_tab(
     let label_galley = ui.painter().layout_no_wrap(tab.label.to_string(), label_font, Color32::WHITE);
 
     let mut content_w = label_galley.size().x;
-    if tab.icon.is_some() || tab.seti_icon.is_some() {
+    if tab.icon.is_some() || tab.seti_icon.is_some() || tab.image.is_some() {
         content_w += icon_size + icon_gap;
     }
     content_w += trailing_slot;
     // Pinned tabs are compact (VS Code shrinks them to icon + pin width).
     let min_w = if tab.pinned { 0.0 } else { props.min_tab_width };
-    let tab_w = (content_w + pad_x * 2.0).max(min_w);
+    // Connected tabs, measured in VS Code 1.145.2: icon centred 14px in,
+    // label at 28px, close button centred 16px from the right edge, which
+    // is 31px past the label.
+    let tab_w = if props.connected {
+        28.0 + label_galley.size().x + 31.0
+    } else {
+        (content_w + pad_x * 2.0).max(min_w)
+    };
 
     let sense = if tab.disabled {
         Sense::hover()
@@ -232,14 +279,18 @@ fn draw_single_tab(
 
     let painter = ui.painter().clone();
     let hovered = response.hovered() && !tab.disabled;
-    let bg = match (is_active, hovered) {
-        (true, _) => tokens::TAB_ACTIVE_BG(),
-        (false, true) => tokens::LIST_HOVER_BG(),
-        (false, false) => tokens::TAB_INACTIVE_BG(),
-    };
-    painter.rect_filled(rect, 0.0, bg);
+    if props.connected {
+        paint_connected_tab(&painter, rect, is_active, hovered);
+    } else {
+        let bg = match (is_active, hovered) {
+            (true, _) => tokens::TAB_ACTIVE_BG(),
+            (false, true) => tokens::LIST_HOVER_BG(),
+            (false, false) => tokens::TAB_INACTIVE_BG(),
+        };
+        painter.rect_filled(rect, 0.0, bg);
+    }
 
-    if is_active {
+    if is_active && !props.connected {
         // 1 px accent line at the top edge.
         let top = egui::Rect::from_min_max(
             rect.left_top(),
@@ -248,13 +299,15 @@ fn draw_single_tab(
         painter.rect_filled(top, 0.0, tokens::TAB_ACTIVE_BORDER_TOP());
     }
     // Right separator.
-    painter.line_segment(
-        [
-            egui::pos2(rect.right() - 0.5, rect.top()),
-            egui::pos2(rect.right() - 0.5, rect.bottom()),
-        ],
-        egui::Stroke::new(1.0, tokens::TAB_BORDER()),
-    );
+    if !props.connected {
+        painter.line_segment(
+            [
+                egui::pos2(rect.right() - 0.5, rect.top()),
+                egui::pos2(rect.right() - 0.5, rect.bottom()),
+            ],
+            egui::Stroke::new(1.0, tokens::TAB_BORDER()),
+        );
+    }
 
     let fg = if tab.disabled {
         tokens::FG_DISABLED()
@@ -264,9 +317,13 @@ fn draw_single_tab(
         tokens::TAB_INACTIVE_FG()
     };
 
-    let mut cursor = rect.left() + pad_x;
-    let cy = rect.center().y;
-    if let Some((glyph, color)) = tab.seti_icon {
+    let mut cursor = if props.connected { rect.left() + 14.0 - icon_size * 0.5 } else { rect.left() + pad_x };
+    let cy = if props.connected { rect.center().y - 0.5 } else { rect.center().y };
+    if let Some(texture) = tab.image {
+        let r = egui::Rect::from_center_size(egui::pos2(cursor + icon_size * 0.5, cy), Vec2::splat(16.0));
+        painter.image(texture, r, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        cursor += icon_size + icon_gap;
+    } else if let Some((glyph, color)) = tab.seti_icon {
         painter.text(
             egui::pos2(cursor + icon_size * 0.5, cy),
             Align2::CENTER_CENTER,
@@ -276,6 +333,7 @@ fn draw_single_tab(
         );
         cursor += icon_size + icon_gap;
     } else if let Some(glyph) = tab.icon {
+        let icon_size = if props.connected { 16.0 } else { icon_size };
         painter.text(
             egui::pos2(cursor + icon_size * 0.5, cy),
             Align2::CENTER_CENTER,
@@ -284,6 +342,9 @@ fn draw_single_tab(
             fg,
         );
         cursor += icon_size + icon_gap;
+    }
+    if props.connected {
+        cursor = rect.left() + 28.0;
     }
     let label_fg = fg;
     painter.galley(
@@ -321,7 +382,7 @@ fn draw_single_tab(
             close_clicked = true;
         }
     } else if tab.closable || tab.dirty {
-        let close_center = egui::pos2(rect.right() - 12.0, cy);
+        let close_center = egui::pos2(rect.right() - if props.connected { 16.0 } else { 12.0 }, cy);
         let close_rect = egui::Rect::from_center_size(close_center, Vec2::splat(16.0));
         let close_resp =
             ui.interact(close_rect, response.id.with("close"), Sense::click());
@@ -360,4 +421,52 @@ fn draw_single_tab(
         double_clicked: response.double_clicked(),
         rect,
     }
+}
+
+/// A connected tab: inactive tabs show the strip (hover adds 6% of the
+/// foreground); the active one is the editor's colour from the top edge
+/// through the strip's bottom border, with a rounded top-right corner and
+/// a fillet into the bottom border (connectedEditorTabs.css).
+fn paint_connected_tab(painter: &egui::Painter, rect: egui::Rect, active: bool, hovered: bool) {
+    use crate::theme::Palette;
+    if !active {
+        if hovered {
+            let strip = Palette::CONNECTED_TABS_BG();
+            let wash = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), rect.bottom() - 1.0));
+            painter.rect_filled(wash, 0.0, mix(strip, Palette::FG(), 0.06));
+        }
+        return;
+    }
+    let bg = Palette::EDITOR_BG();
+    let border = Palette::TABS_STRIP_BORDER();
+    let r = CAP_RADIUS;
+    let s = SHOULDER_RADIUS;
+    painter.rect_filled(rect, CornerRadius { ne: r as u8, ..Default::default() }, bg);
+    // Fillet: editor colour below a quarter circle in the strip colour.
+    let fillet = egui::Rect::from_min_size(egui::pos2(rect.right(), rect.bottom() - s), egui::vec2(s, s));
+    painter.rect_filled(fillet, 0.0, bg);
+    painter
+        .with_clip_rect(fillet)
+        .circle_filled(egui::pos2(rect.right() + s, rect.bottom() - s), s, Palette::CONNECTED_TABS_BG());
+    // Outline: down from the rounded top-right corner, through the fillet,
+    // into the bottom border.
+    let x = rect.right() - 0.5;
+    let mut points = Vec::new();
+    let steps = 8;
+    for i in 0..=steps {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / steps as f32;
+        points.push(egui::pos2(x - r + r * a.sin(), rect.top() + r - r * a.cos()));
+    }
+    for i in 0..=steps {
+        let a = std::f32::consts::FRAC_PI_2 * i as f32 / steps as f32;
+        points.push(egui::pos2(x + s - s * a.cos(), rect.bottom() - 0.5 - s + s * a.sin()));
+    }
+    painter.add(egui::Shape::line(points, egui::Stroke::new(1.0, border)));
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let [ar, ag, ab, _] = a.to_array();
+    let [br, bg, bb, _] = b.to_array();
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(l(ar, br), l(ag, bg), l(ab, bb))
 }

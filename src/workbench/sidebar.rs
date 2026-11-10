@@ -45,6 +45,7 @@ pub fn show(
     ui.painter().rect_filled(rect, 0.0, Palette::SIDEBAR_BG());
 
     ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
         // The SCM view draws its own "SOURCE CONTROL" title; others get the
         // sidebar section header here.
         if view != ActivityView::SourceControl {
@@ -80,37 +81,55 @@ pub fn show(
 }
 
 fn header(ui: &mut Ui, view: ActivityView) {
+    let more = view == ActivityView::Explorer;
     let title = match view {
-        ActivityView::Explorer => "EXPLORER",
-        ActivityView::Search => "SEARCH",
-        ActivityView::SourceControl => "SOURCE CONTROL",
-        ActivityView::Extensions => "EXTENSIONS",
+        ActivityView::Explorer => "Explorer",
+        ActivityView::Search => "Search",
+        ActivityView::SourceControl => "Source Control",
+        ActivityView::Extensions => "Extensions",
         ActivityView::ExtensionContainer => "",
     };
-    title_bar(ui, title);
+    let rect = title_bar(ui, title);
+    if more {
+        // "Views and More Actions..." (`.title-actions`, 4px padding).
+        let centre = egui::pos2(rect.right() - 15.0, rect.center().y);
+        let hit = egui::Rect::from_center_size(centre, egui::vec2(22.0, 22.0));
+        let resp = ui.interact(hit, ui.id().with("view-more"), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(hit, super::cards::RADIUS_SMALL, Palette::VSCE_TOOLBAR_HOVER_BG());
+        }
+        ui.painter().text(
+            centre,
+            egui::Align2::CENTER_CENTER,
+            icons::codicon_by_name("ellipsis").unwrap_or('…').to_string(),
+            codicon_font(16.0),
+            Palette::VSCE_ICON_2026_FG(),
+        );
+        resp.on_hover_text("Views and More Actions...");
+    }
 }
 
-/// The 35px view title row ("EXPLORER", "EXTENSIONS"…); returns its rect
-/// so callers can add title actions.
+/// The view title row ("Explorer", "Extensions"…) as Modern UI draws it:
+/// 32px tall, no bottom border, 12px semibold title-case text 12px in
+/// (`.part > .title` padding 4 + `.title-label` padding 8, fontRamp.css).
+/// Returns its rect so callers can add title actions.
 pub fn title_bar(ui: &mut Ui, title: &str) -> egui::Rect {
     let (header_rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 35.0), Sense::hover());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), TITLE_HEIGHT), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(header_rect, 0.0, Palette::SIDEBAR_SECTION_HEADER_BG());
+    painter.rect_filled(header_rect, 0.0, Palette::SIDEBAR_BG());
     painter.text(
-        header_rect.left_center() + egui::vec2(20.0, 0.0),
+        header_rect.left_center() + egui::vec2(12.0, 0.0),
         egui::Align2::LEFT_CENTER,
         title,
-        FontId::proportional(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG(),
+        crate::ui_font::semibold(12.0),
+        Palette::SIDEBAR_TITLE_FG(),
     );
-    let bottom_border = egui::Rect::from_min_size(
-        egui::pos2(header_rect.left(), header_rect.bottom() - 1.0),
-        egui::vec2(header_rect.width(), 1.0),
-    );
-    painter.rect_filled(bottom_border, 0.0, Palette::BORDER());
     header_rect
 }
+
+/// `PartLayout.AREA_HEIGHT_MODERN_UI`.
+pub const TITLE_HEIGHT: f32 = 32.0;
 
 
 fn collapse_all(node: &mut FileNode) {
@@ -181,18 +200,23 @@ fn explorer_panel(
     // Reserve room at the bottom for the OUTLINE + TIMELINE section headers,
     // which VS Code pins under the file tree in the Explorer. When a section
     // is expanded, it gets extra space for its (currently empty) body.
-    let header_h = 22.0;
+    ui.spacing_mut().item_spacing.y = 0.0;
     let body_h = 80.0;
-    let bottom_h = header_h * 2.0
+    let bottom_h = PANE_HEADER_HEIGHT * 2.0
+        + PANES_BOTTOM
         + if *outline_expanded { body_h } else { 0.0 }
         + if *timeline_expanded { body_h } else { 0.0 };
+    // The workspace folder's pane header stays put above its tree.
+    if let Some(root) = tree.as_mut() {
+        root_row(ui, root);
+    }
     let tree_h = (ui.available_height() - bottom_h).max(0.0);
     ScrollArea::both()
         .auto_shrink([false, false])
         .max_height(tree_h)
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
             if let Some(root) = tree.as_mut() {
-                root_row(ui, root);
                 if root.expanded {
                     if let Some(children) = root.children.as_mut() {
                         for child in children {
@@ -203,35 +227,61 @@ fn explorer_panel(
             }
         });
 
-    explorer_section(ui, "OUTLINE", outline_expanded, "The active editor cannot provide outline information.");
-    explorer_section(ui, "TIMELINE", timeline_expanded, "No timeline providers available.");
+    explorer_section(ui, "Outline", outline_expanded, "The active editor cannot provide outline information.");
+    explorer_section(ui, "Timeline", timeline_expanded, "No timeline providers available.");
+    ui.add_space(PANES_BOTTOM);
+}
+
+/// Modern UI pane header height (`MODERN_UI_PANE_HEADER_SIZE`).
+pub const PANE_HEADER_HEIGHT: f32 = 28.0;
+/// Space under the last pane header, measured in VS Code 1.145.2.
+const PANES_BOTTOM: f32 = 5.0;
+/// Pane headers and list rows sit 4px inside the side bar (padding.css).
+pub const ROW_INSET: f32 = 4.0;
+
+/// A Modern UI pane header (paneHeaders.css): 28px, inset 4px, rounded
+/// hover, 16px chevron, 12px semibold title-case title; `separator` draws
+/// the 1px line at its top (every pane but the first).
+pub fn pane_header(ui: &mut Ui, title: &str, expanded: bool, separator: bool) -> (egui::Rect, egui::Response) {
+    let (slot, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), PANE_HEADER_HEIGHT), Sense::click());
+    let rect = slot.shrink2(egui::vec2(ROW_INSET, 0.0));
+    let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(rect, super::cards::RADIUS_SMALL, Palette::LIST_HOVER_BG());
+    }
+    if separator {
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.left_top() + egui::vec2(ROW_INSET, 0.0), egui::vec2(rect.width() - 2.0 * ROW_INSET, 1.0)),
+            0.0,
+            Palette::VSCE_SIDEBAR_SECTION_HEADER_BORDER(),
+        );
+    }
+    let mid = rect.center().y;
+    let chev = if expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+    painter.text(
+        egui::pos2(rect.left() + 13.0, mid),
+        egui::Align2::CENTER_CENTER,
+        chev.to_string(),
+        codicon_font(16.0),
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
+    );
+    painter.text(
+        egui::pos2(rect.left() + 24.0, mid),
+        egui::Align2::LEFT_CENTER,
+        title,
+        crate::ui_font::semibold(12.0),
+        Palette::SIDEBAR_SECTION_HEADER_FG(),
+    );
+    let label = title.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+    (rect, resp)
 }
 
 /// Collapsible Explorer section (OUTLINE / TIMELINE): clickable chevron-row
 /// header that toggles `expanded`, plus a muted placeholder body when open.
 fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &str) {
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
-    }
-    let mid = rect.center().y;
-    let chev = if *expanded { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
-    let p = ui.painter();
-    p.text(
-        egui::pos2(rect.left() + 12.0, mid),
-        egui::Align2::CENTER_CENTER,
-        chev.to_string(),
-        codicon_font(12.0),
-        Palette::FG_DESCRIPTION(),
-    );
-    p.text(
-        egui::pos2(rect.left() + 22.0, mid),
-        egui::Align2::LEFT_CENTER,
-        title,
-        FontId::proportional(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG(),
-    );
+    let (_, resp) = pane_header(ui, title, *expanded, true);
     if resp.clicked() {
         *expanded = !*expanded;
     }
@@ -251,33 +301,11 @@ fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &s
 /// The workspace root as a bold, collapsible row (VS Code renders the open
 /// folder this way, with its action icons appearing on hover).
 fn root_row(ui: &mut Ui, root: &mut FileNode) {
-    let row_h = 22.0;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), Sense::click());
-    let hovered = response.hovered();
-    if hovered {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
-    }
+    let row_h = PANE_HEADER_HEIGHT;
+    // The open folder's name keeps its case (fontRamp.css
+    // `preserve-workspace-name-case`).
+    let (rect, response) = pane_header(ui, &root.name, root.expanded, false);
     let mid = rect.center().y;
-    let chev = if root.expanded {
-        icons::CHEVRON_DOWN
-    } else {
-        icons::CHEVRON_RIGHT
-    };
-    ui.painter().text(
-        egui::pos2(rect.left() + 12.0, mid),
-        egui::Align2::CENTER_CENTER,
-        chev.to_string(),
-        codicon_font(12.0),
-        Palette::FG_DESCRIPTION(),
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + 22.0, mid),
-        egui::Align2::LEFT_CENTER,
-        root.name.to_uppercase(),
-        FontId::proportional(11.0),
-        Palette::SIDEBAR_SECTION_HEADER_FG(),
-    );
 
     // Hover action cluster (new file / new folder / refresh / collapse all).
     // Collapse-all and refresh are wired; new file/folder are visual for now.
@@ -285,7 +313,7 @@ fn root_row(ui: &mut Ui, root: &mut FileNode) {
     let mut collapse_clicked = false;
     let mut refresh_clicked = false;
     if row_hovered {
-        let mut x = rect.right() - 18.0;
+        let mut x = rect.right() - 14.0;
         for (i, glyph) in [
             icons::COLLAPSE_ALL,
             icons::REFRESH,
@@ -351,11 +379,14 @@ fn render_node(
     decorations: &Decorations,
     active_file: Option<&std::path::Path>,
 ) {
-    let indent = depth as f32 * 8.0 + 8.0;
+    // Measured in VS Code 1.145.2: rows inset 4px with 4px corners; the
+    // twistie and a file's icon share one 16px column, 8px per level.
+    let indent = (depth as f32 - 1.0) * 8.0;
     let row_height = 22.0;
 
-    let (rect, response) =
+    let (slot, response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), Sense::click());
+    let rect = slot.shrink2(egui::vec2(ROW_INSET, 0.0));
 
     // Make the row findable by name (e.g. "tsconfig.json") for kittest.
     let label = node.name.clone();
@@ -368,14 +399,14 @@ fn render_node(
     let is_selected = !node.is_dir && active_file == Some(node.path.as_path());
     if is_selected {
         ui.painter()
-            .rect_filled(rect, 0.0, Palette::LIST_INACTIVE_SELECTION_BG());
+            .rect_filled(rect, super::cards::RADIUS_SMALL, Palette::LIST_INACTIVE_SELECTION_BG());
     } else if response.hovered() {
-        ui.painter().rect_filled(rect, 0.0, Palette::LIST_HOVER_BG());
+        ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::LIST_HOVER_BG());
     }
 
-    let mut cursor = rect.left_top() + egui::vec2(indent, 0.0);
     let painter = ui.painter();
-    let mid_y = row_height / 2.0;
+    let mid_y = rect.center().y;
+    let column = egui::pos2(rect.left() + 18.0 + indent, mid_y);
 
     if node.is_dir {
         let chev = if node.expanded {
@@ -383,39 +414,21 @@ fn render_node(
         } else {
             icons::CHEVRON_RIGHT
         };
+        painter.text(column, egui::Align2::CENTER_CENTER, chev.to_string(), codicon_font(16.0), Palette::FG());
+    } else if let Some((glyph, color)) = crate::file_icons::icon_for(&node.path) {
+        // Seti has no folder icons; a file's glyph sits in the twistie column.
         painter.text(
-            cursor + egui::vec2(0.0, mid_y),
-            egui::Align2::LEFT_CENTER,
-            chev.to_string(),
-            codicon_font(12.0),
-            Palette::FG_DESCRIPTION(),
+            column + egui::vec2(1.0, 0.0),
+            egui::Align2::CENTER_CENTER,
+            glyph.to_string(),
+            crate::file_icons::seti_font(16.0),
+            color,
         );
+    } else {
+        painter.text(column, egui::Align2::CENTER_CENTER, icons::FILE.to_string(), codicon_font(15.0), Palette::FG_DESCRIPTION());
     }
-    cursor.x += 12.0;
-
-    // Folders render NO icon in the Seti file-icon theme — just the chevron,
-    // with the folder name starting where a file's type icon would sit
-    // (matches VS Code's Explorer exactly). Files get their Seti glyph.
-    if !node.is_dir {
-        if let Some((glyph, color)) = crate::file_icons::icon_for(&node.path) {
-            painter.text(
-                cursor + egui::vec2(1.0, mid_y),
-                egui::Align2::LEFT_CENTER,
-                glyph.to_string(),
-                crate::file_icons::seti_font(16.0),
-                color,
-            );
-        } else {
-            painter.text(
-                cursor + egui::vec2(0.0, mid_y),
-                egui::Align2::LEFT_CENTER,
-                icons::FILE.to_string(),
-                codicon_font(15.0),
-                Palette::FG_DESCRIPTION(),
-            );
-        }
-        cursor.x += 20.0;
-    }
+    let cursor = egui::pos2(rect.left() + 30.0 + indent, rect.top());
+    let mid_y = row_height / 2.0;
 
     // Git decoration: tint the name + paint a status letter on the right.
     let deco = node_decoration(node, decorations);

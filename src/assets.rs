@@ -17,6 +17,10 @@ pub const LETTERPRESS_DARK: &[u8] = include_bytes!("../assets/letterpress/dark.s
 /// Light variant for high-contrast / light themes.
 pub const LETTERPRESS_LIGHT: &[u8] = include_bytes!("../assets/letterpress/light.svg");
 
+/// The product logo in colour (the Welcome editor's tab icon).
+/// Source: `vscode-original/src/vs/sessions/browser/media/vscode-icon.svg`
+pub const VSCODE_LOGO: &[u8] = include_bytes!("../assets/vscode-logo.svg");
+
 /// Memoisation key: (asset id, requested width in pixels).
 type Key = (&'static str, u32);
 
@@ -36,13 +40,33 @@ pub fn svg_texture(
     bytes: &'static [u8],
     target_width_px: u32,
 ) -> Option<TextureHandle> {
+    rasterise(ctx, id, bytes, target_width_px, true)
+}
+
+/// [`svg_texture`] keeping the SVG's own colours (logos).
+pub fn svg_texture_in_colour(
+    ctx: &Context,
+    id: &'static str,
+    bytes: &'static [u8],
+    target_width_px: u32,
+) -> Option<TextureHandle> {
+    rasterise(ctx, id, bytes, target_width_px, false)
+}
+
+fn rasterise(
+    ctx: &Context,
+    id: &'static str,
+    bytes: &'static [u8],
+    target_width_px: u32,
+    white: bool,
+) -> Option<TextureHandle> {
     let key = (id, target_width_px);
     if let Some(tex) = CACHE.lock().ok().and_then(|c| c.get(&key).cloned()) {
         return Some(tex);
     }
 
     let bytes = std::str::from_utf8(bytes).ok()?;
-    let recolored = inject_white_fill(bytes);
+    let recolored = if white { inject_white_fill(bytes) } else { bytes.to_owned() };
     let tree = usvg::Tree::from_data(recolored.as_bytes(), &usvg::Options::default()).ok()?;
     let svg_size = tree.size();
     let target_w = target_width_px as f32;

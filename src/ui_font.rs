@@ -28,6 +28,9 @@ const REGULAR: &str = "SF";
 const BOLD: &str = "SF-Bold";
 /// Family for bold UI text (`font-weight: bold`).
 const BOLD_FAMILY: &str = "ui-bold";
+const SEMIBOLD: &str = "SF-SemiBold";
+/// Family for semibold UI text (`--vscode-fontWeight-semiBold`, 600).
+const SEMIBOLD_FAMILY: &str = "ui-semibold";
 /// SF's "Text" optical size, used for every UI size (11–13px).
 const OPTICAL_SIZE: f32 = 17.0;
 
@@ -35,6 +38,12 @@ const OPTICAL_SIZE: f32 = 17.0;
 /// Falls back to the regular UI font where SF isn't available.
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD_FAMILY.into()))
+}
+
+/// SemiBold UI text at `size` (600: view and pane titles in Modern UI).
+/// Falls back to the regular UI font where SF isn't available.
+pub fn semibold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(SEMIBOLD_FAMILY.into()))
 }
 
 /// Italic UI text at `size`, e.g. a preview editor's tab title.
@@ -54,6 +63,7 @@ pub fn register(fonts: &mut FontDefinitions) {
         .unwrap_or_default();
     let mut bold_family = fallback.clone();
     let mut italic_family = fallback.clone();
+    let mut semibold_family = fallback.clone();
     if let Some(italic) = std::fs::read(SYSTEM_UI_ITALIC).ok().and_then(|b| instance(&b, 400.0)) {
         fonts.font_data.insert(ITALIC.to_owned(), std::sync::Arc::new(italic));
         italic_family.insert(0, ITALIC.to_owned());
@@ -72,6 +82,10 @@ pub fn register(fonts: &mut FontDefinitions) {
                 .insert(0, REGULAR.to_owned());
             bold_family.insert(0, BOLD.to_owned());
         }
+        if let Some(semibold) = instance(&bytes, 600.0) {
+            fonts.font_data.insert(SEMIBOLD.to_owned(), std::sync::Arc::new(semibold));
+            semibold_family.insert(0, SEMIBOLD.to_owned());
+        }
     }
     fonts
         .families
@@ -79,6 +93,9 @@ pub fn register(fonts: &mut FontDefinitions) {
     fonts
         .families
         .insert(FontFamily::Name(ITALIC_FAMILY.into()), italic_family);
+    fonts
+        .families
+        .insert(FontFamily::Name(SEMIBOLD_FAMILY.into()), semibold_family);
 }
 
 /// SF at `weight` and the Text optical size: outlines through the tweak's

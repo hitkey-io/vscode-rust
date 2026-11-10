@@ -1,5 +1,6 @@
 pub mod activity_bar;
 pub mod breadcrumbs;
+pub mod cards;
 pub mod command_palette;
 pub mod extension_details;
 pub mod extensions_view;
