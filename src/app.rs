@@ -88,6 +88,15 @@ pub struct App {
     /// Open extension pages (editor tabs).
     ext_pages: Vec<ExtensionPage>,
     next_internal_handle: u64,
+    /// The native menu an extension page opened: item id → (extension,
+    /// action).
+    ext_menu_actions: Vec<(muda::MenuId, String, ExtPageAction)>,
+    /// An open version picker: (request, extension, versions, download).
+    ext_pick: Option<(u64, String, Vec<String>, bool)>,
+    /// Text to put on the clipboard on the next frame.
+    pending_copy: Option<String>,
+    /// Height of the window's content, for placing native menus.
+    viewport_height: f32,
 }
 
 /// An extension's page in an editor tab.
@@ -97,12 +106,85 @@ struct ExtensionPage {
     id: String,
     /// Set when it was opened from the catalogue.
     gallery: Option<crate::extensions::marketplace::GalleryExtension>,
-    /// README / CHANGELOG of the installed copy, read once.
-    local_readme: Option<String>,
-    local_changelog: Option<String>,
+    /// What's read from the installed copy's folder.
+    local: Option<LocalFiles>,
     /// What the page shows now (rebuilt only when this changes).
     shown: Option<crate::workbench::extension_details::DetailsData>,
+    /// Open tab and feature, as the page last reported them.
+    tab: String,
+    feature: Option<String>,
 }
+
+/// README, CHANGELOG, install time and sizes of an installed extension,
+/// read once per installed folder.
+struct LocalFiles {
+    path: PathBuf,
+    readme: Option<String>,
+    changelog: Option<String>,
+    installed_ms: Option<i64>,
+    size: u64,
+    /// Its global storage: (bytes, folder).
+    cache: Option<(u64, String)>,
+    /// `package.json` with `package.nls.json` applied.
+    manifest: serde_json::Value,
+}
+
+impl LocalFiles {
+    fn read(dir: &std::path::Path, id: &str, manifest: &serde_json::Value) -> Self {
+        let read = |names: &[&str]| -> Option<String> {
+            std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                names.contains(&n.as_str()).then(|| std::fs::read_to_string(e.path()).ok()).flatten()
+            })
+        };
+        let size_of = |p: &std::path::Path| -> u64 {
+            walkdir::WalkDir::new(p).into_iter().flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum()
+        };
+        let installed_ms = std::fs::metadata(dir)
+            .ok()
+            .and_then(|m| m.created().or_else(|_| m.modified()).ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        let cache = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|h| h.join(".vscode-rust/extension-storage/global").join(id))
+            .filter(|p| p.is_dir())
+            .map(|p| (size_of(&p), p.display().to_string()))
+            .filter(|(n, _)| *n > 0);
+        Self {
+            path: dir.to_path_buf(),
+            readme: read(&["readme.md", "readme.markdown", "readme.txt", "readme"]),
+            changelog: read(&["changelog.md", "changelog.markdown", "changelog.txt", "changelog"]),
+            installed_ms,
+            size: size_of(dir),
+            cache,
+            manifest: crate::extensions::manifest::localized_manifest(manifest, dir),
+        }
+    }
+}
+
+/// What a button or menu item on an extension page does.
+#[derive(Clone, Debug)]
+enum ExtPageAction {
+    Install,
+    Update,
+    InstallVersion(String),
+    Uninstall,
+    /// `true`: only in this workspace.
+    Enable(bool),
+    Disable(bool),
+    PickVersion,
+    PickDownload,
+    Copy,
+    CopyId,
+    CopyLink,
+    Recommend(bool),
+    Download,
+}
+
+/// Request ids of the editor's own version pickers (far above the
+/// extension host's).
+const EXT_PICK_BASE: u64 = 1 << 50;
 
 /// Completion, hover and go-to-definition requests and what they show.
 #[derive(Default)]
@@ -181,6 +263,10 @@ impl App {
             webview_host: Default::default(),
             ext_container: None,
             ext_pages: Vec::new(),
+            ext_menu_actions: Vec::new(),
+            ext_pick: None,
+            pending_copy: None,
+            viewport_height: 0.0,
             next_internal_handle: crate::workbench::webviews::INTERNAL_HANDLE_BASE,
         }
     }
@@ -290,7 +376,9 @@ impl App {
         }
         self.sync_extension_documents();
         for id in self.palette.take_abandoned() {
-            self.extensions.answer(id, serde_json::Value::Null);
+            if !self.extension_version_picked(id, None) {
+                self.extensions.answer(id, serde_json::Value::Null);
+            }
         }
         for request in self.extensions.poll() {
             match request {
@@ -776,8 +864,10 @@ impl App {
     }
 
     /// Open (or focus) an extension's page in an editor tab, as clicking an
-    /// extension in VS Code's Extensions view does.
-    fn open_extension_page(&mut self, target: crate::workbench::extension_details::OpenTarget) {
+    /// extension in VS Code's Extensions view does. A single click opens a
+    /// preview editor (italic title) that the next one replaces; `pinned`
+    /// (double-click) keeps it.
+    fn open_extension_page(&mut self, target: crate::workbench::extension_details::OpenTarget, pinned: bool) {
         use crate::workbench::extension_details::OpenTarget;
         let (id, gallery) = match target {
             OpenTarget::Installed(id) => (id, None),
@@ -786,20 +876,18 @@ impl App {
         if let Some(page) = self.ext_pages.iter().find(|p| p.id.eq_ignore_ascii_case(&id)) {
             let handle = page.handle;
             if let Some(i) = self.documents.iter().position(|d| d.webview == Some(handle)) {
+                if pinned {
+                    self.documents[i].preview = false;
+                }
                 self.active_doc = Some(i);
+                self.show_welcome = false;
                 return;
             }
         }
-        let installed = self.extensions.extensions.iter().find(|e| e.id.eq_ignore_ascii_case(&id)).cloned();
-        let read = |names: &[&str]| -> Option<String> {
-            let dir = &installed.as_ref()?.path;
-            std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
-                let n = e.file_name().to_string_lossy().to_lowercase();
-                names.contains(&n.as_str()).then(|| std::fs::read_to_string(e.path()).ok()).flatten()
-            })
-        };
-        let title = installed
-            .as_ref()
+        let title = self
+            .extensions
+            .installed()
+            .find(|e| e.id.eq_ignore_ascii_case(&id))
             .map(|e| e.display_name.clone())
             .or_else(|| gallery.as_ref().map(|g| g.display_name.clone()))
             .unwrap_or_else(|| id.clone());
@@ -809,9 +897,10 @@ impl App {
             handle,
             id: id.clone(),
             gallery,
-            local_readme: read(&["readme.md", "readme.markdown", "readme.txt", "readme"]),
-            local_changelog: read(&["changelog.md", "changelog.markdown", "changelog.txt", "changelog"]),
+            local: None,
             shown: None,
+            tab: "details".into(),
+            feature: None,
         });
         if self.marketplace_allowed && !self.extensions.marketplace.enabled {
             // The page shows install counts and ratings from the catalogue.
@@ -821,89 +910,238 @@ impl App {
         if let Some((ns, name)) = id.split_once('.') {
             self.extensions.marketplace.request_details(ns, name);
         }
-        self.documents.push(crate::editor::Document::webview(handle, format!("Extension: {title}")));
-        self.active_doc = Some(self.documents.len() - 1);
+        let mut doc = crate::editor::Document::webview(handle, format!("Extension: {title}"));
+        doc.preview = !pinned;
+        // The preview editor is replaced, as in VS Code.
+        let replace = self.documents.iter().position(|d| {
+            d.preview && d.webview.is_some_and(|h| h >= crate::workbench::webviews::INTERNAL_HANDLE_BASE)
+        });
+        match replace {
+            Some(i) => {
+                self.documents[i] = doc;
+                self.active_doc = Some(i);
+            }
+            None => {
+                self.documents.push(doc);
+                self.active_doc = Some(self.documents.len() - 1);
+            }
+        }
         self.show_welcome = false;
     }
 
     /// Rebuild open extension pages whose data changed; drop pages whose
     /// tab closed.
     fn refresh_extension_pages(&mut self) {
-        use crate::workbench::extension_details::DetailsData;
+        use crate::workbench::extension_details::{
+            clean_repo_url, iso_to_ms, DetailsData, Enabled, ExtRef, InstallInfo, InstallState, MarketInfo, Runtime,
+        };
         let open: std::collections::BTreeSet<u64> = self.documents.iter().filter_map(|d| d.webview).collect();
         let closed: Vec<u64> = self.ext_pages.iter().map(|p| p.handle).filter(|h| !open.contains(h)).collect();
         for h in closed {
             self.webview_host.remove_internal_page(h);
             self.ext_pages.retain(|p| p.handle != h);
         }
+        let workspace = self.workspace_root.is_some();
         for i in 0..self.ext_pages.len() {
+            let handle = self.ext_pages[i].handle;
+            let page_id = self.ext_pages[i].id.clone();
+            let installed = self.extensions.installed().find(|e| e.id.eq_ignore_ascii_case(&page_id)).cloned();
+            // Files of the installed copy, read again after an update.
+            if let Some(e) = &installed {
+                if self.ext_pages[i].local.as_ref().map(|l| &l.path) != Some(&e.path) {
+                    self.ext_pages[i].local = Some(LocalFiles::read(&e.path, &e.id, &e.manifest));
+                }
+            } else {
+                self.ext_pages[i].local = None;
+            }
             let page = &self.ext_pages[i];
-            let handle = page.handle;
-            let installed = self.extensions.extensions.iter().find(|e| e.id.eq_ignore_ascii_case(&page.id));
-            let remote = self.extensions.marketplace.details.get(&page.id).and_then(|r| r.as_ref().ok());
-            let remote_json = remote.map(|r| &r.json);
-            let jstr = |k: &str| remote_json.and_then(|j| j.get(k)).and_then(|v| v.as_str()).map(str::to_string);
-            let mut d = DetailsData { id: page.id.clone(), ..Default::default() };
+            let market = &self.extensions.marketplace;
+            let remote = market
+                .details
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&page_id))
+                .and_then(|(_, r)| r.as_ref().ok());
+            let json = remote.map(|r| &r.json);
+            let jstr = |k: &str| {
+                json.and_then(|j| j.get(k)).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+            };
+            let (ns, name) = page_id.split_once('.').unwrap_or((page_id.as_str(), ""));
+
+            let mut d = DetailsData {
+                handle,
+                id: installed.as_ref().map(|e| e.id.clone()).unwrap_or_else(|| page_id.clone()),
+                tab: page.tab.clone(),
+                feature: page.feature.clone(),
+                has_workspace: workspace,
+                ..Default::default()
+            };
             let mut roots = Vec::new();
-            if let Some(e) = installed {
+            if let Some(e) = &installed {
                 d.name = e.display_name.clone();
                 d.publisher = jstr("namespaceDisplayName").unwrap_or_else(|| e.publisher.clone());
-                d.version = e.version.clone();
                 d.description = e.description.clone();
-                d.installed = true;
-                d.can_uninstall = self.extensions.can_uninstall(&e.id);
-                d.status = match self.extensions.activation.get(&e.id) {
-                    Some(crate::extensions::Activation::Active) => Some("Activated".into()),
-                    Some(crate::extensions::Activation::Failed(err)) => Some(format!("Activation failed: {err}")),
-                    Some(crate::extensions::Activation::NeedsNode) => Some("Needs Node.js".into()),
-                    _ if e.main.is_none() => None,
-                    _ => Some("Not activated".into()),
+                d.state = if market.installing.contains(&e.id) && !self.extensions.can_uninstall(&e.id) {
+                    InstallState::Installing
+                } else {
+                    InstallState::Installed
                 };
+                d.enabled = match self.extensions.enablement(&e.id) {
+                    crate::extensions::Enablement::Enabled => Enabled::Yes,
+                    crate::extensions::Enablement::DisabledGlobally => Enabled::DisabledGlobally,
+                    crate::extensions::Enablement::DisabledWorkspace => Enabled::DisabledWorkspace,
+                };
+                d.can_uninstall = self.extensions.can_uninstall(&e.id);
+                d.auto_update = self.extensions.auto_update(&e.id);
+                if d.can_uninstall && !market.installing.contains(&e.id) {
+                    d.update_to = self.extensions.update_available(&e.id);
+                }
+                match d.enabled {
+                    Enabled::DisabledGlobally => d.status.push(("", "This extension is disabled globally by the user.".into())),
+                    Enabled::DisabledWorkspace => {
+                        d.status.push(("", "This extension is disabled for this workspace by the user.".into()))
+                    }
+                    Enabled::Yes => {}
+                }
+                let activation = self.extensions.activation.get(&e.id).cloned();
+                match &activation {
+                    Some(crate::extensions::Activation::Failed(err)) => {
+                        d.status.push(("error", format!("Activating the extension failed: {err}")))
+                    }
+                    Some(crate::extensions::Activation::NeedsNode) => {
+                        d.status.push(("warning", "This extension needs Node.js to run, and it wasn't found.".into()))
+                    }
+                    _ => {}
+                }
+                if d.enabled == Enabled::Yes && e.main.is_some() {
+                    d.runtime = Some(Runtime {
+                        activated: matches!(activation, Some(crate::extensions::Activation::Active)),
+                        error: match activation {
+                            Some(crate::extensions::Activation::Failed(err)) => Some(err),
+                            _ => None,
+                        },
+                    });
+                }
                 d.icon = e
                     .manifest
                     .get("icon")
                     .and_then(|i| i.as_str())
                     .map(|rel| format!("vscode-resource://w{handle}{}", e.path.join(rel).display()));
-                d.readme = page.local_readme.clone();
-                d.changelog = page.local_changelog.clone();
+                if let Some(local) = &page.local {
+                    d.readme = local.readme.clone();
+                    d.changelog = local.changelog.clone();
+                    d.install_info = Some(InstallInfo {
+                        version: e.version.clone(),
+                        last_updated: local.installed_ms,
+                        size: Some((local.size, e.path.display().to_string())),
+                        cache: local.cache.clone(),
+                    });
+                }
                 d.base_url = Some(format!("vscode-resource://w{handle}{}/", e.path.display()));
-                d.read_features(&e.manifest);
+                match &page.local {
+                    Some(local) => d.read_manifest(&local.manifest),
+                    None => d.read_manifest(&e.manifest),
+                }
                 roots.push(e.path.clone());
-            } else if let Some(g) = &page.gallery {
-                d.name = g.display_name.clone();
-                d.publisher = jstr("namespaceDisplayName").unwrap_or_else(|| g.namespace.clone());
-                d.version = g.version.clone();
-                d.description = g.description.clone();
-                d.icon = g.icon_url.clone();
-                d.installing = self.extensions.marketplace.installing.contains(&g.id());
+            } else {
+                let g = page.gallery.as_ref();
+                d.name = jstr("displayName")
+                    .or_else(|| g.map(|g| g.display_name.clone()))
+                    .unwrap_or_else(|| name.to_string());
+                d.publisher = jstr("namespaceDisplayName").unwrap_or_else(|| ns.to_string());
+                d.description = jstr("description").or_else(|| g.map(|g| g.description.clone())).unwrap_or_default();
+                d.icon = g.and_then(|g| g.icon_url.clone()).or_else(|| {
+                    json.and_then(|j| j.pointer("/files/icon")).and_then(|v| v.as_str()).map(str::to_string)
+                });
+                d.auto_update = self.extensions.auto_update(&page_id);
+                d.state = if market.installing.iter().any(|x| x.eq_ignore_ascii_case(&page_id)) {
+                    InstallState::Installing
+                } else {
+                    InstallState::NotInstalled
+                };
                 d.readme = remote.and_then(|r| r.readme.clone());
                 d.changelog = remote.and_then(|r| r.changelog.clone());
                 d.base_url = remote.and_then(|r| r.base_url.clone());
-                d.loading = remote.is_none() && self.extensions.marketplace.enabled
-                    && !self.extensions.marketplace.details.contains_key(&page.id);
+                d.loading = remote.is_none()
+                    && market.enabled
+                    && !market.details.keys().any(|k| k.eq_ignore_ascii_case(&page_id));
+                d.pre_release = json.and_then(|j| j.get("preRelease")).and_then(|v| v.as_bool()).unwrap_or(false);
                 if let Some(m) = remote.and_then(|r| r.manifest.as_ref()) {
-                    d.read_features(m);
+                    d.read_manifest(m);
+                }
+                if let Some(g) = g {
+                    d.install_count = Some(g.downloads);
+                    d.rating = g.rating;
+                    d.verified = g.verified;
                 }
             }
-            if let Some(g) = &page.gallery {
-                d.downloads = Some(g.downloads);
-                d.rating = g.rating;
-                d.verified = g.verified;
-            }
-            if let Some(j) = remote_json {
-                d.downloads = j.get("downloadCount").and_then(|v| v.as_u64()).or(d.downloads);
+            if let Some(j) = json {
+                d.install_count = j.get("downloadCount").and_then(|v| v.as_u64()).or(d.install_count);
                 d.rating = j.get("averageRating").and_then(|v| v.as_f64()).map(|r| r as f32).or(d.rating);
-                d.review_count = j.get("reviewCount").and_then(|v| v.as_u64());
+                d.rating_count = j.get("reviewCount").and_then(|v| v.as_u64());
                 d.verified = j.get("verified").and_then(|v| v.as_bool()).unwrap_or(d.verified);
-                d.license = jstr("license").or(d.license.take());
-                d.last_updated = jstr("timestamp").map(|t| t.chars().take(10).collect());
-                d.repository = jstr("repository").or(d.repository.take());
-                if d.categories.is_empty() {
-                    d.categories = j
-                        .get("categories")
-                        .and_then(|c| c.as_array())
-                        .map(|a| a.iter().filter_map(|c| c.as_str()).map(str::to_string).collect())
-                        .unwrap_or_default();
+                d.preview |= j.get("preview").and_then(|v| v.as_bool()).unwrap_or(false);
+                d.deprecated = j.get("deprecated").and_then(|v| v.as_bool()).unwrap_or(false);
+                d.sponsor_url = jstr("sponsorLink");
+                d.url = Some(market.web_url(&format!("extension/{ns}/{name}")));
+                d.publisher_url = Some(market.web_url(&format!("namespace/{ns}")));
+                d.license_url = j.pointer("/files/license").and_then(|v| v.as_str()).map(str::to_string);
+                if let Some(r) = jstr("repository") {
+                    d.repository = Some(clean_repo_url(&r));
+                }
+                if let Some(b) = jstr("bugs") {
+                    d.issues = Some(b);
+                }
+                if let Some(cats) = j.get("categories").and_then(|c| c.as_array()) {
+                    d.categories = cats.iter().filter_map(|c| c.as_str()).map(str::to_string).collect();
+                }
+                d.market_info = Some(MarketInfo {
+                    version: jstr("version").unwrap_or_default(),
+                    published: remote.and_then(|r| r.published.as_deref()).and_then(iso_to_ms),
+                    last_released: jstr("timestamp").as_deref().and_then(iso_to_ms),
+                });
+            }
+            // Dependencies and pack members: installed copies, else what the
+            // catalogue says about them.
+            let refs = |key: &str| -> Vec<String> {
+                d.manifest
+                    .as_ref()
+                    .and_then(|m| m.get(key))
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
+                    .unwrap_or_default()
+            };
+            let (deps, pack) = (refs("extensionDependencies"), refs("extensionPack"));
+            let describe = |id: &str| -> ExtRef {
+                if let Some(e) = self.extensions.installed().find(|e| e.id.eq_ignore_ascii_case(id)) {
+                    return ExtRef {
+                        id: e.id.clone(),
+                        name: e.display_name.clone(),
+                        publisher: e.publisher.clone(),
+                        description: e.description.clone(),
+                        icon: e.manifest.get("icon").and_then(|i| i.as_str()).map(|rel| format!("vscode-resource://w{handle}{}", e.path.join(rel).display())),
+                    };
+                }
+                let j = market.details.iter().find(|(k, _)| k.eq_ignore_ascii_case(id)).and_then(|(_, r)| r.as_ref().ok()).map(|r| &r.json);
+                let get = |k: &str| j.and_then(|j| j.get(k)).and_then(|v| v.as_str()).map(str::to_string);
+                ExtRef {
+                    id: id.to_string(),
+                    name: get("displayName").unwrap_or_else(|| id.split_once('.').map(|(_, n)| n.to_string()).unwrap_or_default()),
+                    publisher: get("namespaceDisplayName").unwrap_or_else(|| id.split_once('.').map(|(p, _)| p.to_string()).unwrap_or_default()),
+                    description: get("description").unwrap_or_default(),
+                    icon: j.and_then(|j| j.pointer("/files/icon")).and_then(|v| v.as_str()).map(str::to_string),
+                }
+            };
+            d.dependencies = deps.iter().map(|id| describe(id)).collect();
+            d.pack = pack.iter().map(|id| describe(id)).collect();
+            let wanted: Vec<String> = deps
+                .iter()
+                .chain(pack.iter())
+                .filter(|id| !self.extensions.is_installed(id))
+                .cloned()
+                .collect();
+            for id in wanted {
+                if let Some((ns, name)) = id.split_once('.') {
+                    self.extensions.marketplace.request_details(ns, name);
                 }
             }
             if self.ext_pages[i].shown.as_ref() != Some(&d) {
@@ -914,28 +1152,287 @@ impl App {
         }
     }
 
-    /// A button or link on an extension page.
-    fn extension_page_message(&mut self, handle: u64, msg: serde_json::Value) {
-        let Some(page) = self.ext_pages.iter().find(|p| p.handle == handle) else { return };
-        match msg.get("command").and_then(|c| c.as_str()) {
-            Some("install") => {
-                if let Some(g) = page.gallery.clone() {
-                    self.extensions.marketplace.install(&g);
+    /// A button, link or menu request on an extension page. `frame` is the
+    /// editor window (native menus open over it); `None` in tests.
+    fn extension_page_message(&mut self, handle: u64, msg: serde_json::Value, frame: Option<&eframe::Frame>) {
+        let Some(idx) = self.ext_pages.iter().position(|p| p.handle == handle) else { return };
+        let id = self.ext_pages[idx].shown.as_ref().map(|d| d.id.clone()).unwrap_or_else(|| self.ext_pages[idx].id.clone());
+        let str_of = |k: &str| msg.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        match msg.get("command").and_then(|c| c.as_str()).unwrap_or_default() {
+            "state" => {
+                // The page switched tab or feature itself: remember it
+                // without reloading the page.
+                let page = &mut self.ext_pages[idx];
+                if let Some(t) = str_of("tab") {
+                    page.tab = t;
+                }
+                page.feature = str_of("feature").filter(|f| !f.is_empty());
+                if let Some(shown) = page.shown.as_mut() {
+                    shown.tab = page.tab.clone();
+                    shown.feature = page.feature.clone();
+                }
+                self.pin_extension_page(handle);
+            }
+            "install" => self.extension_page_action(&id, ExtPageAction::Install),
+            "update" => self.extension_page_action(&id, ExtPageAction::Update),
+            "uninstall" => self.extension_page_action(&id, ExtPageAction::Uninstall),
+            "enable" => self.extension_page_action(&id, ExtPageAction::Enable(false)),
+            "disable" => self.extension_page_action(&id, ExtPageAction::Disable(false)),
+            "autoUpdate" => {
+                let on = self.extensions.auto_update(&id);
+                self.extensions.set_auto_update(&id, !on);
+            }
+            "menu" => {
+                let menu = str_of("menu").unwrap_or_default();
+                let x = msg.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let y = msg.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                let items = self.extension_menu_items(&id, &menu);
+                // The page sits at the tab's rect; menus open under the button.
+                let origin = self.webview_host.placed_rect(handle).map(|r| r.min).unwrap_or_default();
+                if let Some(frame) = frame {
+                    self.show_extension_menu(frame, &id, items, origin.x + x, origin.y + y + 2.0);
                 }
             }
-            Some("uninstall") => {
-                let id = page.id.clone();
-                self.extensions.uninstall(&id);
-            }
-            Some("openLink") => {
-                if let Some(url) = msg.get("url").and_then(|u| u.as_str()) {
+            "openLink" => {
+                if let Some(url) = str_of("url") {
                     if url.starts_with("http://") || url.starts_with("https://") {
                         let _ = std::process::Command::new("open").arg(url).spawn();
                     }
                 }
             }
+            "reveal" => {
+                if let Some(path) = str_of("path") {
+                    let _ = std::process::Command::new("open").arg(path).spawn();
+                }
+            }
+            "openExtension" => {
+                if let Some(other) = str_of("id") {
+                    let target = self.extension_target(&other);
+                    self.open_extension_page(target, false);
+                }
+            }
+            "search" => {
+                if let Some(q) = str_of("query") {
+                    self.show_view(ActivityView::Extensions);
+                    self.extensions.marketplace.set_query(q);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// How to open the page of extension `id`: installed, else from the
+    /// catalogue.
+    fn extension_target(&self, id: &str) -> crate::workbench::extension_details::OpenTarget {
+        use crate::workbench::extension_details::OpenTarget;
+        if let Some(e) = self.extensions.installed().find(|e| e.id.eq_ignore_ascii_case(id)) {
+            return OpenTarget::Installed(e.id.clone());
+        }
+        let (ns, name) = id.split_once('.').unwrap_or((id, ""));
+        let known = self
+            .extensions
+            .marketplace
+            .lists
+            .values()
+            .flat_map(|l| l.items.iter())
+            .find(|g| g.id().eq_ignore_ascii_case(id))
+            .cloned();
+        OpenTarget::Gallery(known.unwrap_or_else(|| crate::extensions::marketplace::GalleryExtension {
+            namespace: ns.to_string(),
+            name: name.to_string(),
+            display_name: name.to_string(),
+            ..Default::default()
+        }))
+    }
+
+    /// Working in a preview editor keeps it (VS Code pins a preview on
+    /// interaction with its content).
+    fn pin_extension_page(&mut self, handle: u64) {
+        if let Some(doc) = self.documents.iter_mut().find(|d| d.webview == Some(handle)) {
+            doc.preview = false;
+        }
+    }
+
+    /// The items of one of the page's menus: (label, action), `None` for a
+    /// separator.
+    fn extension_menu_items(&self, id: &str, menu: &str) -> Vec<Option<(String, ExtPageAction)>> {
+        let installed = self.extensions.is_installed(id);
+        let workspace = self.workspace_root.is_some();
+        let item = |label: &str, a: ExtPageAction| Some((label.to_string(), a));
+        match menu {
+            "disable" => {
+                let mut v = vec![item("Disable", ExtPageAction::Disable(false))];
+                if workspace {
+                    v.push(item("Disable (Workspace)", ExtPageAction::Disable(true)));
+                }
+                v
+            }
+            "enable" => {
+                let mut v = vec![item("Enable", ExtPageAction::Enable(false))];
+                if workspace {
+                    v.push(item("Enable (Workspace)", ExtPageAction::Enable(true)));
+                }
+                v
+            }
+            "uninstall" => vec![item("Uninstall", ExtPageAction::Uninstall), item("Install Specific Version...", ExtPageAction::PickVersion)],
+            _ => {
+                let mut v = Vec::new();
+                if !installed {
+                    v.push(item("Install Specific Version...", ExtPageAction::PickVersion));
+                    v.push(None);
+                }
+                v.push(item("Copy", ExtPageAction::Copy));
+                v.push(item("Copy Extension ID", ExtPageAction::CopyId));
+                v.push(item("Copy Link", ExtPageAction::CopyLink));
+                if workspace {
+                    v.push(None);
+                    if self.extensions.marketplace.recommendations.iter().any(|r| r.eq_ignore_ascii_case(id)) {
+                        v.push(item("Remove from Workspace Recommendations", ExtPageAction::Recommend(false)));
+                    } else {
+                        v.push(item("Add to Workspace Recommendations", ExtPageAction::Recommend(true)));
+                    }
+                }
+                v.push(None);
+                v.push(item("Download VSIX", ExtPageAction::Download));
+                v.push(item("Download Specific Version VSIX...", ExtPageAction::PickDownload));
+                v
+            }
+        }
+    }
+
+    /// Show a native menu at `x, y` (window points) and remember what its
+    /// items do; the choice comes back as a menu event.
+    fn show_extension_menu(&mut self, frame: &eframe::Frame, id: &str, items: Vec<Option<(String, ExtPageAction)>>, x: f32, y: f32) {
+        use muda::ContextMenu;
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let menu = muda::Menu::new();
+        let mut actions = Vec::new();
+        for entry in items {
+            match entry {
+                Some((label, action)) => {
+                    let item = muda::MenuItem::new(label, true, None);
+                    actions.push((item.id().clone(), id.to_string(), action));
+                    let _ = menu.append(&item);
+                }
+                None => {
+                    let _ = menu.append(&muda::PredefinedMenuItem::separator());
+                }
+            }
+        }
+        self.ext_menu_actions = actions;
+        let Ok(handle) = frame.window_handle() else { return };
+        if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+            // winit's view is flipped (y grows down) while muda measures
+            // from the bottom, so hand it the distance from the bottom.
+            let y = self.viewport_height - y;
+            // SAFETY: the view belongs to the live editor window.
+            unsafe {
+                menu.show_context_menu_for_nsview(
+                    appkit.ns_view.as_ptr() as *const std::ffi::c_void,
+                    Some(muda::dpi::Position::Logical(muda::dpi::LogicalPosition::new(x as f64, y as f64))),
+                );
+            }
+        }
+    }
+
+    /// Do what a page button or menu item asks for extension `id`.
+    fn extension_page_action(&mut self, id: &str, action: ExtPageAction) {
+        let (ns, name) = id.split_once('.').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or_default();
+        let link = self.extensions.marketplace.web_url(&format!("extension/{ns}/{name}"));
+        match action {
+            ExtPageAction::Install => self.extensions.marketplace.install_version(&ns, &name, None),
+            ExtPageAction::Update => {
+                let v = self.extensions.update_available(id);
+                self.extensions.marketplace.install_version(&ns, &name, v);
+            }
+            ExtPageAction::InstallVersion(v) => self.extensions.marketplace.install_version(&ns, &name, Some(v)),
+            ExtPageAction::Uninstall => self.extensions.uninstall(id),
+            ExtPageAction::Enable(ws) => self.extensions.set_enabled(id, true, ws),
+            ExtPageAction::Disable(ws) => self.extensions.set_enabled(id, false, ws),
+            ExtPageAction::PickVersion | ExtPageAction::PickDownload => {
+                let versions = self
+                    .extensions
+                    .marketplace
+                    .details
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(id))
+                    .and_then(|(_, r)| r.as_ref().ok())
+                    .map(|r| r.versions.clone())
+                    .unwrap_or_default();
+                if versions.is_empty() {
+                    self.extensions.notify_info(format!("No versions of '{id}' are known yet."));
+                    return;
+                }
+                let current = self.extensions.installed().find(|e| e.id.eq_ignore_ascii_case(id)).map(|e| e.version.clone());
+                let items = versions
+                    .iter()
+                    .map(|v| (v.clone(), (Some(v) == current.as_ref()).then(|| "Current".to_string()), None, false))
+                    .collect();
+                let request = EXT_PICK_BASE + self.ext_pick.as_ref().map(|p| p.0 - EXT_PICK_BASE + 1).unwrap_or(0);
+                let download = matches!(action, ExtPageAction::PickDownload);
+                self.ext_pick = Some((request, id.to_string(), versions, download));
+                let placeholder = if download { "Select Version to Download" } else { "Select Version to Install" };
+                self.palette.open_pick(request, items, Some(placeholder.to_string()));
+            }
+            ExtPageAction::Copy => {
+                let e = self.ext_pages.iter().filter_map(|p| p.shown.as_ref()).find(|d| d.id.eq_ignore_ascii_case(id));
+                if let Some(d) = e {
+                    let version = d.install_info.as_ref().map(|i| i.version.clone()).or_else(|| d.market_info.as_ref().map(|m| m.version.clone())).unwrap_or_default();
+                    let text = format!(
+                        "Name: {}\nId: {}\nDescription: {}\nVersion: {}\nPublisher: {}\nMarketplace Link: {}",
+                        d.name, d.id, d.description, version, d.publisher, link
+                    );
+                    self.pending_copy = Some(text);
+                }
+            }
+            ExtPageAction::CopyId => self.pending_copy = Some(id.to_string()),
+            ExtPageAction::CopyLink => self.pending_copy = Some(link),
+            ExtPageAction::Recommend(add) => {
+                if let Some(root) = self.workspace_root.clone() {
+                    match crate::extensions::marketplace::set_recommended(&root, id, add) {
+                        Ok(()) => self.extensions.marketplace.load_recommendations(Some(&root)),
+                        Err(e) => self.extensions.notify_error(format!("Couldn't update .vscode/extensions.json: {e}")),
+                    }
+                }
+            }
+            ExtPageAction::Download => self.download_extension(id, None),
+        }
+    }
+
+    /// "Download VSIX": ask where, then fetch it.
+    fn download_extension(&mut self, id: &str, version: Option<String>) {
+        let v = version.clone().or_else(|| {
+            self.extensions
+                .marketplace
+                .details
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(id))
+                .and_then(|(_, r)| r.as_ref().ok())
+                .and_then(|r| r.json.get("version").and_then(|v| v.as_str()).map(str::to_string))
+        });
+        let file = format!("{id}-{}.vsix", v.clone().unwrap_or_else(|| "latest".into()));
+        let dest = rfd::FileDialog::new().set_file_name(&file).add_filter("VSIX", &["vsix"]).save_file();
+        if let Some(dest) = dest {
+            self.extensions.marketplace.download_vsix(id, version, dest);
+        }
+    }
+
+    /// The version picked for "Install Specific Version..." or "Download
+    /// Specific Version VSIX...". `true` when the request was ours.
+    fn extension_version_picked(&mut self, request_id: u64, index: Option<usize>) -> bool {
+        let Some((req, id, versions, download)) = self.ext_pick.clone() else { return false };
+        if req != request_id {
+            return false;
+        }
+        self.ext_pick = None;
+        if let Some(v) = index.and_then(|i| versions.get(i)).cloned() {
+            if download {
+                self.download_extension(&id, Some(v));
+            } else {
+                self.extension_page_action(&id, ExtPageAction::InstallVersion(v));
+            }
+        }
+        true
     }
 
     /// A sidebar container from an extension: its views stacked, webview
@@ -1697,6 +2194,7 @@ impl App {
             PaletteAction::ExtensionCommand(id) => {
                 self.extensions.execute(&id, serde_json::json!([]))
             }
+            PaletteAction::Picked { request_id, index } if self.extension_version_picked(request_id, index) => {}
             PaletteAction::Picked { request_id, index } => {
                 let value = index.map(|i| serde_json::json!(i)).unwrap_or(serde_json::Value::Null);
                 self.extensions.answer(request_id, value);
@@ -2114,8 +2612,16 @@ impl App {
         self.refresh_extension_pages();
         // Drain any native-menu events from the previous frame.
         while let Some(ev) = crate::menubar::poll_event() {
+            if let Some((_, id, action)) = self.ext_menu_actions.iter().find(|(m, ..)| m == &ev.id).cloned() {
+                self.extension_page_action(&id, action);
+                continue;
+            }
             self.dispatch_menu_event(ctx, &ev.id);
         }
+        if let Some(text) = self.pending_copy.take() {
+            ctx.copy_text(text);
+        }
+        self.viewport_height = ctx.viewport_rect().height();
 
         // Filesystem watcher → auto-refresh git when the working tree changes.
         if self.git_watcher.as_ref().is_some_and(|w| w.take_dirty()) {
@@ -2290,7 +2796,7 @@ impl App {
                                 self.extensions.marketplace.lists.clear();
                             }
                             if let Some(target) = view.open {
-                                self.open_extension_page(target);
+                                self.open_extension_page(target, view.open_pinned);
                             }
                             return SidebarOutput::default();
                         }
@@ -2370,6 +2876,11 @@ impl App {
                         }
                         if let Some(idx) = tabs_action.close {
                             self.close_doc(idx);
+                        }
+                        if let Some(idx) = tabs_action.keep {
+                            if let Some(doc) = self.documents.get_mut(idx) {
+                                doc.preview = false;
+                            }
                         }
                         if let Some(idx) = tabs_action.toggle_pin {
                             if let Some(doc) = self.documents.get_mut(idx) {
@@ -2523,10 +3034,10 @@ impl eframe::App for App {
         self.render(ctx);
         self.webview_host.forward_page_messages(&mut self.extensions);
         for (handle, msg) in self.webview_host.take_internal_messages() {
-            self.extension_page_message(handle, msg);
+            self.extension_page_message(handle, msg, Some(frame));
         }
         self.webview_host.sync(frame, &mut self.extensions);
-        if !self.extensions.webviews.is_empty() {
+        if !self.extensions.webviews.is_empty() || !self.ext_pages.is_empty() {
             // Page messages arrive between frames.
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

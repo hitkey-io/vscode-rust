@@ -14,6 +14,8 @@ pub struct TabsAction {
     pub right_clicked: Option<usize>,
     /// The pin affordance was clicked on a pinned tab — toggle its pin.
     pub toggle_pin: Option<usize>,
+    /// A tab was double-clicked: keep its preview editor open.
+    pub keep: Option<usize>,
 }
 
 pub fn show(
@@ -28,6 +30,7 @@ pub fn show(
         close_welcome: false,
         right_clicked: None,
         toggle_pin: None,
+        keep: None,
     };
 
     let rect = ui.max_rect();
@@ -54,13 +57,17 @@ pub fn show(
         .collect();
     let dirty_flags: Vec<bool> = docs.iter().map(|d| d.dirty).collect();
     let pinned_flags: Vec<bool> = docs.iter().map(|d| d.pinned).collect();
+    let preview_flags: Vec<bool> = docs.iter().map(|d| d.preview).collect();
     let mut items: Vec<Tab<'_>> = Vec::with_capacity(docs.len() + 1);
     if show_welcome_tab {
         items.push(Tab::new("Welcome").icon(icons::VSCODE).closable(true));
     }
     for (idx, label) in labels.iter().enumerate() {
         // File-type icon from the Seti theme (codicon file glyph as fallback).
+        let extension_page = docs[idx].webview.is_some_and(|h| h >= crate::workbench::webviews::INTERNAL_HANDLE_BASE);
         let mut t = match crate::file_icons::icon_for(&docs[idx].path) {
+            // The extension editor's tab shows the Extensions icon.
+            _ if extension_page => Tab::new(label).icon(icons::codicon_by_name("extensions").unwrap_or(icons::FILE)),
             Some((glyph, color)) => Tab::new(label).seti_icon(glyph, color),
             None => Tab::new(label).icon(icons::FILE),
         }
@@ -70,6 +77,9 @@ pub fn show(
         }
         if pinned_flags[idx] {
             t = t.pinned();
+        }
+        if preview_flags[idx] {
+            t = t.preview();
         }
         items.push(t);
     }
@@ -112,6 +122,11 @@ pub fn show(
             } else {
                 action.close = Some(doc_idx);
             }
+        }
+    }
+    if let Some(idx) = response.double_clicked {
+        if !(show_welcome_tab && idx == 0) {
+            action.keep = Some(idx - welcome_offset);
         }
     }
     if let Some(idx) = response.right_clicked {

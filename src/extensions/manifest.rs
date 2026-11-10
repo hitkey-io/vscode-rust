@@ -259,7 +259,7 @@ pub fn default_dirs() -> Vec<PathBuf> {
 /// The value a setting without a `default` gets, from its `type` (VS Code's
 /// `getDefaultValue` in configurationRegistry.ts; with several types, the
 /// first one counts).
-fn default_for_type(ty: Option<&Value>) -> Value {
+pub(crate) fn default_for_type(ty: Option<&Value>) -> Value {
     let ty = match ty {
         Some(Value::Array(types)) => types.first().and_then(Value::as_str),
         Some(Value::String(t)) => Some(t.as_str()),
@@ -299,6 +299,20 @@ fn read_nls(dir: &Path) -> BTreeMap<String, String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The manifest in `dir` with every `%key%` string resolved through its
+/// `package.nls.json`, as VS Code shows contributions (titles, descriptions).
+pub fn localized_manifest(manifest: &Value, dir: &Path) -> Value {
+    fn walk(v: &Value, nls: &BTreeMap<String, String>) -> Value {
+        match v {
+            Value::String(s) => Value::String(localize(s, nls)),
+            Value::Array(a) => Value::Array(a.iter().map(|x| walk(x, nls)).collect()),
+            Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), walk(x, nls))).collect()),
+            other => other.clone(),
+        }
+    }
+    walk(manifest, &read_nls(dir))
 }
 
 /// Resolve a `%key%` placeholder through `package.nls.json`.

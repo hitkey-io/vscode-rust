@@ -32,7 +32,7 @@ const PAGE: usize = 30;
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(350);
 
 /// An extension as the catalogue describes it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GalleryExtension {
     pub namespace: String,
     pub name: String,
@@ -123,6 +123,38 @@ pub struct GalleryDetails {
     pub base_url: Option<String>,
     /// The extension's `package.json` (for its commands and settings).
     pub manifest: Option<Value>,
+    /// When its first version was published (ISO 8601), VS Code's
+    /// "Published".
+    pub published: Option<String>,
+    /// Every published version, newest first.
+    pub versions: Vec<String>,
+}
+
+/// Versions in the catalogue's `allVersions`, newest first (aliases such as
+/// `latest` left out).
+pub fn versions_of(json: &Value) -> Vec<String> {
+    let mut v: Vec<String> = json
+        .get("allVersions")
+        .and_then(Value::as_object)
+        .map(|o| o.keys().filter(|k| k.chars().next().is_some_and(|c| c.is_ascii_digit())).cloned().collect())
+        .unwrap_or_default();
+    v.sort_by(|a, b| compare_versions(b, a));
+    v
+}
+
+/// Order of two dotted versions (`1.10.0` after `1.9.3`; a pre-release tag
+/// sorts before its release).
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let split = |v: &str| -> (Vec<u64>, bool) {
+        let (core, pre) = match v.split_once(['-', '+']) {
+            Some((c, _)) => (c, true),
+            None => (v, false),
+        };
+        (core.split('.').map(|p| p.parse().unwrap_or(0)).collect(), pre)
+    };
+    let (ca, pa) = split(a);
+    let (cb, pb) = split(b);
+    ca.cmp(&cb).then(pb.cmp(&pa))
 }
 
 enum Job {
@@ -130,6 +162,8 @@ enum Job {
     List(List, Result<Vec<GalleryExtension>, String>),
     Icon(String, Option<Vec<u8>>),
     Installed(String, Result<PathBuf, String>),
+    Latest(String, Option<String>),
+    Downloaded(String, Result<PathBuf, String>),
 }
 
 /// State of one list in the view.
@@ -170,6 +204,11 @@ pub struct Marketplace {
     /// Extension pages' data by id, once fetched (or the error).
     pub details: std::collections::HashMap<String, Result<GalleryDetails, String>>,
     details_loading: BTreeSet<String>,
+    /// Newest version in the catalogue by id (`check_updates`).
+    pub latest: std::collections::HashMap<String, String>,
+    latest_checked: BTreeSet<String>,
+    /// Finished `.vsix` downloads (id, where), for a notification.
+    pub downloaded: Vec<(String, Result<PathBuf, String>)>,
     tx: Sender<Job>,
     rx: Receiver<Job>,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -199,6 +238,9 @@ impl Default for Marketplace {
             errors: Vec::new(),
             details: Default::default(),
             details_loading: BTreeSet::new(),
+            latest: Default::default(),
+            latest_checked: BTreeSet::new(),
+            downloaded: Vec::new(),
             tx,
             rx,
             wake: Arc::new(|| {}),
@@ -223,6 +265,11 @@ impl Marketplace {
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_lowercase).collect())
             .unwrap_or_default();
         self.lists.remove(&List::Recommended);
+    }
+
+    /// A page on the catalogue's website (`extension/ns/name`).
+    pub fn web_url(&self, path: &str) -> String {
+        format!("{}/{path}", self.gallery)
     }
 
     /// The search box changed.
@@ -313,7 +360,18 @@ impl Marketplace {
                     .and_then(Value::as_str)
                     .and_then(|u| u.rfind('/').map(|i| u[..=i].to_string()));
                 let manifest = text("manifest").and_then(|m| serde_json::from_str(&m).ok());
-                Ok(GalleryDetails { readme: text("readme"), changelog: text("changelog"), base_url, manifest, json })
+                let versions = versions_of(&json);
+                // "Published" is the first version's date.
+                let published = match versions.last() {
+                    Some(first) if Some(first.as_str()) != json.get("version").and_then(Value::as_str) => {
+                        http_get(&format!("{gallery}/api/{ns}/{nm}/{first}"))
+                            .ok()
+                            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                            .and_then(|v| v.get("timestamp").and_then(Value::as_str).map(str::to_string))
+                    }
+                    _ => json.get("timestamp").and_then(Value::as_str).map(str::to_string),
+                };
+                Ok(GalleryDetails { readme: text("readme"), changelog: text("changelog"), base_url, manifest, json, published, versions })
             })();
             let _ = tx.send(Job::Details(id, result));
             wake();
@@ -322,15 +380,67 @@ impl Marketplace {
 
     /// Download and install the newest version of `ext` for this platform.
     pub fn install(&mut self, ext: &GalleryExtension) {
-        let id = ext.id();
+        self.install_version(&ext.namespace, &ext.name, None);
+    }
+
+    /// The newest version of each of `ids` in the catalogue, once per id,
+    /// into `latest` (for "Update" and auto-update).
+    pub fn check_updates(&mut self, ids: &[String]) {
+        if !self.enabled {
+            return;
+        }
+        for id in ids {
+            let Some((ns, name)) = id.split_once('.') else { continue };
+            if !self.latest_checked.insert(id.to_lowercase()) {
+                continue;
+            }
+            let (tx, wake, gallery) = (self.tx.clone(), self.wake.clone(), self.gallery.clone());
+            let (ns, name, id) = (ns.to_string(), name.to_string(), id.clone());
+            std::thread::spawn(move || {
+                let version = http_get(&format!("{gallery}/api/{ns}/{name}/latest"))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .and_then(|v| v.get("version").and_then(Value::as_str).map(str::to_string));
+                let _ = tx.send(Job::Latest(id, version));
+                wake();
+            });
+        }
+    }
+
+    /// Download one version's `.vsix` (the newest when `None`) to `dest`
+    /// ("Download VSIX").
+    pub fn download_vsix(&mut self, id: &str, version: Option<String>, dest: PathBuf) {
+        let Some((ns, name)) = id.split_once('.') else { return };
+        let (tx, wake, gallery) = (self.tx.clone(), self.wake.clone(), self.gallery.clone());
+        let (ns, name, id) = (ns.to_string(), name.to_string(), id.to_string());
+        std::thread::spawn(move || {
+            let result = vsix_url(&gallery, &ns, &name, version.as_deref()).and_then(|url| {
+                let ok = Command::new("curl")
+                    .args(["-fsSL", "--max-time", "300", "-A", "vscode-rust", "-o"])
+                    .arg(&dest)
+                    .arg(url)
+                    .status()
+                    .map_err(|e| format!("curl: {e}"))?
+                    .success();
+                if ok { Ok(dest) } else { Err("the download failed".to_string()) }
+            });
+            let _ = tx.send(Job::Downloaded(id, result));
+            wake();
+        });
+    }
+
+    /// Download and install `version` of `namespace.name` (the newest when
+    /// `None`) for this platform.
+    pub fn install_version(&mut self, namespace: &str, name: &str, version: Option<String>) {
+        let id = format!("{namespace}.{name}");
         if !self.enabled || !self.installing.insert(id.clone()) {
             return;
         }
         let (tx, wake) = (self.tx.clone(), self.wake.clone());
         let (gallery, dir) = (self.gallery.clone(), self.install_dir.clone());
-        let (ns, name) = (ext.namespace.clone(), ext.name.clone());
+        let (ns, name) = (namespace.to_string(), name.to_string());
         std::thread::spawn(move || {
-            let result = install_from_gallery(&gallery, &ns, &name, &dir);
+            let result = install_from_gallery(&gallery, &ns, &name, version.as_deref(), &dir);
             let _ = tx.send(Job::Installed(id, result));
             wake();
         });
@@ -379,6 +489,12 @@ impl Marketplace {
                         .unwrap_or(Icon::Missing);
                     self.icons.insert(url, icon);
                 }
+                Job::Latest(id, version) => {
+                    if let Some(v) = version {
+                        self.latest.insert(id.to_lowercase(), v);
+                    }
+                }
+                Job::Downloaded(id, result) => self.downloaded.push((id, result)),
                 Job::Installed(id, result) => {
                     self.installing.remove(&id);
                     match result {
@@ -403,9 +519,14 @@ pub fn uninstall(path: &Path, install_dir: &Path) -> Result<(), String> {
 
 fn search(gallery: &str, query: &str, sort: &str) -> Result<Vec<GalleryExtension>, String> {
     let mut url = format!("{gallery}/api/-/search?size={PAGE}&sortBy={sort}&sortOrder=desc");
+    let (category, query) = split_category(query);
+    if let Some(c) = category {
+        url.push_str("&category=");
+        url.push_str(&percent_encode(&c));
+    }
     if !query.is_empty() {
         url.push_str("&query=");
-        url.push_str(&percent_encode(query));
+        url.push_str(&percent_encode(&query));
     }
     let body = http_get(&url)?;
     parse_search(&String::from_utf8_lossy(&body))
@@ -425,29 +546,35 @@ fn target_platform() -> &'static str {
     }
 }
 
-fn install_from_gallery(gallery: &str, ns: &str, name: &str, dir: &Path) -> Result<PathBuf, String> {
-    // A build for this platform if there is one, else the universal one.
-    let meta = http_get(&format!("{gallery}/api/{ns}/{name}/{}/latest", target_platform()))
+/// Where to download `version` (the newest when `None`) of `ns.name`: the
+/// build for this platform if there is one, else the universal one.
+fn vsix_url(gallery: &str, ns: &str, name: &str, version: Option<&str>) -> Result<String, String> {
+    let version = version.unwrap_or("latest");
+    let meta = http_get(&format!("{gallery}/api/{ns}/{name}/{}/{version}", target_platform()))
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .filter(|v| v.get("error").is_none())
         .map(Ok)
         .unwrap_or_else(|| {
-            let b = http_get(&format!("{gallery}/api/{ns}/{name}/latest"))?;
+            let b = http_get(&format!("{gallery}/api/{ns}/{name}/{version}"))?;
             serde_json::from_slice::<Value>(&b).map_err(|e| e.to_string())
         })?;
     if let Some(err) = meta.get("error").and_then(Value::as_str) {
         return Err(err.to_string());
     }
-    let url = meta
-        .pointer("/files/download")
+    meta.pointer("/files/download")
         .and_then(Value::as_str)
-        .ok_or("the catalogue has no download for it")?;
+        .map(str::to_string)
+        .ok_or_else(|| "the catalogue has no download for it".to_string())
+}
+
+fn install_from_gallery(gallery: &str, ns: &str, name: &str, version: Option<&str>, dir: &Path) -> Result<PathBuf, String> {
+    let url = vsix_url(gallery, ns, name, version)?;
     let tmp = std::env::temp_dir().join(format!("vscode-rust-{}-{ns}.{name}.vsix", std::process::id()));
     let status = Command::new("curl")
         .args(["-fsSL", "--max-time", "300", "-A", "vscode-rust", "-o"])
         .arg(&tmp)
-        .arg(url)
+        .arg(&url)
         .status()
         .map_err(|e| format!("curl: {e}"))?;
     if !status.success() {
@@ -652,4 +779,60 @@ mod tests {
         assert!(!installed.exists());
         let _ = std::fs::remove_dir_all(&work);
     }
+}
+
+/// `@category:"Data Science" pandas` → (`Data Science`, `pandas`), as VS
+/// Code's Extensions search reads it.
+pub fn split_category(query: &str) -> (Option<String>, String) {
+    let Some(at) = query.find("@category:") else { return (None, query.trim().to_string()) };
+    let rest = &query[at + "@category:".len()..];
+    let (cat, after) = if let Some(r) = rest.strip_prefix('"') {
+        match r.find('"') {
+            Some(e) => (&r[..e], &r[e + 1..]),
+            None => (r, ""),
+        }
+    } else {
+        let e = rest.find(' ').unwrap_or(rest.len());
+        (&rest[..e], &rest[e..])
+    };
+    let text = format!("{} {}", &query[..at], after);
+    (Some(cat.to_string()), text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+#[cfg(test)]
+mod details_tests {
+    use super::*;
+
+    #[test]
+    fn versions_sort_newest_first() {
+        let json = serde_json::json!({ "allVersions": { "latest": "", "1.9.3": "", "1.10.0": "", "1.10.0-beta": "" } });
+        assert_eq!(versions_of(&json), ["1.10.0", "1.10.0-beta", "1.9.3"]);
+    }
+
+    #[test]
+    fn category_queries_split() {
+        assert_eq!(split_category(r#"@category:"Data Science" pandas"#), (Some("Data Science".into()), "pandas".into()));
+        assert_eq!(split_category("@category:Themes"), (Some("Themes".into()), String::new()));
+        assert_eq!(split_category("python"), (None, "python".into()));
+    }
+}
+
+/// Add `id` to (or remove it from) the workspace's recommendations in
+/// `.vscode/extensions.json` ("Add to Workspace Recommendations").
+pub fn set_recommended(workspace: &Path, id: &str, add: bool) -> Result<(), String> {
+    let path = workspace.join(".vscode/extensions.json");
+    let mut doc: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&strip_jsonc_comments(&s)).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let obj = doc.as_object_mut().ok_or("extensions.json isn't an object")?;
+    let list = obj.entry("recommendations").or_insert_with(|| Value::Array(Vec::new()));
+    let arr = list.as_array_mut().ok_or("recommendations isn't a list")?;
+    arr.retain(|v| !v.as_str().is_some_and(|s| s.eq_ignore_ascii_case(id)));
+    if add {
+        arr.push(Value::String(id.to_string()));
+    }
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text + "\n").map_err(|e| e.to_string())
 }

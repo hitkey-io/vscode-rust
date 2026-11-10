@@ -87,6 +87,11 @@ impl WebviewHost {
     }
 
     /// Whether `handle` has a place this frame.
+    /// Where `handle` is placed this frame (window points).
+    pub fn placed_rect(&self, handle: u64) -> Option<egui::Rect> {
+        self.slots.iter().find(|(h, _)| *h == handle).map(|(_, r)| *r)
+    }
+
     pub fn is_placed(&self, handle: u64) -> bool {
         self.slots.iter().any(|(h, _)| *h == handle)
     }
@@ -296,6 +301,10 @@ fn bootstrap_script() -> String {
 
 /// Answer `vscode-resource://w<handle>/…`: the page itself, or a file
 /// inside the webview's resource roots.
+/// Where every page finds the codicon font (`vscode-resource://w<n>/…`).
+pub const CODICON_PATH: &str = "/__codicon.ttf";
+const CODICON_TTF: &[u8] = include_bytes!("../../assets/codicon.ttf");
+
 fn serve(
     pages: &Arc<Mutex<HashMap<u64, Page>>>,
     request: wry::http::Request<Vec<u8>>,
@@ -307,6 +316,10 @@ fn serve(
     let path = percent_decode(uri.path());
     if path == "/index.html" {
         return respond(200, "text/html; charset=utf-8", page.html.into_bytes());
+    }
+    if path == CODICON_PATH {
+        // The editor's own pages draw codicons, as the workbench does.
+        return respond(200, "font/ttf", CODICON_TTF.to_vec());
     }
     let file = PathBuf::from(&path);
     let allowed = page.roots.iter().any(|root| file.starts_with(root)) && !path.contains("/../");

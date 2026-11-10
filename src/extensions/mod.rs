@@ -208,9 +208,72 @@ pub enum EditorRequest {
 /// Last lines of the extension host log kept for the Extensions view.
 const LOG_LINES: usize = 500;
 
+/// Whether an installed extension runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Enablement {
+    Enabled,
+    DisabledGlobally,
+    DisabledWorkspace,
+}
+
+/// Choices per extension, kept in `<install dir>/.extension-state.json`.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExtensionState {
+    /// Ids (lower case) disabled everywhere.
+    pub disabled: BTreeSet<String>,
+    /// Per workspace folder: ids disabled or enabled there.
+    pub workspace: BTreeMap<String, WorkspaceEnablement>,
+    /// Ids that don't update by themselves.
+    pub no_auto_update: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WorkspaceEnablement {
+    pub disabled: BTreeSet<String>,
+    pub enabled: BTreeSet<String>,
+}
+
+impl ExtensionState {
+    fn read(path: &Path) -> Self {
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    fn write(&self, path: &Path) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, text);
+        }
+    }
+
+    /// A workspace choice wins over the global one, as in VS Code.
+    pub fn enablement(&self, id: &str, workspace: Option<&Path>) -> Enablement {
+        let key = id.to_lowercase();
+        if let Some(w) = workspace.and_then(|w| self.workspace.get(&*w.to_string_lossy())) {
+            if w.disabled.contains(&key) {
+                return Enablement::DisabledWorkspace;
+            }
+            if w.enabled.contains(&key) {
+                return Enablement::Enabled;
+            }
+        }
+        if self.disabled.contains(&key) { Enablement::DisabledGlobally } else { Enablement::Enabled }
+    }
+}
+
 #[derive(Default)]
 pub struct ExtensionService {
+    /// Installed and enabled: these run.
     pub extensions: Vec<Extension>,
+    /// Installed but disabled (globally or for this workspace).
+    pub disabled: Vec<Extension>,
+    /// Enablement and auto-update choices, kept beside the installs.
+    pub state: ExtensionState,
+    /// `id@version` updates already started by auto-update.
+    auto_updated: BTreeSet<String>,
     pub activation: BTreeMap<String, Activation>,
     host: Option<host::Host>,
     /// Commands an extension registered at runtime.
@@ -274,12 +337,77 @@ impl ExtensionService {
     /// Read the extensions in `dirs`. Nothing runs yet.
     pub fn load(&mut self, dirs: &[PathBuf]) {
         self.dirs = dirs.to_vec();
-        self.extensions = manifest::scan(dirs);
+        self.state = ExtensionState::read(&self.state_file());
+        let mut all = manifest::scan(dirs);
+        all.append(&mut self.disabled);
+        self.split_enabled(all);
+    }
+
+    /// Put each installed extension in `extensions` or `disabled`.
+    fn split_enabled(&mut self, all: Vec<Extension>) {
+        let workspace = self.workspace.clone();
+        let (enabled, disabled): (Vec<_>, Vec<_>) =
+            all.into_iter().partition(|e| self.state.enablement(&e.id, workspace.as_deref()) == Enablement::Enabled);
+        self.extensions = enabled;
+        self.disabled = disabled;
         self.activation = self
             .extensions
             .iter()
             .map(|e| (e.id.clone(), Activation::Inactive))
             .collect();
+    }
+
+    fn state_file(&self) -> PathBuf {
+        self.marketplace.install_dir.join(".extension-state.json")
+    }
+
+    /// Every installed extension, enabled ones first.
+    pub fn installed(&self) -> impl Iterator<Item = &Extension> {
+        self.extensions.iter().chain(self.disabled.iter())
+    }
+
+    /// Whether `id` runs, or why not.
+    pub fn enablement(&self, id: &str) -> Enablement {
+        self.state.enablement(id, self.workspace.as_deref())
+    }
+
+    /// Enable or disable `id` everywhere (`workspace: false`) or only in
+    /// this folder, then restart the extensions ("Enable", "Disable
+    /// (Workspace)"…).
+    pub fn set_enabled(&mut self, id: &str, enabled: bool, workspace: bool) {
+        let key = id.to_lowercase();
+        let folder = self.workspace.as_ref().map(|w| w.to_string_lossy().into_owned());
+        if workspace {
+            let Some(folder) = folder else { return };
+            let entry = self.state.workspace.entry(folder).or_default();
+            entry.disabled.remove(&key);
+            entry.enabled.remove(&key);
+            if enabled { entry.enabled.insert(key) } else { entry.disabled.insert(key) };
+        } else {
+            if enabled {
+                self.state.disabled.remove(&key);
+                // Enabling everywhere also drops a workspace "disabled".
+                if let Some(f) = folder.and_then(|f| self.state.workspace.get_mut(&f)) {
+                    f.disabled.remove(&key);
+                }
+            } else {
+                self.state.disabled.insert(key);
+            }
+        }
+        self.state.write(&self.state_file());
+        self.reload();
+    }
+
+    /// Whether `id` updates by itself when the catalogue has a newer
+    /// version ("Auto Update", on by default as in VS Code).
+    pub fn auto_update(&self, id: &str) -> bool {
+        !self.state.no_auto_update.contains(&id.to_lowercase())
+    }
+
+    pub fn set_auto_update(&mut self, id: &str, on: bool) {
+        let key = id.to_lowercase();
+        if on { self.state.no_auto_update.remove(&key) } else { self.state.no_auto_update.insert(key) };
+        self.state.write(&self.state_file());
     }
 
     /// Start the extension host for the extensions that have code, with
@@ -291,7 +419,13 @@ impl ExtensionService {
         wake: impl Fn() + Send + Sync + 'static,
     ) {
         let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
-        self.workspace = workspace.map(Path::to_path_buf);
+        if self.workspace.as_deref() != workspace {
+            self.workspace = workspace.map(Path::to_path_buf);
+            // "Disable (Workspace)" depends on the folder.
+            let mut all = std::mem::take(&mut self.extensions);
+            all.append(&mut self.disabled);
+            self.split_enabled(all);
+        }
         self.wake = Some(wake.clone());
         if self.host.is_some() || !self.extensions.iter().any(|e| e.main.is_some()) {
             return;
@@ -368,6 +502,7 @@ impl ExtensionService {
         self.requested_views.clear();
         self.webview_visible.clear();
         let dirs = self.dirs.clone();
+        self.disabled.clear();
         self.load(&dirs);
         let workspace = self.workspace.clone();
         if let Some(wake) = self.wake.clone() {
@@ -377,7 +512,7 @@ impl ExtensionService {
 
     /// Uninstall an extension this editor installed, then reload.
     pub fn uninstall(&mut self, id: &str) {
-        let Some(ext) = self.extensions.iter().find(|e| e.id == id) else { return };
+        let Some(ext) = self.installed().find(|e| e.id == id) else { return };
         let path = ext.path.clone();
         match marketplace::uninstall(&path, &self.marketplace.install_dir) {
             Ok(()) => self.reload(),
@@ -389,15 +524,14 @@ impl ExtensionService {
     /// not one of VS Code's).
     pub fn can_uninstall(&self, id: &str) -> bool {
         let dir = &self.marketplace.install_dir;
-        self.extensions
-            .iter()
+        self.installed()
             .find(|e| e.id == id)
             .is_some_and(|e| e.path.parent() == Some(dir.as_path()))
     }
 
     /// Whether an extension with this id (any case) is installed.
     pub fn is_installed(&self, id: &str) -> bool {
-        self.extensions.iter().any(|e| e.id.eq_ignore_ascii_case(id))
+        self.installed().any(|e| e.id.eq_ignore_ascii_case(id))
     }
 
     /// Marketplace housekeeping each frame: results, finished installs
@@ -415,7 +549,52 @@ impl ExtensionService {
         for e in std::mem::take(&mut self.marketplace.errors) {
             self.notify(Severity::Error, e, Vec::new(), None, None);
         }
+        for (id, result) in std::mem::take(&mut self.marketplace.downloaded) {
+            match result {
+                Ok(path) => self.notify(Severity::Info, format!("Downloaded {id} to {}.", path.display()), Vec::new(), None, None),
+                Err(e) => self.notify(Severity::Error, format!("Couldn't download '{id}': {e}"), Vec::new(), None, None),
+            }
+        }
+        self.auto_update_extensions();
         busy
+    }
+
+    /// A newer version of `id` in the catalogue, if any.
+    pub fn update_available(&self, id: &str) -> Option<String> {
+        let ext = self.installed().find(|e| e.id.eq_ignore_ascii_case(id))?;
+        let latest = self.marketplace.latest.get(&id.to_lowercase())?;
+        (marketplace::compare_versions(latest, &ext.version) == std::cmp::Ordering::Greater).then(|| latest.clone())
+    }
+
+    /// Ask the catalogue for newer versions of what this editor installed,
+    /// and install them where auto-update is on (VS Code's default).
+    fn auto_update_extensions(&mut self) {
+        if !self.marketplace.enabled {
+            return;
+        }
+        let ours: Vec<String> = self.installed().filter(|e| self.can_uninstall(&e.id)).map(|e| e.id.clone()).collect();
+        self.marketplace.check_updates(&ours);
+        for id in ours {
+            if !self.auto_update(&id) || self.marketplace.installing.contains(&id) {
+                continue;
+            }
+            if let (Some(v), Some((ns, name))) = (self.update_available(&id), id.split_once('.')) {
+                // Once per version: a failed install isn't retried every frame.
+                if self.auto_updated.insert(format!("{id}@{v}")) {
+                    self.marketplace.install_version(ns, name, Some(v));
+                }
+            }
+        }
+    }
+
+    /// An information toast from the editor itself.
+    pub fn notify_info(&mut self, text: String) {
+        self.notify(Severity::Info, text, Vec::new(), None, None);
+    }
+
+    /// An error toast from the editor itself.
+    pub fn notify_error(&mut self, text: String) {
+        self.notify(Severity::Error, text, Vec::new(), None, None);
     }
 
     pub fn is_running(&self) -> bool {

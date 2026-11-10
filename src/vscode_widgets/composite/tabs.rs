@@ -210,11 +210,9 @@ fn draw_single_tab(
         0.0
     };
 
-    let label_galley = ui.painter().layout_no_wrap(
-        tab.label.to_string(),
-        FontId::proportional(13.0),
-        Color32::WHITE,
-    );
+    // Preview tabs (opened with one click, not kept yet) are italic.
+    let label_font = if tab.preview { crate::ui_font::italic(13.0) } else { FontId::proportional(13.0) };
+    let label_galley = ui.painter().layout_no_wrap(tab.label.to_string(), label_font, Color32::WHITE);
 
     let mut content_w = label_galley.size().x;
     if tab.icon.is_some() || tab.seti_icon.is_some() {
@@ -287,10 +285,7 @@ fn draw_single_tab(
         );
         cursor += icon_size + icon_gap;
     }
-    // VS Code renders preview-tab labels in italics. egui's bundled UI font
-    // has no italic face, so we approximate the "this tab isn't kept yet"
-    // affordance by dimming the label slightly.
-    let label_fg = if tab.preview { fg.gamma_multiply(0.82) } else { fg };
+    let label_fg = fg;
     painter.galley(
         egui::pos2(cursor, cy - label_galley.size().y * 0.5),
         label_galley,

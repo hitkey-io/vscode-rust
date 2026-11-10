@@ -25,6 +25,9 @@ pub struct Document {
     /// When `Some`, this tab shows an extension's webview panel (that
     /// handle) instead of text; `diff_title` holds its title.
     pub webview: Option<u64>,
+    /// A preview editor: opened with one click and replaced by the next
+    /// one until it's kept (double-click on the tab). Italic tab title.
+    pub preview: bool,
 }
 
 impl Document {
@@ -54,6 +57,7 @@ impl Document {
             diff_base: None,
             diff_title: None,
             webview: None,
+            preview: false,
         })
     }
 
@@ -76,6 +80,7 @@ impl Document {
             diff_base: Some(base),
             diff_title: Some(title),
             webview: None,
+            preview: false,
         }
     }
 
@@ -95,6 +100,7 @@ impl Document {
             diff_base: None,
             diff_title: Some(title),
             webview: Some(handle),
+            preview: false,
         }
     }
 

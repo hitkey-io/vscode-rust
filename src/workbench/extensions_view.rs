@@ -37,6 +37,8 @@ pub struct ExtensionsViewOutput {
     pub refresh: bool,
     /// A row was clicked: open that extension's page.
     pub open: Option<OpenDetails>,
+    /// It was double-clicked: keep the page (not a preview).
+    pub open_pinned: bool,
 }
 
 pub use super::extension_details::OpenTarget as OpenDetails;
@@ -101,12 +103,12 @@ pub fn show(ui: &mut Ui, service: &mut ExtensionService) -> ExtensionsViewOutput
         }
 
         // INSTALLED
-        let count = service.extensions.len();
+        let count = service.installed().count();
         if section(ui, "INSTALLED", Some(count), &mut collapsed.installed) {
             if count == 0 {
                 message(ui, "No extensions installed.");
             }
-            let installed: Vec<Extension> = service.extensions.clone();
+            let installed: Vec<Extension> = service.installed().cloned().collect();
             for ext in &installed {
                 installed_row(ui, service, ext, &mut out);
             }
@@ -408,9 +410,10 @@ fn row_button(ui: &mut Ui, rect: egui::Rect, label: &str, id: egui::Id, enabled:
 fn gallery_row(ui: &mut Ui, service: &mut ExtensionService, ext: &GalleryExtension, out: &mut ExtensionsViewOutput) {
     let id = ext.id();
     let (rect, resp) = row_frame(ui, format!("{}, {}", ext.display_name, ext.namespace));
-    if resp.clicked() {
+    if resp.clicked() || resp.double_clicked() {
+        out.open_pinned = resp.double_clicked();
         out.open = Some(if service.is_installed(&id) {
-            OpenDetails::Installed(service.extensions.iter().find(|e| e.id.eq_ignore_ascii_case(&id)).map(|e| e.id.clone()).unwrap_or(id.clone()))
+            OpenDetails::Installed(service.installed().find(|e| e.id.eq_ignore_ascii_case(&id)).map(|e| e.id.clone()).unwrap_or(id.clone()))
         } else {
             OpenDetails::Gallery(ext.clone())
         });
@@ -459,7 +462,9 @@ fn gallery_row(ui: &mut Ui, service: &mut ExtensionService, ext: &GalleryExtensi
 
 fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, out: &mut ExtensionsViewOutput) {
     let state = service.activation.get(&ext.id).cloned().unwrap_or(Activation::Inactive);
+    let disabled = service.enablement(&ext.id) != crate::extensions::Enablement::Enabled;
     let status = match &state {
+        _ if disabled => "Disabled",
         Activation::Inactive if ext.main.is_none() => "",
         Activation::Inactive => "Not activated",
         Activation::Active => "Activated",
@@ -467,7 +472,8 @@ fn installed_row(ui: &mut Ui, service: &mut ExtensionService, ext: &Extension, o
         Activation::NeedsNode => "Needs Node.js",
     };
     let (rect, resp) = row_frame(ui, format!("{}, {}, {}", ext.display_name, ext.publisher, status));
-    if resp.clicked() {
+    if resp.clicked() || resp.double_clicked() {
+        out.open_pinned = resp.double_clicked();
         out.open = Some(OpenDetails::Installed(ext.id.clone()));
     }
     let hovered = resp.hovered();

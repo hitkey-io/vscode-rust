@@ -19,6 +19,11 @@ use skrifa::{instance::Size, raw::TableProvider, GlyphId, MetadataProvider};
 
 /// macOS system UI font.
 const SYSTEM_UI_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
+/// Its italic companion (preview tab titles).
+const SYSTEM_UI_ITALIC: &str = "/System/Library/Fonts/SFNSItalic.ttf";
+const ITALIC: &str = "SF-Italic";
+/// Family for italic UI text (`font-style: italic`).
+const ITALIC_FAMILY: &str = "ui-italic";
 const REGULAR: &str = "SF";
 const BOLD: &str = "SF-Bold";
 /// Family for bold UI text (`font-weight: bold`).
@@ -32,6 +37,12 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD_FAMILY.into()))
 }
 
+/// Italic UI text at `size`, e.g. a preview editor's tab title.
+/// Falls back to the regular UI font where SF isn't available.
+pub fn italic(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(ITALIC_FAMILY.into()))
+}
+
 /// Put SF (Regular as the head of the proportional family, Bold as the
 /// `ui-bold` family) in front of egui's bundled faces. Without SF both
 /// families keep the bundled faces.
@@ -42,6 +53,11 @@ pub fn register(fonts: &mut FontDefinitions) {
         .cloned()
         .unwrap_or_default();
     let mut bold_family = fallback.clone();
+    let mut italic_family = fallback.clone();
+    if let Some(italic) = std::fs::read(SYSTEM_UI_ITALIC).ok().and_then(|b| instance(&b, 400.0)) {
+        fonts.font_data.insert(ITALIC.to_owned(), std::sync::Arc::new(italic));
+        italic_family.insert(0, ITALIC.to_owned());
+    }
 
     if let Ok(bytes) = std::fs::read(SYSTEM_UI_FONT) {
         let regular = instance(&bytes, 400.0);
@@ -60,6 +76,9 @@ pub fn register(fonts: &mut FontDefinitions) {
     fonts
         .families
         .insert(FontFamily::Name(BOLD_FAMILY.into()), bold_family);
+    fonts
+        .families
+        .insert(FontFamily::Name(ITALIC_FAMILY.into()), italic_family);
 }
 
 /// SF at `weight` and the Text optical size: outlines through the tweak's
