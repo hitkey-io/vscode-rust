@@ -517,46 +517,27 @@ fn welcome(ui: &mut Ui, st: &ScmUiState, out: &mut ScmOutput) {
             "To learn more about how to use Git and source control in VS Code read our docs.",
         )
     };
-    let w = (ui.available_width() - 40.0).max(60.0);
-    let para = |ui: &mut Ui, text: &str| {
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
-                ui.set_width(w);
-                let mut job = egui::text::LayoutJob::single_section(
-                    text.to_string(),
-                    egui::text::TextFormat { font_id: FontId::proportional(13.0), color: Palette::FG(), line_height: Some(18.0), ..Default::default() },
-                );
-                job.wrap.max_width = w;
-                ui.label(job);
-            });
-        });
-    };
+    // Same layout as every view welcome (run_debug's paragraph / button):
+    // galleys sized to the 20px-inset width, so nothing widens the side bar.
+    use super::run_debug::paragraph;
+    let id = ui.id().with("scm-welcome");
     ui.add_space(13.0);
-    for t in texts {
-        para(ui, t);
+    for (i, t) in texts.iter().enumerate() {
+        paragraph(ui, t, id.with(i));
     }
     ui.add_space(13.0);
-    let mut button_row = |ui: &mut Ui, label: &str, action: ScmAction| {
-        ui.horizontal(|ui| {
-            ui.add_space(20.0);
-            let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), Sense::click());
-            let bg = if resp.hovered() { Palette::BUTTON_HOVER() } else { Palette::BUTTON_BG() };
-            ui.painter().rect_filled(r, egui::CornerRadius::same(4), bg);
-            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), Color32::WHITE);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-            if resp.clicked() {
-                out.act(action);
-            }
-        });
-        ui.add_space(13.0);
-    };
-    button_row(ui, button.0, button.1);
+    if super::run_debug::button(ui, button.0) {
+        out.act(button.1.clone());
+    }
+    ui.add_space(13.0);
     if !st.folder_open && !st.restricted {
-        button_row(ui, "Clone Repository", ScmAction::CloneRepository);
+        if super::run_debug::button(ui, "Clone Repository") {
+            out.act(ScmAction::CloneRepository);
+        }
+        ui.add_space(13.0);
     }
     if !after.is_empty() {
-        para(ui, after);
+        paragraph(ui, after, id.with("after"));
     }
 }
 

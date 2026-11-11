@@ -564,3 +564,24 @@ fn panel_terminal_asks_for_trust_in_restricted_mode() {
     // The panel goes away with the terminal that couldn't start.
     assert!(harness.query_by_label("panel:Terminal").is_none());
 }
+
+#[test]
+fn run_and_debug_view_asks_for_trust_before_debugging() {
+    let mut harness = launch(Some(workspace_path()), vec![], None);
+    harness.run();
+    harness.run();
+    harness.get_by_label_contains("Run and Debug (").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("create a launch.json file");
+    let _ = harness.get_by_label("Open a file");
+    harness.snapshot("interaction_run_and_debug");
+    harness.get_by_label("Run and Debug").click();
+    harness.run();
+    harness.run();
+    // Restricted Mode: `startDebugging` asks for trust first.
+    let _ = harness.get_by_label("Trust Folder & Continue");
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert!(harness.query_by_label("Trust Folder & Continue").is_none());
+}

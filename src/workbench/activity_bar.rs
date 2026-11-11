@@ -102,12 +102,11 @@ pub fn show_with_containers(
 
     let x = card.left() + LEFT;
     let mut y = card.top() + TOP;
-    // `None`: Run and Debug, which has no view yet.
     let views = [
         (Some(ActivityView::Explorer), icons::FILES, "Explorer (⇧⌘E)"),
         (Some(ActivityView::Search), icons::SEARCH, "Search (⇧⌘F)"),
         (Some(ActivityView::SourceControl), icons::SOURCE_CONTROL, "Source Control (⌃⇧G)"),
-        (None, icons::DEBUG_ALT, "Run and Debug (⇧⌘D)"),
+        (Some(ActivityView::RunAndDebug), icons::DEBUG_ALT, "Run and Debug (⇧⌘D)"),
         (Some(ActivityView::Extensions), icons::EXTENSIONS, "Extensions (⇧⌘X)"),
     ];
     for (view, glyph, label) in views {

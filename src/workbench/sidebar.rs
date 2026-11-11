@@ -21,6 +21,8 @@ pub struct SidebarOutput {
     pub scm: super::source_control::ScmOutput,
     /// Search view requests (replace, search editor).
     pub search: crate::search::ui::SearchOutput,
+    /// A link or button of the Run and Debug view.
+    pub run_debug: Option<super::run_debug::RunDebugAction>,
 }
 
 pub fn show(
@@ -46,6 +48,7 @@ pub fn show(
         navigate_to: None,
         scm: super::source_control::ScmOutput::default(),
         search: Default::default(),
+        run_debug: None,
     };
 
     let rect = ui.max_rect();
@@ -80,6 +83,10 @@ pub fn show(
                     scm_ui,
                 );
             }
+            ActivityView::RunAndDebug => {
+                let debuggable = active_file.is_some_and(super::run_debug::debuggable);
+                out.run_debug = super::run_debug::show(ui, workspace_root.is_some(), debuggable);
+            }
             // Drawn by the caller, which owns the extension service.
             ActivityView::Extensions | ActivityView::ExtensionContainer => {}
         }
@@ -89,11 +96,13 @@ pub fn show(
 }
 
 fn header(ui: &mut Ui, view: ActivityView) -> egui::Rect {
-    let more = view == ActivityView::Explorer;
+    let more = matches!(view, ActivityView::Explorer | ActivityView::RunAndDebug);
     let title = match view {
         ActivityView::Explorer => "Explorer",
         ActivityView::Search => "Search",
         ActivityView::SourceControl => "Source Control",
+        // The container's title and its single view's (`Run`).
+        ActivityView::RunAndDebug => "Run And Debug: Run",
         ActivityView::Extensions => "Extensions",
         ActivityView::ExtensionContainer => "",
     };

@@ -48,6 +48,24 @@ impl FileNode {
         }
     }
 
+    /// Re-reads every loaded folder (a file was created or deleted),
+    /// keeping which folders are expanded.
+    pub fn refresh(&mut self) {
+        let Some(old) = self.children.take() else { return };
+        let mut old: std::collections::HashMap<PathBuf, FileNode> = old.into_iter().map(|n| (n.path.clone(), n)).collect();
+        let mut fresh = load_children(&self.path);
+        for child in &mut fresh {
+            if let Some(prev) = old.remove(&child.path) {
+                child.expanded = prev.expanded;
+                if prev.children.is_some() && child.is_dir {
+                    child.children = prev.children;
+                    child.refresh();
+                }
+            }
+        }
+        self.children = Some(fresh);
+    }
+
     /// Expand every ancestor folder of `target` so the file becomes visible in
     /// the tree (VS Code's "reveal active file"). Loads children lazily along
     /// the path. Returns true if `target` is within this subtree.
@@ -109,4 +127,24 @@ fn load_children(path: &Path) -> Vec<FileNode> {
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
     entries
+}
+
+#[cfg(test)]
+mod refresh_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_sees_new_files_and_keeps_expansion() {
+        let dir = std::env::temp_dir().join(format!("vscode-rust-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut root = FileNode::root(dir.clone());
+        root.children.as_mut().unwrap()[0].toggle();
+        std::fs::write(dir.join("sub").join("new.txt"), "").unwrap();
+        root.refresh();
+        let sub = &root.children.as_ref().unwrap()[0];
+        assert!(sub.expanded);
+        assert!(sub.children.as_ref().unwrap().iter().any(|c| c.name == "new.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

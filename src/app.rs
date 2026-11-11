@@ -37,8 +37,9 @@ pub struct App {
     theme_pick: Option<ThemePick>,
     /// The Panel (Problems, Output, Debug Console, Terminal, Ports).
     panel: crate::workbench::panel::PanelState,
-    /// "Do you trust the authors…?" before a terminal starts in Restricted Mode.
-    terminal_trust_prompt: bool,
+    /// "Do you trust the authors…?" before something that runs code
+    /// (a terminal, debugging) in Restricted Mode.
+    trust_request: Option<TrustRequest>,
     /// The "terminal failed to launch" toast (its Open Help button).
     terminal_failed_toast: Option<u64>,
     /// Trusted folders and dismissed banners (Workspace Trust).
@@ -217,6 +218,16 @@ const GIT_PROMPT_BASE: u64 = 1 << 52;
 
 /// Request id of the Color Theme picker.
 const THEME_PICK_ID: u64 = 1 << 53;
+/// Request id of Run and Debug's "Select debugger" pick.
+const DEBUGGER_PICK_ID: u64 = 1 << 54;
+
+/// What asked for workspace trust (`requestWorkspaceTrust`'s message), and
+/// what runs once it's granted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrustRequest {
+    Terminal,
+    Debug,
+}
 
 /// The open Color Theme picker: the theme of each entry (none for "Browse
 /// Additional Color Themes...") and the theme to go back to on cancel.
@@ -412,7 +423,7 @@ impl App {
             settings_editor: None,
             trust: crate::workspace_trust::TrustStore::in_memory(),
             panel: Default::default(),
-            terminal_trust_prompt: false,
+            trust_request: None,
             terminal_failed_toast: None,
             trust_editor: None,
             workspace_settings: None,
@@ -1898,6 +1909,23 @@ impl App {
     /// Re-run status for every repository, rebuild Explorer decorations and
     /// the active repo's commit graph, and recompute the active-doc gutter.
     fn refresh_git(&mut self) {
+        // Git is an extension that doesn't run in Restricted Mode: no
+        // repositories, decorations, graph or gutter markers until trusted.
+        if !self.workspace_trusted() {
+            self.git_model = crate::git::Model::default();
+            self.git_decorations.clear();
+            self.git_history.clear();
+            self.git_line_changes.clear();
+            self.git_head_blob = None;
+            self.scm_ui.folder_open = self.workspace_root.is_some();
+            self.scm_ui.parent_repos.clear();
+            return;
+        }
+        if self.git_model.repos.is_empty() {
+            if let Some(root) = self.workspace_root.clone() {
+                self.git_model = crate::git::Model::discover(&root);
+            }
+        }
         self.git_model.refresh();
         self.scm_ui.folder_open = self.workspace_root.is_some();
         // A repository in a parent folder isn't opened by itself
@@ -1966,6 +1994,9 @@ impl App {
         self.git_line_changes.clear();
         self.git_head_blob = None;
         self.git_diff_snapshot.clear();
+        if !self.workspace_trusted() {
+            return;
+        }
         let Some(idx) = self.active_doc else { return };
         let Some(doc) = self.documents.get(idx) else { return };
         if doc.diff_base.is_some() {
@@ -3447,6 +3478,13 @@ impl App {
                 }
             }
             PaletteAction::Picked { request_id, index } if request_id == THEME_PICK_ID => self.theme_pick_closed(index),
+            PaletteAction::Picked { request_id, index } if request_id == DEBUGGER_PICK_ID => {
+                if index.is_some() {
+                    // `debug.installAdditionalDebuggers`.
+                    self.show_view(ActivityView::Extensions);
+                    self.extensions.marketplace.set_query("@category:debuggers".into());
+                }
+            }
             PaletteAction::Picked { request_id, index } if self.extension_version_picked(request_id, index) => {}
             PaletteAction::Picked { request_id, index } if self.git_prompt_answered(request_id, index, None) => {}
             PaletteAction::Input { request_id, value } if self.git_prompt_answered(request_id, None, value.clone()) => {}
@@ -4238,6 +4276,12 @@ impl App {
         if show_extensions {
             self.show_view(ActivityView::Extensions);
         }
+
+        // ⇧⌘D: Run and Debug.
+        let show_run = ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::D)));
+        if show_run {
+            self.show_view(ActivityView::RunAndDebug);
+        }
     }
 }
 
@@ -4548,6 +4592,9 @@ impl App {
             if let Some((path, line, col)) = sidebar_output.navigate_to {
                 self.navigate_to(path, line, col);
             }
+            if let Some(action) = sidebar_output.run_debug {
+                self.run_debug_action(action);
+            }
             self.dispatch_scm(sidebar_output.scm);
             self.dispatch_search(sidebar_output.search);
         }
@@ -4816,7 +4863,7 @@ impl App {
     /// first (`terminalProcessManager`'s trust request).
     fn create_terminal(&mut self, ctx: &Context) {
         if !self.workspace_trusted() {
-            self.terminal_trust_prompt = true;
+            self.trust_request = Some(TrustRequest::Terminal);
             return;
         }
         let wake = ctx.clone();
@@ -4887,6 +4934,53 @@ impl App {
         }
     }
 
+    /// A link or button of the Run and Debug view.
+    fn run_debug_action(&mut self, action: crate::workbench::run_debug::RunDebugAction) {
+        use crate::workbench::run_debug::RunDebugAction;
+        match action {
+            RunDebugAction::OpenFile => self.open_file_dialog(),
+            RunDebugAction::OpenFolder => self.open_folder_dialog(),
+            RunDebugAction::Start => {
+                // `startDebugging` asks for trust before anything runs.
+                if self.workspace_trusted() {
+                    self.open_debugger_pick();
+                } else {
+                    self.trust_request = Some(TrustRequest::Debug);
+                }
+            }
+            RunDebugAction::CreateLaunchJson => {
+                let Some(root) = self.workspace_root.clone() else { return };
+                let path = root.join(".vscode").join("launch.json");
+                if !path.exists() {
+                    let _ = std::fs::create_dir_all(path.parent().unwrap_or(&root));
+                    if let Err(e) = std::fs::write(&path, crate::workbench::run_debug::LAUNCH_JSON) {
+                        self.extensions.notify_error(format!("Unable to create 'launch.json' file: {e}"));
+                        return;
+                    }
+                    if let Some(tree) = self.file_tree.as_mut() {
+                        tree.refresh();
+                    }
+                }
+                self.open_file(path);
+            }
+        }
+    }
+
+    /// "Select debugger" (`guessDebugger`): this build has no debug
+    /// adapters, so only "Install extension..." is offered.
+    fn open_debugger_pick(&mut self) {
+        let language = self
+            .active_doc
+            .and_then(|i| self.documents.get(i))
+            .filter(|d| !d.welcome && d.webview.is_none())
+            .map(|d| d.language_label().to_string());
+        let label = match language {
+            Some(l) if l != "Plain Text" => format!("Install an extension for {l}..."),
+            _ => "Install extension...".to_string(),
+        };
+        self.palette.open_pick_with(DEBUGGER_PICK_ID, vec![(label, None, None, false)], Some("Select debugger".into()), Default::default());
+    }
+
     /// "Do you trust the authors of the files in this folder?" before a
     /// terminal starts in Restricted Mode (workspace.contribution.ts
     /// `onDidInitiateWorkspaceTrustRequest`).
@@ -4897,37 +4991,43 @@ impl App {
                 self.terminal_failed_toast = None;
             }
         }
-        if !self.terminal_trust_prompt {
-            return;
-        }
+        let Some(request) = self.trust_request else { return };
+        let detail = match request {
+            TrustRequest::Terminal => "Creating a terminal process requires executing code",
+            TrustRequest::Debug => "Debugging executes build tasks and program code from your workspace.",
+        };
         let d = Dialog {
             icon: "shield",
             message: "Do you trust the authors of the files in this folder?",
             details: &[
-                "Creating a terminal process requires executing code",
+                detail,
                 "If you don't trust the authors of these files, we do not recommend continuing as the files may be malicious. See [our docs](https://aka.ms/vscode-workspace-trust) to learn more.",
             ],
             buttons: &["Manage", "Cancel", "Trust Folder & Continue"],
         };
         match dialog::show(ctx, egui::Id::new("terminal-trust-dialog"), &d) {
             Some(DialogResult::Button(2)) => {
-                self.terminal_trust_prompt = false;
+                self.trust_request = None;
                 if let Some(folder) = self.workspace_root.clone() {
                     self.trust.trust(&folder);
                     self.refresh_git();
                 }
-                self.create_terminal(ctx);
+                match request {
+                    TrustRequest::Terminal => self.create_terminal(ctx),
+                    TrustRequest::Debug => self.open_debugger_pick(),
+                }
             }
             Some(DialogResult::Button(0)) => {
-                self.terminal_trust_prompt = false;
+                self.trust_request = None;
                 self.open_trust_editor();
             }
             Some(DialogResult::Link(url)) => {
                 let _ = std::process::Command::new("open").arg(&url).spawn();
             }
+            Some(_) if request == TrustRequest::Debug => self.trust_request = None,
             Some(_) => {
                 // Cancel: the terminal can't start, the panel goes away.
-                self.terminal_trust_prompt = false;
+                self.trust_request = None;
                 if self.panel.terminals.is_empty() && self.panel.view == crate::workbench::panel::PanelView::Terminal {
                     self.panel.visible = false;
                 }
@@ -5056,6 +5156,7 @@ impl App {
         if out.dont_trust {
             if let Some(folder) = self.workspace_root.clone() {
                 self.trust.untrust(&folder);
+                self.refresh_git();
             }
         }
         if let Some(entry) = out.remove {
