@@ -64,6 +64,10 @@ pub struct PanelState {
     pub debug_filter: String,
     /// The terminal has the keyboard.
     pub terminal_focused: bool,
+    select_word: bool,
+    /// The terminal's selection: anchor and head cells (row, col) on the
+    /// screen as shown; cleared by typing, output scrolling it away or a click.
+    pub selection: Option<((u16, u16), (u16, u16))>,
     dragging: bool,
 }
 
@@ -298,6 +302,10 @@ fn colour(c: vt100::Color, default: Color32) -> Color32 {
     }
 }
 
+/// `terminal.integrated.wordSeparators`' default: what ends a double-clicked
+/// word.
+const TERMINAL_WORD_SEPARATORS: &str = " ()[]{}',\"`─‘’“”|";
+
 /// Terminal cells: Menlo 12px, 14px rows, 20px left padding.
 pub const CELL_H: f32 = 14.0;
 const PAD_LEFT: f32 = 20.0;
@@ -310,9 +318,32 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
     let rows = ((area.height() / CELL_H).floor() as u16).max(1);
     let cols = ((area.width() / cell_w).floor() as u16).max(2);
     let tid = id.with("terminal");
-    let resp = ui.interact(content, tid, Sense::click());
-    if resp.clicked() {
+    let resp = ui.interact(content, tid, Sense::click_and_drag());
+    if resp.clicked() || resp.drag_started() {
         resp.request_focus();
+    }
+    // Mouse → selection (xterm.js SelectionService: drag selects cells,
+    // double click a word, a click clears).
+    let cell_at = |p: Pos2| -> (u16, u16) {
+        let c = ((p.x - area.left()) / cell_w).floor().clamp(0.0, (cols - 1) as f32) as u16;
+        let r = ((p.y - area.top()) / CELL_H).floor().clamp(0.0, (rows - 1) as f32) as u16;
+        (r, c)
+    };
+    if let Some(p) = resp.interact_pointer_pos() {
+        if resp.drag_started() {
+            // Anchor where the button went down, not where the drag began.
+            let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
+            state.selection = Some((cell_at(origin), cell_at(p)));
+        } else if resp.dragged() {
+            if let Some((_, head)) = state.selection.as_mut() {
+                *head = cell_at(p);
+            }
+        } else if resp.double_clicked() {
+            state.selection = Some((cell_at(p), cell_at(p)));
+            state.select_word = true;
+        } else if resp.clicked() {
+            state.selection = None;
+        }
     }
     let focused = resp.has_focus();
     state.terminal_focused = focused;
@@ -330,7 +361,15 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
         let events = ui.input(|i| i.events.clone());
         for ev in events {
             match ev {
-                egui::Event::Text(t) => term.write(t.as_bytes()),
+                egui::Event::Copy => {
+                    if let Some(text) = selected_text(term, state.selection) {
+                        ui.ctx().copy_text(text);
+                    }
+                }
+                egui::Event::Text(t) => {
+                    state.selection = None;
+                    term.write(t.as_bytes())
+                }
                 egui::Event::Paste(t) => term.paste(&t),
                 egui::Event::Key { key, pressed: true, modifiers, .. } if !modifiers.mac_cmd && !modifiers.command => {
                     if let Some(bytes) = crate::terminal::key_bytes(key, modifiers, app_cursor) {
@@ -353,6 +392,26 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
             term.scroll_offset = (term.scroll_offset as isize + lines).max(0) as usize;
         }
     }
+
+    // A double click widens the selection to the word under it.
+    if std::mem::take(&mut state.select_word) {
+        if let Some(((r, c), _)) = state.selection {
+            let line: Vec<char> = term.with_screen(|s| (0..cols).map(|i| s.cell(r, i).map(|x| x.contents().chars().next().unwrap_or(' ')).unwrap_or(' ')).collect());
+            let word = |ch: char| !ch.is_whitespace() && !TERMINAL_WORD_SEPARATORS.contains(ch);
+            if word(line[c as usize]) {
+                let mut a = c as usize;
+                while a > 0 && word(line[a - 1]) {
+                    a -= 1;
+                }
+                let mut b = c as usize;
+                while b + 1 < line.len() && word(line[b + 1]) {
+                    b += 1;
+                }
+                state.selection = Some(((r, a as u16), (r, b as u16)));
+            }
+        }
+    }
+    let selection = state.selection.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
 
     let fg_default = Palette::TERMINAL_FG();
     let bg_default = Palette::TERMINAL_BG();
@@ -395,6 +454,18 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
                     },
                 );
             }
+            // Selection behind the text (`terminal.selectionBackground`).
+            if let Some(((r0, c0), (r1, c1))) = selection {
+                if r >= r0 && r <= r1 {
+                    let from = if r == r0 { c0 } else { 0 };
+                    let to = if r == r1 { c1 } else { cols - 1 };
+                    let sel = Rect::from_min_max(
+                        Pos2::new(area.left() + from as f32 * cell_w, y),
+                        Pos2::new(area.left() + (to + 1) as f32 * cell_w, y + CELL_H),
+                    );
+                    painter.rect_filled(sel, 0.0, Palette::TERMINAL_SELECTION_BG());
+                }
+            }
             let g = ui.fonts_mut(|f| f.layout_job(job));
             painter.galley(Pos2::new(area.left(), y), g, fg_default);
         }
@@ -413,4 +484,14 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
     });
     let label = "Terminal 1".to_string();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label.clone()));
+}
+
+/// The selected cells' text, lines joined with `\n` and trailing blanks
+/// dropped (xterm.js `getSelection`).
+fn selected_text(term: &mut Terminal, selection: Option<((u16, u16), (u16, u16))>) -> Option<String> {
+    let (a, b) = selection?;
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    let text = term.with_screen(|s| s.contents_between(a.0, a.1, b.0, b.1 + 1));
+    let text = text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
+    (!text.is_empty()).then_some(text)
 }
