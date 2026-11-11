@@ -435,6 +435,9 @@ palette! {
     TERMINAL_ANSI_BRIGHT_CYAN = Id("terminal.ansiBrightCyan");
     TERMINAL_ANSI_BRIGHT_WHITE = Id("terminal.ansiBrightWhite");
     LIST_ACTIVE_SELECTION_FG = OneOf(&["list.activeSelectionForeground", "foreground"]);
+    KEYBINDING_TABLE_HEADER_BG = Id("keybindingTable.headerBackground");
+    KEYBINDING_TABLE_ROWS_BG = Id("keybindingTable.rowsBackground");
+    TABLE_COLUMNS_BORDER = Id("tree.tableColumnsBorder");
 }
 
 impl Palette {

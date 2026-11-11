@@ -28,6 +28,7 @@ pub struct MenuIds {
     pub welcome: MenuId,
     pub color_theme: MenuId,
     pub open_settings: MenuId,
+    pub open_keybindings: MenuId,
     pub toggle_panel: MenuId,
     pub show_problems: MenuId,
     pub show_output: MenuId,
@@ -50,6 +51,8 @@ pub fn install() -> InstalledMenu {
     let color_theme = MenuItem::new("Color Theme", true, None);
     // Code ▸ Settings ▸ Settings (⌘,).
     let open_settings = MenuItem::new("Settings", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
+    // Code ▸ Settings ▸ Keyboard Shortcuts (⌘K ⌘S, a chord).
+    let open_keybindings = MenuItem::new("Keyboard Shortcuts", true, None);
 
     // macOS application submenu — Apple, About, Services, Hide/Show, Quit
     #[cfg(target_os = "macos")]
@@ -58,7 +61,7 @@ pub fn install() -> InstalledMenu {
         let themes_m = Submenu::new("Themes", true);
         let _ = themes_m.append(&color_theme);
         let settings_m = Submenu::new("Settings", true);
-        let _ = settings_m.append_items(&[&open_settings, &PredefinedMenuItem::separator(), &themes_m]);
+        let _ = settings_m.append_items(&[&open_settings, &open_keybindings, &PredefinedMenuItem::separator(), &themes_m]);
         let _ = menu.append(&app_m);
         let _ = app_m.append_items(&[
             &PredefinedMenuItem::about(Some("About vscode-rust"), None),
@@ -234,6 +237,7 @@ pub fn install() -> InstalledMenu {
         welcome: welcome.id().clone(),
         color_theme: color_theme.id().clone(),
         open_settings: open_settings.id().clone(),
+        open_keybindings: open_keybindings.id().clone(),
         toggle_panel: toggle_panel.id().clone(),
         show_problems: show_problems.id().clone(),
         show_output: show_output.id().clone(),

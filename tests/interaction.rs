@@ -585,3 +585,45 @@ fn run_and_debug_view_asks_for_trust_before_debugging() {
     harness.run();
     assert!(harness.query_by_label("Trust Folder & Continue").is_none());
 }
+
+/// The app with the Keyboard Shortcuts editor open; reports keybindings.json.
+fn launch_keybindings(query: Option<&'static str>) -> (Harness<'static>, std::rc::Rc<std::cell::RefCell<String>>) {
+    let mut app: Option<App> = None;
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    let seen_in = seen.clone();
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            let mut a = App::for_testing(ctx);
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_keybindings(query);
+            app = Some(a);
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        a.render(ctx);
+        *seen_in.borrow_mut() = a.user_keybindings_json();
+    };
+    let harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    (harness, seen)
+}
+
+#[test]
+fn keybindings_editor_searches_and_redefines_a_keybinding() {
+    let (mut harness, seen) = launch_keybindings(Some("file save"));
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Type to search in keybindings");
+    harness.get_by_label("File: Save").click();
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::ALT | egui::Modifiers::COMMAND, egui::Key::S);
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    let json = seen.borrow().clone();
+    assert!(json.contains("\"key\": \"alt+cmd+s\",\n        \"command\": \"workbench.action.files.save\""), "{json}");
+    assert!(json.contains("\"command\": \"-workbench.action.files.save\""), "{json}");
+}

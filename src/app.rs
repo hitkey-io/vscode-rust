@@ -52,6 +52,9 @@ pub struct App {
     workspace_settings: Option<crate::settings::Settings>,
     /// A Settings editor menu asked for during the frame.
     pending_settings_menu: Option<SettingsMenu>,
+    keybindings_editor: Option<(crate::workbench::keybindings_editor::KeybindingsEditorState, crate::workbench::modal::ModalState)>,
+    /// keybindings.json, parsed.
+    user_keybindings: Vec<crate::workbench::keybindings_editor::model::UserBinding>,
     settings_menu_actions: Vec<(muda::MenuId, SettingsMenuAction)>,
     /// `theme::generation()` the egui visuals were last built for.
     visuals_generation: u32,
@@ -150,6 +153,8 @@ enum SettingsMenu {
     Gear { key: String, pos: egui::Pos2, configured: bool, target: crate::workbench::settings_editor::Target },
     /// Filter Settings.
     Filter { pos: egui::Pos2 },
+    /// A row of the Keyboard Shortcuts editor.
+    Keybinding(crate::workbench::keybindings_editor::RowMenu),
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +163,7 @@ enum SettingsMenuAction {
     CopyId(String),
     CopyJson(String),
     Filter(&'static str),
+    Keybinding(usize, crate::workbench::keybindings_editor::MenuItem),
 }
 
 /// An entry of a native menu built for the Source Control view.
@@ -428,6 +434,8 @@ impl App {
             trust_editor: None,
             workspace_settings: None,
             pending_settings_menu: None,
+            keybindings_editor: None,
+            user_keybindings: Vec::new(),
             settings_menu_actions: Vec::new(),
             git_prompt: None,
             smart_commit: false,
@@ -484,6 +492,8 @@ impl App {
             Some(CommandId::SelectColorTheme)
         } else if id == &ids.open_settings {
             Some(CommandId::OpenSettings)
+        } else if id == &ids.open_keybindings {
+            Some(CommandId::OpenKeybindings)
         } else if id == &ids.toggle_panel {
             self.toggle_panel(ctx);
             None
@@ -1839,6 +1849,16 @@ impl App {
     /// `workbench.action.openSettings` with a query).
     pub fn bootstrap_settings(&mut self, query: Option<&str>) {
         self.open_settings_editor(query);
+    }
+
+    /// Opens the Keyboard Shortcuts editor (⌘K ⌘S), optionally searching.
+    pub fn bootstrap_keybindings(&mut self, query: Option<&str>) {
+        self.open_keybindings_editor(query);
+    }
+
+    /// keybindings.json as the editor last wrote it.
+    pub fn user_keybindings_json(&self) -> String {
+        crate::workbench::keybindings_editor::to_json(&self.user_keybindings)
     }
 
     /// Shows the Panel on `view` ("problems", "output", "debug", "terminal",
@@ -3345,6 +3365,9 @@ impl App {
 
     /// `settings.json` was saved from an editor: read it again.
     fn settings_file_saved(&mut self, path: &std::path::Path) {
+        if self.keybindings_file().as_deref() == Some(path) {
+            self.load_user_keybindings();
+        }
         if self.settings.path() == Some(path) {
             self.settings.reload();
             self.apply_theme_settings();
@@ -3890,6 +3913,8 @@ impl App {
             CommandId::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             CommandId::SelectColorTheme => self.open_color_theme_picker(),
             CommandId::OpenSettings => self.open_settings_editor(None),
+            CommandId::OpenKeybindings => self.open_keybindings_editor(None),
+            CommandId::OpenKeybindingsJson => self.open_keybindings_json(),
             CommandId::ManageWorkspaceTrust => self.open_trust_editor(),
             CommandId::OpenUserSettingsJson => self.open_settings_json(crate::workbench::settings_editor::Target::User, None),
             CommandId::OpenWorkspaceSettings => {
@@ -4151,6 +4176,10 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // Keys being recorded in the Keyboard Shortcuts editor aren't commands.
+        if self.keybindings_editor.as_ref().is_some_and(|(st, _)| st.captures_keys()) {
+            return;
+        }
         self.language_shortcuts(ctx);
         // Cmd+Shift+P always toggles palette, even when it's open
         let toggle_palette = ctx.input_mut(|i| {
@@ -4200,6 +4229,11 @@ impl App {
                 if key == Key::T && modifiers.command {
                     ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T));
                     self.open_color_theme_picker();
+                    return;
+                }
+                if key == Key::S && modifiers.command {
+                    ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S));
+                    self.open_keybindings_editor(None);
                     return;
                 }
             } else if at.elapsed() > std::time::Duration::from_secs(10) {
@@ -4804,6 +4838,7 @@ impl App {
         }
 
         self.settings_modal(ctx);
+        self.keybindings_modal(ctx);
         self.trust_modal(ctx);
         self.terminal_trust_dialog(ctx);
 
@@ -4823,6 +4858,7 @@ impl App {
         self.webview_host.suppressed = self.palette.visible
             || self.tab_menu.is_some()
             || self.settings_editor.is_some()
+            || self.keybindings_editor.is_some()
             || self.trust_editor.is_some();
         self.language_widgets(ctx);
 
@@ -5380,6 +5416,31 @@ impl App {
                 let _ = root.append_items(&[&reset, &muda::PredefinedMenuItem::separator(), &copy_id, &copy_json]);
                 pos
             }
+            SettingsMenu::Keybinding(m) => {
+                use crate::workbench::keybindings_editor::MenuItem as K;
+                let mut add = |label: &str, enabled: bool, what: K, actions: &mut Vec<(muda::MenuId, SettingsMenuAction)>| -> muda::MenuItem {
+                    let item = muda::MenuItem::new(label, enabled, None);
+                    actions.push((item.id().clone(), SettingsMenuAction::Keybinding(m.item, what)));
+                    item
+                };
+                let copy = add("Copy", true, K::Copy, &mut actions);
+                let copy_id = add("Copy Command ID", true, K::CopyCommandId, &mut actions);
+                let copy_title = add("Copy Command Title", true, K::CopyCommandTitle, &mut actions);
+                let define = add(if m.has_key { "Change Keybinding..." } else { "Add Keybinding..." }, true, K::Define, &mut actions);
+                let sep = muda::PredefinedMenuItem::separator();
+                let _ = root.append_items(&[&copy, &copy_id, &copy_title, &sep, &define]);
+                if m.has_key {
+                    let add_kb = add("Add Keybinding...", true, K::Add, &mut actions);
+                    let when = add("Change When Expression", true, K::DefineWhen, &mut actions);
+                    let _ = root.append_items(&[&add_kb, &when]);
+                    let remove = add("Remove Keybinding", true, K::Remove, &mut actions);
+                    let reset = add("Reset Keybinding", m.user, K::Reset, &mut actions);
+                    let _ = root.append_items(&[&muda::PredefinedMenuItem::separator(), &remove, &reset]);
+                    let same = add("Show Same Keybindings", true, K::ShowSame, &mut actions);
+                    let _ = root.append_items(&[&muda::PredefinedMenuItem::separator(), &same]);
+                }
+                m.pos
+            }
             SettingsMenu::Filter { pos } => {
                 for f in crate::workbench::settings_editor::FILTERS {
                     let item = muda::MenuItem::new(*f, true, None);
@@ -5428,6 +5489,151 @@ impl App {
                     st.add_filter(f);
                 }
             }
+            SettingsMenuAction::Keybinding(item, what) => self.keybinding_menu_action(ctx, item, what),
+        }
+    }
+
+    // ── Keyboard Shortcuts editor ──────────────────────────────────────
+
+    fn keybindings_file(&self) -> Option<PathBuf> {
+        self.settings.path().and_then(|p| p.parent()).map(|d| d.join("keybindings.json"))
+    }
+
+    fn load_user_keybindings(&mut self) {
+        self.user_keybindings = self
+            .keybindings_file()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| crate::workbench::keybindings_editor::model::parse_user(&t))
+            .unwrap_or_default();
+    }
+
+    fn open_keybindings_editor(&mut self, query: Option<&str>) {
+        use crate::workbench::{keybindings_editor::KeybindingsEditorState, modal::ModalState};
+        self.load_user_keybindings();
+        match self.keybindings_editor.as_mut() {
+            Some((st, _)) => {
+                st.focus_search = true;
+                if let Some(q) = query {
+                    st.query = q.to_string();
+                }
+            }
+            None => {
+                let st = query.map(KeybindingsEditorState::with_query).unwrap_or_default();
+                self.keybindings_editor = Some((st, ModalState::default()));
+            }
+        }
+        self.settings_editor = None;
+        self.palette.visible = false;
+    }
+
+    /// Opens keybindings.json, created with VS Code's header when missing.
+    fn open_keybindings_json(&mut self) {
+        let Some(path) = self.keybindings_file() else {
+            self.set_status("Keyboard shortcuts are not saved in this window");
+            return;
+        };
+        if !path.exists() {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&path, crate::workbench::keybindings_editor::EMPTY_JSON);
+        }
+        self.keybindings_editor = None;
+        if let Some(i) = self.documents.iter().position(|d| d.path == path && !d.dirty) {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                self.documents[i].text = text;
+            }
+        }
+        self.open_file(path);
+    }
+
+    fn edit_keybindings(&mut self, edit: crate::workbench::keybindings_editor::Edit) {
+        use crate::workbench::keybindings_editor as kb;
+        kb::apply_edit(&mut self.user_keybindings, &edit);
+        let Some(path) = self.keybindings_file() else {
+            // In-memory settings (tests): the edit stays in this window.
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, kb::to_json(&self.user_keybindings)) {
+            self.set_status(&format!("Error '{e}' while editing the keybinding. Please open 'keybindings.json' file and check for errors."));
+        }
+        if let Some(i) = self.documents.iter().position(|d| d.path == path && !d.dirty) {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                self.documents[i].text = text;
+            }
+        }
+    }
+
+    fn keybinding_menu_action(&mut self, ctx: &Context, index: usize, what: crate::workbench::keybindings_editor::MenuItem) {
+        use crate::workbench::keybindings_editor::{copy_text, Edit, MenuItem as K, model::Source};
+        let Some((st, _)) = self.keybindings_editor.as_mut() else { return };
+        let Some(item) = st.item(index).cloned() else { return };
+        let mut edit = None;
+        match what {
+            K::Copy => ctx.copy_text(copy_text(&item)),
+            K::CopyCommandId => ctx.copy_text(item.command.clone()),
+            K::CopyCommandTitle => ctx.copy_text(item.label.clone()),
+            K::Define => st.define(index, false),
+            K::Add => st.define(index, true),
+            K::DefineWhen => st.define_when(index),
+            K::Remove => {
+                if let Some(k) = &item.key {
+                    edit = Some(Edit::Remove { command: item.command.clone(), key: k.raw.clone(), when: item.when.clone(), user: item.source == Source::User });
+                }
+            }
+            K::Reset => edit = Some(Edit::Reset { command: item.command.clone() }),
+            K::ShowSame => st.show_same(index),
+        }
+        if let Some(e) = edit {
+            self.edit_keybindings(e);
+        }
+    }
+
+    fn keybindings_modal(&mut self, ctx: &Context) {
+        use crate::workbench::{keybindings_editor, modal};
+        let Some((mut st, mut modal_state)) = self.keybindings_editor.take() else { return };
+        let header = modal::ModalHeader {
+            icon: crate::icons::codicon_by_name("keyboard").unwrap_or('*'),
+            title: "Keyboard Shortcuts",
+            actions: &[("go-to-file", "Open Keyboard Shortcuts (JSON)")],
+        };
+        let mut out = keybindings_editor::KeybindingsEditorOutput::default();
+        let user = self.user_keybindings.clone();
+        let action = modal::show(ctx, egui::Id::new("keybindings-modal"), &modal_state, &header, self.title_bar_offset(), |ui| {
+            let rect = ui.max_rect();
+            out = keybindings_editor::show(ui, rect, &mut st, &user);
+        });
+        let mut keep = true;
+        match action {
+            Some(modal::ModalAction::Close) => keep = false,
+            Some(modal::ModalAction::ToggleMaximized) => modal_state.maximized = !modal_state.maximized,
+            Some(modal::ModalAction::OpenInMainWindow) => modal_state.maximized = true,
+            Some(modal::ModalAction::Editor(_)) => {
+                self.open_keybindings_json();
+                return;
+            }
+            None => {}
+        }
+        if out.escape {
+            keep = false;
+        }
+        if let Some(text) = out.copy.take() {
+            ctx.copy_text(text);
+        }
+        if let Some(m) = out.menu.take() {
+            self.pending_settings_menu = Some(SettingsMenu::Keybinding(m));
+        }
+        if let Some(name) = out.open_extension.take() {
+            self.set_status(&format!("{name} is built into Visual Studio Code"));
+        }
+        if keep {
+            self.keybindings_editor = Some((st, modal_state));
+        }
+        if let Some(e) = out.edit.take() {
+            self.edit_keybindings(e);
         }
     }
 }

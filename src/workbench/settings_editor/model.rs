@@ -396,19 +396,22 @@ fn compare_nullable(a: Option<f64>, b: Option<f64>) -> Ordering {
 /// collation, simplified): punctuation before digits before letters,
 /// letters case-insensitive first.
 pub fn locale_compare(a: &str, b: &str) -> Ordering {
-    let key = |s: &str| -> Vec<(u8, char)> {
+    // ICU root (DUCET) order of ASCII punctuation and symbols.
+    const PUNCT: &str = "_-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$";
+    let key = |s: &str| -> Vec<(u8, u32)> {
         s.chars()
             .map(|c| {
-                let class = if c.is_whitespace() {
-                    0
+                if c.is_whitespace() {
+                    (0, 0)
+                } else if let Some(i) = PUNCT.find(c) {
+                    (1, i as u32)
                 } else if c.is_ascii_punctuation() {
-                    1
+                    (1, 100 + c as u32)
                 } else if c.is_numeric() {
-                    2
+                    (2, c as u32)
                 } else {
-                    3
-                };
-                (class, c.to_lowercase().next().unwrap_or(c))
+                    (3, c.to_lowercase().next().unwrap_or(c) as u32)
+                }
             })
             .collect()
     };
