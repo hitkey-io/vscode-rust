@@ -45,6 +45,7 @@ fn main() -> eframe::Result<()> {
     // On macOS this calls `init_for_nsapp` which registers the menu globally.
     let installed_menu = menubar::install();
     let menu_ids = installed_menu.ids.clone();
+    let menu_keys = installed_menu.keys.clone();
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1360.0, 860.0])
@@ -73,6 +74,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             let mut a = app::App::new(cc);
             a.attach_menu_ids(menu_ids);
+            a.attach_menu_keys(menu_keys);
             if let Some(dir) = cli_user_data_dir.clone().or_else(vscode_rust::settings::default_user_data_dir) {
                 a.bootstrap_user_data(dir);
             }

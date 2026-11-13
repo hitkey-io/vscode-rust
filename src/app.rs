@@ -63,6 +63,12 @@ pub struct App {
     search: SearchState,
     show_welcome: bool,
     menu_ids: Option<MenuIds>,
+    /// The menu items' key equivalents, kept in line with keybindings.json.
+    menu_keys: Option<crate::menubar::MenuKeys>,
+    /// The keybindings in effect (defaults + keybindings.json).
+    keymap: crate::workbench::keybindings_editor::model::Keymap,
+    /// The first chord of a keybindings.json chord, waiting for the second.
+    pending_chord: Option<String>,
     /// Open tab context menu: (document index, screen position where it
     /// was summoned). `None` when no menu is showing.
     tab_menu: Option<(usize, egui::Pos2)>,
@@ -395,6 +401,9 @@ impl App {
             search: SearchState::default(),
             show_welcome: true,
             menu_ids: None,
+            menu_keys: None,
+            keymap: crate::workbench::keybindings_editor::model::Keymap::new(&[]),
+            pending_chord: None,
             tab_menu: None,
             git_model: crate::git::Model::default(),
             git_history: Vec::new(),
@@ -450,76 +459,208 @@ impl App {
         self.status_message_at = Some(std::time::Instant::now());
     }
 
+    /// The native menu's items, whose key equivalents follow keybindings.json.
+    pub fn attach_menu_keys(&mut self, keys: crate::menubar::MenuKeys) {
+        self.menu_keys = Some(keys);
+        self.apply_menu_keys();
+    }
+
+    fn apply_menu_keys(&self) {
+        if let Some(keys) = &self.menu_keys {
+            keys.apply(|command| self.keymap.menu_key(command));
+        }
+    }
+
     pub fn attach_menu_ids(&mut self, ids: MenuIds) {
         self.menu_ids = Some(ids);
     }
 
     fn dispatch_menu_event(&mut self, ctx: &Context, id: &muda::MenuId) {
-        let Some(ids) = self.menu_ids.clone() else { return };
-        let cmd = if id == &ids.new_file {
-            self.new_untitled_file();
-            None
-        } else if id == &ids.open_folder {
-            Some(CommandId::OpenFolder)
-        } else if id == &ids.open_file {
-            Some(CommandId::OpenFile)
-        } else if id == &ids.close_folder {
-            Some(CommandId::CloseFolder)
-        } else if id == &ids.save {
-            Some(CommandId::Save)
-        } else if id == &ids.save_all {
-            Some(CommandId::SaveAll)
-        } else if id == &ids.close_editor {
-            Some(CommandId::CloseFile)
-        } else if id == &ids.close_all {
-            Some(CommandId::CloseAllFiles)
-        } else if id == &ids.palette {
-            self.palette.open();
-            None
-        } else if id == &ids.go_to_file {
-            self.quick_open_shortcut();
-            None
-        } else if id == &ids.toggle_sidebar {
-            Some(CommandId::ToggleSidebar)
-        } else if id == &ids.show_explorer {
-            Some(CommandId::ShowExplorer)
-        } else if id == &ids.show_search {
-            Some(CommandId::ShowSearch)
-        } else if id == &ids.welcome {
-            self.show_welcome = true;
-            None
-        } else if id == &ids.color_theme {
-            Some(CommandId::SelectColorTheme)
-        } else if id == &ids.open_settings {
-            Some(CommandId::OpenSettings)
-        } else if id == &ids.open_keybindings {
-            Some(CommandId::OpenKeybindings)
-        } else if id == &ids.toggle_panel {
-            self.toggle_panel(ctx);
-            None
-        } else if id == &ids.show_problems {
-            self.show_panel_view(ctx, crate::workbench::panel::PanelView::Problems);
-            None
-        } else if id == &ids.show_output {
-            self.show_panel_view(ctx, crate::workbench::panel::PanelView::Output);
-            None
-        } else if id == &ids.show_debug_console {
-            self.show_panel_view(ctx, crate::workbench::panel::PanelView::DebugConsole);
-            None
-        } else if id == &ids.show_terminal {
-            self.show_panel_view(ctx, crate::workbench::panel::PanelView::Terminal);
-            None
-        } else if id == &ids.new_terminal {
-            self.panel.visible = true;
-            self.panel.view = crate::workbench::panel::PanelView::Terminal;
-            self.create_terminal(ctx);
-            None
-        } else {
-            None
-        };
-        if let Some(c) = cmd {
-            self.execute_command(ctx, c);
+        if let Some(command) = self.menu_keys.as_ref().and_then(|k| k.command(id)) {
+            self.run_vscode_command(ctx, command);
         }
+    }
+
+    /// Runs a VS Code command this app implements (by its VS Code id);
+    /// false when it has none. Menus, the keymap and extensions'
+    /// `executeCommand` of workbench commands come here.
+    fn run_vscode_command(&mut self, ctx: &Context, id: &str) -> bool {
+        use crate::workbench::panel::PanelView;
+        let cmd = match id {
+            "workbench.action.files.newUntitledFile" => {
+                self.new_untitled_file();
+                return true;
+            }
+            "workbench.action.files.openFolder" => CommandId::OpenFolder,
+            "workbench.action.files.openFile" => CommandId::OpenFile,
+            "workbench.action.closeFolder" => CommandId::CloseFolder,
+            "workbench.action.files.save" => CommandId::Save,
+            "workbench.action.files.saveAll" => CommandId::SaveAll,
+            "workbench.action.closeActiveEditor" => CommandId::CloseFile,
+            "workbench.action.closeAllEditors" => CommandId::CloseAllFiles,
+            "workbench.action.toggleSidebarVisibility" => CommandId::ToggleSidebar,
+            "workbench.view.explorer" => CommandId::ShowExplorer,
+            "workbench.view.search" => CommandId::ShowSearch,
+            "workbench.action.quickOpen" => {
+                self.quick_open_shortcut();
+                return true;
+            }
+            "workbench.action.quit" => CommandId::Quit,
+            "workbench.action.showCommands" => {
+                self.palette.open();
+                return true;
+            }
+            "workbench.action.openWalkthrough" => {
+                self.show_welcome = true;
+                return true;
+            }
+            "workbench.action.selectTheme" => CommandId::SelectColorTheme,
+            "workbench.action.openSettings" | "workbench.action.openSettings2" => CommandId::OpenSettings,
+            "workbench.action.openSettingsJson" => CommandId::OpenUserSettingsJson,
+            "workbench.action.openWorkspaceSettings" => CommandId::OpenWorkspaceSettings,
+            "workbench.action.openGlobalKeybindings" => CommandId::OpenKeybindings,
+            "workbench.action.openGlobalKeybindingsFile" => CommandId::OpenKeybindingsJson,
+            "workbench.trust.manage" => CommandId::ManageWorkspaceTrust,
+            "workbench.view.extensions" => {
+                self.show_view(ActivityView::Extensions);
+                return true;
+            }
+            "workbench.view.scm" => {
+                self.show_view(ActivityView::SourceControl);
+                return true;
+            }
+            "workbench.view.debug" => {
+                self.show_view(ActivityView::RunAndDebug);
+                return true;
+            }
+            "workbench.action.togglePanel" => {
+                self.toggle_panel(ctx);
+                return true;
+            }
+            "workbench.actions.view.problems" => {
+                self.show_panel_view(ctx, PanelView::Problems);
+                return true;
+            }
+            "workbench.action.output.toggleOutput" => {
+                self.show_panel_view(ctx, PanelView::Output);
+                return true;
+            }
+            "workbench.debug.action.toggleRepl" => {
+                self.show_panel_view(ctx, PanelView::DebugConsole);
+                return true;
+            }
+            "workbench.action.terminal.toggleTerminal" => {
+                self.show_panel_view(ctx, PanelView::Terminal);
+                return true;
+            }
+            "workbench.action.terminal.new" => {
+                self.panel.visible = true;
+                self.panel.view = PanelView::Terminal;
+                self.create_terminal(ctx);
+                return true;
+            }
+            _ => {
+                if self.extensions.contributes_command(id) {
+                    self.extensions.execute(id, serde_json::json!([]));
+                    return true;
+                }
+                return false;
+            }
+        };
+        self.execute_command(ctx, cmd);
+        true
+    }
+
+    /// Context keys for keybindings' `when` clauses, as far as this app
+    /// knows them (unknown keys are false, as in VS Code).
+    fn when_context(&self, ctx: &Context) -> std::collections::BTreeMap<String, serde_json::Value> {
+        use crate::workbench::panel::PanelView;
+        use serde_json::Value;
+        let mut k = std::collections::BTreeMap::new();
+        let mut set = |key: &str, v: Value| {
+            k.insert(key.to_string(), v);
+        };
+        let input_focus = ctx.memory(|m| m.focused().is_some());
+        let doc = self.active_doc.and_then(|i| self.documents.get(i));
+        let editor_focus = doc.is_some() && input_focus && !self.panel.terminal_focused && !self.palette.visible;
+        set("isMac", Value::Bool(true));
+        set("inputFocus", Value::Bool(input_focus));
+        set("editorFocus", Value::Bool(editor_focus));
+        set("editorTextFocus", Value::Bool(editor_focus));
+        set("textInputFocus", Value::Bool(input_focus));
+        set("editorIsOpen", Value::Bool(doc.is_some()));
+        if let Some(d) = doc {
+            set("editorReadonly", Value::Bool(d.read_only));
+            set("editorLangId", Value::String(d.language_id().to_string()));
+        }
+        set("terminalFocus", Value::Bool(self.panel.terminal_focused));
+        set("terminalIsOpen", Value::Bool(!self.panel.terminals.is_empty()));
+        set("terminal.active", Value::Bool(!self.panel.terminals.is_empty()));
+        set("terminalProcessSupported", Value::Bool(true));
+        set("panelVisible", Value::Bool(self.panel.visible));
+        set("sideBarVisible", Value::Bool(self.sidebar_visible));
+        set("emptyWorkspaceSupport", Value::Bool(true));
+        set("workbenchState", Value::String(if self.workspace_root.is_some() { "folder" } else { "empty" }.into()));
+        for view in ["explorer", "search", "scm", "debug", "extensions"] {
+            set(&format!("viewContainer.workbench.view.{view}.enabled"), Value::Bool(true));
+        }
+        let panel_view = |v: PanelView| Value::Bool(self.panel.visible && self.panel.view == v);
+        set("workbench.panel.markers.view.active", panel_view(PanelView::Problems));
+        set("workbench.panel.output.active", panel_view(PanelView::Output));
+        set("workbench.panel.repl.view.active", panel_view(PanelView::DebugConsole));
+        k
+    }
+
+    /// Keys keybindings.json changed: run what they're bound to now, wait
+    /// for a chord's second key, or swallow a removed default. Returns
+    /// true when the key was used. Keys it didn't touch keep the built-in
+    /// handling below.
+    fn dispatch_user_keybindings(&mut self, ctx: &Context) -> bool {
+        use crate::workbench::keybindings_editor::model::{pressed_chord, Resolution};
+        if self.keymap.is_default() {
+            return false;
+        }
+        let pressed = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, modifiers)) = pressed else { return false };
+        let Some(chord) = pressed_chord(key, modifiers) else { return false };
+        let seq = match self.pending_chord.take() {
+            Some(first) => vec![first, chord.clone()],
+            None if self.keymap.affected().contains(&chord) => vec![chord.clone()],
+            None => return false,
+        };
+        let keys = self.when_context(ctx);
+        let resolution = self.keymap.resolve(&seq, &|w| crate::extensions::when::eval(w, &keys));
+        let label = |c: &str| crate::workbench::keybindings_editor::model::Keybinding::parse(c).map(|k| k.label()).unwrap_or_default();
+        match resolution {
+            Resolution::Command(id) => {
+                if !self.run_vscode_command(ctx, &id) {
+                    if seq.len() == 1 {
+                        return false;
+                    }
+                    self.set_status(format!("Command '{id}' is not available"));
+                } else {
+                    self.status_message.clear();
+                }
+            }
+            Resolution::Prefix => {
+                self.set_status(format!("({}) was pressed. Waiting for second key of chord...", label(&chord)));
+                self.pending_chord = Some(chord);
+            }
+            Resolution::None => {
+                if seq.len() == 2 {
+                    self.set_status(format!("The key combination ({}, {}) is not a command.", label(&seq[0]), label(&seq[1])));
+                } else if !self.keymap.removed().contains(&chord) {
+                    return false;
+                }
+            }
+        }
+        ctx.input_mut(|i| i.consume_key(modifiers, key));
+        true
     }
 
     pub fn bootstrap_workspace(&mut self, path: PathBuf) {
@@ -1807,30 +1948,11 @@ impl App {
     /// Run a built-in command by its VS Code id (for extensions calling
     /// `commands.executeCommand`).
     fn run_editor_command(&mut self, ctx: &Context, id: &str) {
-        let cmd = match id {
-            "workbench.action.files.openFolder" => CommandId::OpenFolder,
-            "workbench.action.files.openFile" => CommandId::OpenFile,
-            "workbench.action.closeFolder" => CommandId::CloseFolder,
-            "workbench.action.files.save" => CommandId::Save,
-            "workbench.action.files.saveAll" => CommandId::SaveAll,
-            "workbench.action.closeActiveEditor" => CommandId::CloseFile,
-            "workbench.action.closeAllEditors" => CommandId::CloseAllFiles,
-            "workbench.action.toggleSidebarVisibility" => CommandId::ToggleSidebar,
-            "workbench.view.explorer" => CommandId::ShowExplorer,
-            "workbench.view.search" => CommandId::ShowSearch,
-            "workbench.action.quickOpen" => CommandId::QuickOpen,
-            "workbench.action.quit" => CommandId::Quit,
-            "workbench.action.showCommands" => {
-                self.palette.open();
-                return;
-            }
-            "workbench.view.extensions" => {
-                self.show_view(ActivityView::Extensions);
-                return;
-            }
-            _ => return,
-        };
-        self.execute_command(ctx, cmd);
+        // The extension host asks for workbench commands only; handing one
+        // of its own back would bounce between the two.
+        if !self.extensions.contributes_command(id) {
+            self.run_vscode_command(ctx, id);
+        }
     }
 
     /// Open the Source Control view on launch (used by the `--scm` CLI flag).
@@ -1854,6 +1976,12 @@ impl App {
     /// Opens the Keyboard Shortcuts editor (⌘K ⌘S), optionally searching.
     pub fn bootstrap_keybindings(&mut self, query: Option<&str>) {
         self.open_keybindings_editor(query);
+    }
+
+    /// Uses `json` as keybindings.json (tests; nothing is written).
+    pub fn bootstrap_user_keybindings(&mut self, json: &str) {
+        self.user_keybindings = crate::workbench::keybindings_editor::model::parse_user(json);
+        self.keymap_changed();
     }
 
     /// keybindings.json as the editor last wrote it.
@@ -3537,6 +3665,7 @@ impl App {
             .collect();
         self.user_data_dir = Some(dir);
         self.apply_theme_settings();
+        self.load_user_keybindings();
         // `workbench.startupEditor`: "none" skips the Welcome page.
         if self.settings.get_str("workbench.startupEditor") == Some("none") {
             self.show_welcome = false;
@@ -4179,6 +4308,9 @@ impl App {
     fn handle_shortcuts(&mut self, ctx: &Context) {
         // Keys being recorded in the Keyboard Shortcuts editor aren't commands.
         if self.keybindings_editor.as_ref().is_some_and(|(st, _)| st.captures_keys()) {
+            return;
+        }
+        if self.dispatch_user_keybindings(ctx) {
             return;
         }
         self.language_shortcuts(ctx);
@@ -5506,6 +5638,14 @@ impl App {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|t| crate::workbench::keybindings_editor::model::parse_user(&t))
             .unwrap_or_default();
+        self.keymap_changed();
+    }
+
+    /// keybindings.json changed: rebuild the keymap and the menus' keys.
+    fn keymap_changed(&mut self) {
+        self.keymap = crate::workbench::keybindings_editor::model::Keymap::new(&self.user_keybindings);
+        self.pending_chord = None;
+        self.apply_menu_keys();
     }
 
     fn open_keybindings_editor(&mut self, query: Option<&str>) {
@@ -5551,6 +5691,7 @@ impl App {
     fn edit_keybindings(&mut self, edit: crate::workbench::keybindings_editor::Edit) {
         use crate::workbench::keybindings_editor as kb;
         kb::apply_edit(&mut self.user_keybindings, &edit);
+        self.keymap_changed();
         let Some(path) = self.keybindings_file() else {
             // In-memory settings (tests): the edit stays in this window.
             return;

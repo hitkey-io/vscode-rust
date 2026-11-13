@@ -634,6 +634,11 @@ impl ExtensionService {
         out
     }
 
+    /// An installed extension contributes the command `id`.
+    pub fn contributes_command(&self, id: &str) -> bool {
+        self.extensions.iter().any(|e| e.commands.iter().any(|c| c.id == id))
+    }
+
     /// Run an extension command (activating its extension first).
     pub fn execute(&mut self, id: &str, args: Value) {
         let msg = json!({ "type": "executeCommand", "id": id, "args": args, "requestId": self.request_id() });

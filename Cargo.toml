@@ -65,3 +65,9 @@ strip = true
 
 [profile.dev]
 opt-level = 1
+
+# Clearing a native menu item's key equivalent (muda 0.15 can't).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSMenu", "NSMenuItem", "NSEvent"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray"] }

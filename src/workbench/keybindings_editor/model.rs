@@ -988,6 +988,144 @@ pub fn chord_from_key(key: egui::Key, m: egui::Modifiers) -> Option<String> {
     Some(s)
 }
 
+/// What a pressed key sequence means (`KeybindingResolver.resolve`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// Run this command.
+    Command(String),
+    /// The first chord of a two-chord keybinding: wait for the second.
+    Prefix,
+    /// Nothing is bound to it.
+    None,
+}
+
+/// The keybindings in effect: VS Code's defaults with keybindings.json
+/// applied, for dispatching keys and labelling menus.
+pub struct Keymap {
+    items: Vec<Item>,
+    user: Vec<UserBinding>,
+}
+
+impl Keymap {
+    pub fn new(user: &[UserBinding]) -> Keymap {
+        Keymap { items: items_by_precedence(user), user: user.to_vec() }
+    }
+
+    /// keybindings.json changes nothing.
+    pub fn is_default(&self) -> bool {
+        self.user.is_empty()
+    }
+
+    /// Bound items, highest precedence first: keybindings.json (its last
+    /// entry first), then the defaults (the later the stronger).
+    fn by_precedence(&self) -> impl Iterator<Item = &Item> {
+        let user = self.items.iter().filter(|i| i.source == Source::User && i.key.is_some());
+        let defaults = self.items.iter().filter(|i| i.source != Source::User && i.key.is_some()).collect::<Vec<_>>();
+        user.chain(defaults.into_iter().rev())
+    }
+
+    /// First chords whose meaning keybindings.json changed: its own keys
+    /// and the default keys it removed. Other keys keep their built-in
+    /// handling.
+    pub fn affected(&self) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for u in &self.user {
+            if let Some(cmd) = u.command.strip_prefix('-') {
+                if u.key.is_empty() {
+                    for (k, c, ..) in &data().default {
+                        if c == cmd {
+                            if let Some(kb) = Keybinding::parse(k) {
+                                out.insert(first_chord(&kb));
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
+            if let Some(kb) = Keybinding::parse(&u.key) {
+                out.insert(first_chord(&kb));
+            }
+        }
+        out
+    }
+
+    /// Default keys keybindings.json removed (`-command` entries).
+    pub fn removed(&self) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for u in &self.user {
+            let Some(cmd) = u.command.strip_prefix('-') else { continue };
+            for (k, c, ..) in &data().default {
+                if c == cmd && (u.key.is_empty() || Keybinding::parse(k).map(|k| k.raw) == Keybinding::parse(&u.key).map(|k| k.raw)) {
+                    if let Some(kb) = Keybinding::parse(k) {
+                        out.insert(first_chord(&kb));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The command for `pressed` (normalised chords, `shift+cmd+p`): the
+    /// strongest keybinding starting with them whose `when` holds decides,
+    /// a longer one meaning "wait for the next chord".
+    pub fn resolve(&self, pressed: &[String], when: &dyn Fn(&str) -> bool) -> Resolution {
+        for item in self.by_precedence() {
+            let Some(kb) = &item.key else { continue };
+            let chords: Vec<String> = chord_strings(kb);
+            if chords.len() < pressed.len() || chords[..pressed.len()] != *pressed {
+                continue;
+            }
+            if !(item.when.is_empty() || when(&item.when)) {
+                continue;
+            }
+            return if chords.len() == pressed.len() { Resolution::Command(item.command.clone()) } else { Resolution::Prefix };
+        }
+        Resolution::None
+    }
+
+    /// The key a menu item for `command` shows: `None` keeps the built-in
+    /// one; `Some(key)` replaces it (`Some(None)` for none). Changes only
+    /// what keybindings.json changed: the command's own entry, a removed
+    /// default, or its key given to another command.
+    pub fn menu_key(&self, command: &str) -> Option<Option<String>> {
+        if let Some(item) = self.items.iter().find(|i| i.source == Source::User && i.command == command && i.key.is_some()) {
+            return Some(item.key.as_ref().map(|k| k.raw.clone()));
+        }
+        let defaults: Vec<&String> = data().default.iter().filter(|(_, c, ..)| c == command).map(|(k, ..)| k).collect();
+        let removed = self.user.iter().any(|u| u.command.strip_prefix('-') == Some(command));
+        let taken = |key: &str| {
+            let raw = Keybinding::parse(key).map(|k| k.raw);
+            self.user.iter().any(|u| !u.command.starts_with('-') && u.command != command && Keybinding::parse(&u.key).map(|k| k.raw) == raw)
+        };
+        if !removed && !defaults.iter().any(|k| taken(k)) {
+            return None;
+        }
+        // What remains of the command's defaults, the strongest (last) first.
+        let remaining = self
+            .items
+            .iter()
+            .filter(|i| i.source != Source::User && i.command == command)
+            .filter_map(|i| i.key.as_ref())
+            .filter(|k| !taken(&k.raw))
+            .last()
+            .map(|k| k.raw.clone());
+        Some(remaining)
+    }
+}
+
+fn chord_strings(kb: &Keybinding) -> Vec<String> {
+    kb.raw.split(' ').map(str::to_string).collect()
+}
+
+fn first_chord(kb: &Keybinding) -> String {
+    chord_strings(kb).into_iter().next().unwrap_or_default()
+}
+
+/// A pressed chord in keybindings.json spelling, normalised (`shift+cmd+p`).
+pub fn pressed_chord(key: egui::Key, m: egui::Modifiers) -> Option<String> {
+    chord_from_key(key, m).and_then(|c| Keybinding::parse(&c)).map(|k| k.raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1039,6 +1177,29 @@ mod tests {
         assert_eq!(saves.len(), 1);
         assert_eq!(saves[0].source, Source::User);
         assert_eq!(saves[0].key.as_ref().unwrap().raw, "alt+cmd+s");
+    }
+
+    #[test]
+    fn keymap_follows_keybindings_json() {
+        // Only unconditional keybindings apply in this test.
+        let always = |w: &str| w.is_empty();
+        let m = Keymap::new(&[]);
+        assert!(m.is_default());
+        assert_eq!(m.resolve(&["cmd+b".into()], &always), Resolution::Command("workbench.action.toggleSidebarVisibility".into()));
+        assert_eq!(m.resolve(&["cmd+k".into()], &always), Resolution::Prefix);
+        let user = parse_user(r#"[
+            { "key": "alt+cmd+s", "command": "workbench.action.files.save" },
+            { "key": "cmd+s", "command": "-workbench.action.files.save" },
+            { "key": "cmd+b", "command": "workbench.action.files.saveAll" }
+        ]"#);
+        let m = Keymap::new(&user);
+        assert_eq!(m.resolve(&["alt+cmd+s".into()], &always), Resolution::Command("workbench.action.files.save".into()));
+        assert_eq!(m.resolve(&["cmd+b".into()], &always), Resolution::Command("workbench.action.files.saveAll".into()));
+        assert!(m.affected().contains("cmd+s") && m.affected().contains("cmd+b") && m.affected().contains("alt+cmd+s"));
+        assert_ne!(m.resolve(&["cmd+s".into()], &always), Resolution::Command("workbench.action.files.save".into()));
+        assert_eq!(m.menu_key("workbench.action.files.save"), Some(Some("alt+cmd+s".into())));
+        assert_eq!(m.menu_key("workbench.action.toggleSidebarVisibility"), Some(None));
+        assert_eq!(m.menu_key("workbench.action.togglePanel"), None);
     }
 
     #[test]

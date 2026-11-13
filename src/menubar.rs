@@ -37,8 +37,96 @@ pub struct MenuIds {
     pub new_terminal: MenuId,
 }
 
+/// The menu items that run a VS Code command, with the key equivalent each
+/// was built with. Their accelerators follow keybindings.json
+/// ([`MenuKeys::apply`]), as VS Code's menus show each command's
+/// keybinding.
+#[derive(Clone)]
+pub struct MenuKeys {
+    items: Vec<(MenuItem, &'static str, Option<Accelerator>)>,
+}
+
+impl MenuKeys {
+    /// The VS Code command a menu item runs.
+    pub fn command(&self, id: &MenuId) -> Option<&'static str> {
+        self.items.iter().find(|(m, ..)| m.id() == id).map(|(_, c, _)| *c)
+    }
+
+    /// Sets each item's key equivalent: `choose(command)` returns `None` to
+    /// keep the built-in one, or `Some(keybinding)` (keybindings.json
+    /// spelling, `shift+cmd+s`; `None` inside for no key equivalent).
+    pub fn apply(&self, choose: impl Fn(&str) -> Option<Option<String>>) {
+        for (item, command, default) in &self.items {
+            let accelerator = match choose(command) {
+                None => *default,
+                Some(key) => key.as_deref().and_then(keybinding_to_accelerator),
+            };
+            if accelerator.is_none() {
+                // muda 0.15 leaves the old key equivalent in place for `None`.
+                clear_key_equivalent(&item.text());
+            }
+            let _ = item.set_accelerator(accelerator);
+        }
+    }
+}
+
+/// Removes the key equivalent of every native menu item titled `title`.
+#[cfg(target_os = "macos")]
+fn clear_key_equivalent(title: &str) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu};
+    use objc2_foundation::NSString;
+    fn walk(menu: &NSMenu, title: &NSString) {
+        for item in menu.itemArray().iter() {
+            if &*item.title() == title {
+                item.setKeyEquivalent(&NSString::from_str(""));
+                item.setKeyEquivalentModifierMask(NSEventModifierFlags::empty());
+            }
+            if let Some(sub) = item.submenu() {
+                walk(&sub, title);
+            }
+        }
+    }
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let app = NSApplication::sharedApplication(mtm);
+    if let Some(menu) = app.mainMenu() {
+        walk(&menu, &NSString::from_str(title));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clear_key_equivalent(_title: &str) {}
+
+/// A muda accelerator for a single-chord keybinding (`shift+cmd+s`); chords
+/// (`cmd+k cmd+t`) have none, as NSMenu can't show them.
+pub fn keybinding_to_accelerator(key: &str) -> Option<Accelerator> {
+    if key.contains(' ') || key.is_empty() {
+        return None;
+    }
+    let lower = key.to_lowercase();
+    let (mods, k) = match lower.rfind('+') {
+        Some(i) if i + 1 < lower.len() => (&lower[..i], &lower[i + 1..]),
+        _ => ("", lower.as_str()),
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for m in mods.split('+').filter(|p| !p.is_empty()) {
+        parts.push(match m {
+            "ctrl" => "CTRL",
+            "shift" => "SHIFT",
+            "alt" | "option" => "ALT",
+            // Parsed "CMD" / "SUPER" become META, which macOS ignores;
+            // "CMDORCTRL" is SUPER, the Command key.
+            "cmd" | "meta" | "win" | "super" => "CMDORCTRL",
+            _ => return None,
+        }.to_string());
+    }
+    parts.push(k.to_uppercase());
+    parts.join("+").parse().ok()
+}
+
 pub struct InstalledMenu {
     pub ids: MenuIds,
+    pub keys: MenuKeys,
     // Keep the Menu alive — muda relies on its owned handles for the lifetime of the menubar.
     #[allow(dead_code)]
     menu: Menu,
@@ -48,11 +136,11 @@ pub fn install() -> InstalledMenu {
     let menu = Menu::new();
     // Code ▸ Settings ▸ Themes ▸ Color Theme (⌘K ⌘T is a chord, which a
     // native menu can't show, as in VS Code).
-    let color_theme = MenuItem::new("Color Theme", true, None);
+    let color_theme = item("Color Theme", None);
     // Code ▸ Settings ▸ Settings (⌘,).
-    let open_settings = MenuItem::new("Settings", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
+    let open_settings = item("Settings", Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
     // Code ▸ Settings ▸ Keyboard Shortcuts (⌘K ⌘S, a chord).
-    let open_keybindings = MenuItem::new("Keyboard Shortcuts", true, None);
+    let open_keybindings = item("Keyboard Shortcuts", None);
 
     // macOS application submenu — Apple, About, Services, Hide/Show, Quit
     #[cfg(target_os = "macos")]
@@ -80,33 +168,21 @@ pub fn install() -> InstalledMenu {
 
     // File menu
     let file_m = Submenu::new("File", true);
-    let new_file = MenuItem::new(
-        "New Text File",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
+    let new_file = item("New Text File", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
     );
-    let open_folder = MenuItem::new("Open Folder…", true, None);
-    let open_file = MenuItem::new("Open File…", true, None);
-    let close_folder = MenuItem::new("Close Folder", true, None);
-    let save = MenuItem::new(
-        "Save",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)),
+    let open_folder = item("Open Folder…", None);
+    let open_file = item("Open File…", None);
+    let close_folder = item("Close Folder", None);
+    let save = item("Save", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)),
     );
-    let save_all = MenuItem::new(
-        "Save All",
-        true,
-        Some(Accelerator::new(
+    let save_all = item("Save All", Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::ALT),
             Code::KeyS,
         )),
     );
-    let close_editor = MenuItem::new(
-        "Close Editor",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyW)),
+    let close_editor = item("Close Editor", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyW)),
     );
-    let close_all = MenuItem::new("Close All Editors", true, None);
+    let close_all = item("Close All Editors", None);
     let _ = file_m.append_items(&[
         &new_file,
         &PredefinedMenuItem::separator(),
@@ -140,42 +216,30 @@ pub fn install() -> InstalledMenu {
 
     // View menu
     let view_m = Submenu::new("View", true);
-    let palette = MenuItem::new(
-        "Command Palette…",
-        true,
-        Some(Accelerator::new(
+    let palette = item("Command Palette…", Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyP,
         )),
     );
-    let toggle_sidebar = MenuItem::new(
-        "Toggle Sidebar Visibility",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyB)),
+    let toggle_sidebar = item("Toggle Sidebar Visibility", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyB)),
     );
-    let show_explorer = MenuItem::new(
-        "Explorer",
-        true,
-        Some(Accelerator::new(
+    let show_explorer = item("Explorer", Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyE,
         )),
     );
-    let show_search = MenuItem::new(
-        "Search",
-        true,
-        Some(Accelerator::new(
+    let show_search = item("Search", Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyF,
         )),
     );
     // View ▸ Problems / Output / Debug Console / Terminal and the panel
     // toggle (⌘J), as VS Code's View menu.
-    let toggle_panel = MenuItem::new("Toggle Panel", true, Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyJ)));
-    let show_problems = MenuItem::new("Problems", true, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM)));
-    let show_output = MenuItem::new("Output", true, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyU)));
-    let show_debug_console = MenuItem::new("Debug Console", true, Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyY)));
-    let show_terminal = MenuItem::new("Terminal", true, Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Backquote)));
+    let toggle_panel = item("Toggle Panel", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyJ)));
+    let show_problems = item("Problems", Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM)));
+    let show_output = item("Output", Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyU)));
+    let show_debug_console = item("Debug Console", Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyY)));
+    let show_terminal = item("Terminal", Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Backquote)));
     let _ = view_m.append_items(&[
         &palette,
         &PredefinedMenuItem::separator(),
@@ -192,21 +256,18 @@ pub fn install() -> InstalledMenu {
 
     // Terminal menu
     let terminal_m = Submenu::new("Terminal", true);
-    let new_terminal = MenuItem::new("New Terminal", true, Some(Accelerator::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Backquote)));
+    let new_terminal = item("New Terminal", Some(Accelerator::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Backquote)));
     let _ = terminal_m.append(&new_terminal);
 
     // Go menu
     let go_m = Submenu::new("Go", true);
-    let go_to_file = MenuItem::new(
-        "Go to File…",
-        true,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
+    let go_to_file = item("Go to File…", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
     );
     let _ = go_m.append_items(&[&go_to_file]);
 
     // Help menu
     let help_m = Submenu::new("Help", true);
-    let welcome = MenuItem::new("Welcome", true, None);
+    let welcome = item("Welcome", None);
     let _ = help_m.append_items(&[&welcome]);
 
     let _ = menu.append_items(&[&file_m, &edit_m, &view_m, &go_m, &terminal_m, &help_m]);
@@ -246,7 +307,38 @@ pub fn install() -> InstalledMenu {
         new_terminal: new_terminal.id().clone(),
     };
 
-    InstalledMenu { ids, menu }
+    let keys = MenuKeys {
+        items: [
+            (&new_file, "workbench.action.files.newUntitledFile"),
+            (&open_folder, "workbench.action.files.openFolder"),
+            (&open_file, "workbench.action.files.openFile"),
+            (&close_folder, "workbench.action.closeFolder"),
+            (&save, "workbench.action.files.save"),
+            (&save_all, "workbench.action.files.saveAll"),
+            (&close_editor, "workbench.action.closeActiveEditor"),
+            (&close_all, "workbench.action.closeAllEditors"),
+            (&palette, "workbench.action.showCommands"),
+            (&toggle_sidebar, "workbench.action.toggleSidebarVisibility"),
+            (&show_explorer, "workbench.view.explorer"),
+            (&show_search, "workbench.view.search"),
+            (&go_to_file, "workbench.action.quickOpen"),
+            (&welcome, "workbench.action.openWalkthrough"),
+            (&color_theme, "workbench.action.selectTheme"),
+            (&open_settings, "workbench.action.openSettings"),
+            (&open_keybindings, "workbench.action.openGlobalKeybindings"),
+            (&toggle_panel, "workbench.action.togglePanel"),
+            (&show_problems, "workbench.actions.view.problems"),
+            (&show_output, "workbench.action.output.toggleOutput"),
+            (&show_debug_console, "workbench.debug.action.toggleRepl"),
+            (&show_terminal, "workbench.action.terminal.toggleTerminal"),
+            (&new_terminal, "workbench.action.terminal.new"),
+        ]
+        .into_iter()
+        .map(|(item, command)| ((*item).clone(), command, item_accelerator(item)))
+        .collect(),
+    };
+
+    InstalledMenu { ids, keys, menu }
 }
 
 /// Menu events forwarded by [`repaint_on_event`].
@@ -273,5 +365,36 @@ pub fn poll_event() -> Option<MenuEvent> {
     match FORWARDED.get() {
         Some(rx) => rx.lock().ok()?.try_recv().ok(),
         None => MenuEvent::receiver().try_recv().ok(),
+    }
+}
+
+/// The accelerator an item was built with (muda has no getter, so it is read
+/// back from the platform item's title-independent state we set here).
+fn item_accelerator(item: &MenuItem) -> Option<Accelerator> {
+    BUILT_WITH.with(|m| m.borrow().iter().find(|(id, _)| id == item.id()).and_then(|(_, a)| *a))
+}
+
+thread_local! {
+    static BUILT_WITH: std::cell::RefCell<Vec<(MenuId, Option<Accelerator>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `MenuItem::new` that remembers the accelerator for [`MenuKeys`].
+fn item(text: &str, accelerator: Option<Accelerator>) -> MenuItem {
+    let m = MenuItem::new(text, true, accelerator);
+    BUILT_WITH.with(|b| b.borrow_mut().push((m.id().clone(), accelerator)));
+    m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keybindings_become_accelerators() {
+        assert_eq!(keybinding_to_accelerator("shift+cmd+s"), Some(Accelerator::new(Some(Modifiers::SHIFT | Modifiers::SUPER), Code::KeyS)));
+        assert_eq!(keybinding_to_accelerator("ctrl+`"), Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Backquote)));
+        assert_eq!(keybinding_to_accelerator("alt+cmd+up"), Some(Accelerator::new(Some(Modifiers::ALT | Modifiers::SUPER), Code::ArrowUp)));
+        assert_eq!(keybinding_to_accelerator("f5"), Some(Accelerator::new(None, Code::F5)));
+        assert_eq!(keybinding_to_accelerator("cmd+k cmd+t"), None);
     }
 }

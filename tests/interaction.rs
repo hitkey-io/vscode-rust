@@ -649,3 +649,44 @@ fn command_palette_gear_configures_the_keybinding() {
     let _ = harness.get_by_label("Preferences: Color Theme");
     assert!(harness.query_by_label("File: Save").is_none());
 }
+
+#[test]
+fn keybindings_json_rebinds_app_shortcuts() {
+    // keybindings.json gives ⌘B to the panel (removing the side bar's) and
+    // moves the side bar to ⌥⌘B.
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        // The first frame registers the fonts; the app starts on the next.
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if a.user_keybindings_json().matches("command").count() == 0 {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_user_keybindings(
+                r#"[
+                    { "key": "cmd+b", "command": "workbench.action.togglePanel" },
+                    { "key": "cmd+b", "command": "-workbench.action.toggleSidebarVisibility" },
+                    { "key": "alt+cmd+b", "command": "workbench.action.toggleSidebarVisibility" }
+                ]"#,
+            );
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    harness.run();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("README.md");
+    assert!(harness.query_by_label("panel:Terminal").is_none());
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("panel:Terminal");
+    let _ = harness.get_by_label("README.md");
+    harness.key_press_modifiers(egui::Modifiers::ALT | egui::Modifiers::COMMAND, egui::Key::B);
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label("README.md").is_none(), "⌥⌘B hides the side bar");
+}
