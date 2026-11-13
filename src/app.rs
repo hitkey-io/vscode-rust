@@ -553,6 +553,31 @@ impl App {
                 self.show_panel_view(ctx, PanelView::Terminal);
                 return true;
             }
+            "workbench.action.terminal.split" => {
+                self.panel.visible = true;
+                self.panel.view = PanelView::Terminal;
+                self.split_terminal(ctx);
+                return true;
+            }
+            "workbench.action.terminal.kill" | "workbench.action.terminal.killActiveTab" => {
+                if !self.panel.terminals.is_empty() {
+                    self.panel.remove_terminal(self.panel.active_terminal);
+                    if self.panel.terminals.is_empty() {
+                        self.panel.visible = false;
+                    }
+                }
+                return true;
+            }
+            "workbench.action.terminal.focusNextPane" | "workbench.action.terminal.focusPreviousPane" => {
+                let g = self.panel.active_group();
+                if let Some(p) = g.iter().position(|&x| x == self.panel.active_terminal) {
+                    let n = g.len();
+                    let next = if id.ends_with("NextPane") { (p + 1) % n } else { (p + n - 1) % n };
+                    self.panel.active_terminal = g[next];
+                    self.panel.focus_pending = true;
+                }
+                return true;
+            }
             "workbench.action.terminal.new" => {
                 self.panel.visible = true;
                 self.panel.view = PanelView::Terminal;
@@ -597,6 +622,8 @@ impl App {
         set("terminalIsOpen", Value::Bool(!self.panel.terminals.is_empty()));
         set("terminal.active", Value::Bool(!self.panel.terminals.is_empty()));
         set("terminalProcessSupported", Value::Bool(true));
+        set("terminalHasBeenCreated", Value::Bool(!self.panel.terminals.is_empty()));
+        set("terminalSplitPaneActive", Value::Bool(self.panel.active_group().len() > 1));
         set("panelVisible", Value::Bool(self.panel.visible));
         set("sideBarVisible", Value::Bool(self.sidebar_visible));
         set("emptyWorkspaceSupport", Value::Bool(true));
@@ -4313,6 +4340,25 @@ impl App {
         if self.dispatch_user_keybindings(ctx) {
             return;
         }
+        if self.panel.terminal_focused && self.panel.visible {
+            let shortcut = |m, k| egui::KeyboardShortcut::new(m, k);
+            let split = ctx.input_mut(|i| {
+                i.consume_shortcut(&shortcut(Modifiers::COMMAND, Key::Backslash)) || i.consume_shortcut(&shortcut(Modifiers::CTRL | Modifiers::SHIFT, Key::Num5))
+            });
+            if split {
+                self.run_vscode_command(ctx, "workbench.action.terminal.split");
+                return;
+            }
+            if self.panel.active_group().len() > 1 {
+                let alt_cmd = Modifiers::ALT | Modifiers::COMMAND;
+                let next = ctx.input_mut(|i| i.consume_shortcut(&shortcut(alt_cmd, Key::ArrowRight)) || i.consume_shortcut(&shortcut(alt_cmd, Key::ArrowDown)));
+                let prev = ctx.input_mut(|i| i.consume_shortcut(&shortcut(alt_cmd, Key::ArrowLeft)) || i.consume_shortcut(&shortcut(alt_cmd, Key::ArrowUp)));
+                if next || prev {
+                    self.run_vscode_command(ctx, if next { "workbench.action.terminal.focusNextPane" } else { "workbench.action.terminal.focusPreviousPane" });
+                    return;
+                }
+            }
+        }
         self.language_shortcuts(ctx);
         // Cmd+Shift+P always toggles palette, even when it's open
         let toggle_palette = ctx.input_mut(|i| {
@@ -5031,6 +5077,16 @@ impl App {
     /// Terminal: Create New Terminal. In Restricted Mode it asks for trust
     /// first (`terminalProcessManager`'s trust request).
     fn create_terminal(&mut self, ctx: &Context) {
+        self.spawn_terminal(ctx, false);
+    }
+
+    /// Terminal: Split Terminal — a new terminal beside the active one, in
+    /// its group (a plain new terminal when there is none).
+    fn split_terminal(&mut self, ctx: &Context) {
+        self.spawn_terminal(ctx, !self.panel.terminals.is_empty());
+    }
+
+    fn spawn_terminal(&mut self, ctx: &Context, split: bool) {
         if !self.workspace_trusted() {
             self.trust_request = Some(TrustRequest::Terminal);
             return;
@@ -5038,8 +5094,7 @@ impl App {
         let wake = ctx.clone();
         match crate::terminal::Terminal::spawn(self.workspace_root.as_deref(), 24, 80, move || wake.request_repaint()) {
             Ok(t) => {
-                self.panel.terminals.push(t);
-                self.panel.active_terminal = self.panel.terminals.len() - 1;
+                self.panel.add_terminal(t, split);
                 self.panel.view = crate::workbench::panel::PanelView::Terminal;
                 self.panel.visible = true;
                 self.panel.terminal_focused = true;
@@ -5054,9 +5109,10 @@ impl App {
         use crate::workbench::panel;
         // Exited shells close their terminal; the last one hides the panel.
         let before = self.panel.terminals.len();
-        self.panel.terminals.retain_mut(|t| !t.has_exited());
+        while let Some(i) = self.panel.terminals.iter_mut().position(|t| t.has_exited()) {
+            self.panel.remove_terminal(i);
+        }
         if self.panel.terminals.len() < before {
-            self.panel.active_terminal = self.panel.active_terminal.min(self.panel.terminals.len().saturating_sub(1));
             if self.panel.terminals.is_empty() && self.panel.view == panel::PanelView::Terminal {
                 self.panel.visible = false;
             }
@@ -5090,12 +5146,16 @@ impl App {
         if out.new_terminal {
             self.create_terminal(ctx);
         }
-        if out.kill_terminal && !self.panel.terminals.is_empty() {
-            let i = self.panel.active_terminal.min(self.panel.terminals.len() - 1);
-            self.panel.terminals.remove(i);
-            self.panel.active_terminal = i.saturating_sub(1);
+        if out.split_terminal {
+            self.split_terminal(ctx);
+        }
+        let kill = out.kill_index.or(if out.kill_terminal && !self.panel.terminals.is_empty() { Some(self.panel.active_terminal) } else { None });
+        if let Some(i) = kill {
+            self.panel.remove_terminal(i);
             if self.panel.terminals.is_empty() {
                 self.panel.visible = false;
+            } else {
+                self.panel.focus_pending = true;
             }
         }
         if out.forward_port {

@@ -19,6 +19,18 @@
 //!   Console's 21px input row at the bottom, Ports' message and its 300px
 //!   Forward a Port button, the terminal's 12px Menlo cells (14px rows)
 //!   20px in.
+//!
+//! Terminals live in groups (terminalGroup.ts): a group's terminals share
+//! the view side by side ("Split"), 1px `terminal.border` between them.
+//! With more than one terminal the tabs list shows on the right
+//! (`terminal.integrated.tabs.hideCondition` "singleTerminal"), measured
+//! against 1.145.2: 120px wide with a 1px `terminal.border` on its left,
+//! from 33px under the card top; rows 22px inset 5 / 4, radius 4, the
+//! `terminal` codicon 8px in, the name ("zsh") 24px in, split groups led by
+//! ┌ ├ └; the active terminal in `list.inactiveSelection*`, hover
+//! `list.hoverBackground` with Split (−38) and Kill (−18), 20px each. The
+//! title then keeps only New Terminal (116), Launch Profile (100) and More
+//! (77).
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -58,7 +70,12 @@ pub struct PanelState {
     /// The card's height once dragged (`None`: a third of the window).
     pub height: Option<f32>,
     pub terminals: Vec<Terminal>,
+    /// Index into `terminals` of the terminal with the keyboard.
     pub active_terminal: usize,
+    /// Terminal groups (indices into `terminals`), in tab order.
+    pub groups: Vec<Vec<usize>>,
+    /// The active terminal should take the keyboard on the next frame.
+    pub focus_pending: bool,
     pub problems_filter: String,
     pub output_filter: String,
     pub debug_filter: String,
@@ -71,11 +88,73 @@ pub struct PanelState {
     dragging: bool,
 }
 
+impl PanelState {
+    /// Adds a terminal: to the active group beside the active terminal
+    /// (`split`), else as a new group. It becomes the active one.
+    pub fn add_terminal(&mut self, t: Terminal, split: bool) {
+        self.terminals.push(t);
+        let i = self.terminals.len() - 1;
+        match self.groups.iter_mut().find(|g| g.contains(&self.active_terminal)).filter(|_| split) {
+            Some(g) => {
+                let at = g.iter().position(|&x| x == self.active_terminal).map(|p| p + 1).unwrap_or(g.len());
+                g.insert(at, i);
+            }
+            None => self.groups.push(vec![i]),
+        }
+        self.active_terminal = i;
+        self.selection = None;
+        self.focus_pending = true;
+    }
+
+    /// Removes terminal `i`; the neighbour in its group (else the previous
+    /// group) becomes active.
+    pub fn remove_terminal(&mut self, i: usize) {
+        if i >= self.terminals.len() {
+            return;
+        }
+        self.terminals.remove(i);
+        let mut next = None;
+        for (gi, g) in self.groups.iter_mut().enumerate() {
+            if let Some(p) = g.iter().position(|&x| x == i) {
+                g.remove(p);
+                next = Some(if g.is_empty() { (gi, None) } else { (gi, Some(g[p.saturating_sub(1).min(g.len() - 1)])) });
+            }
+        }
+        for g in self.groups.iter_mut() {
+            for x in g.iter_mut() {
+                if *x > i {
+                    *x -= 1;
+                }
+            }
+        }
+        self.groups.retain(|g| !g.is_empty());
+        if i == self.active_terminal || self.active_terminal >= self.terminals.len() {
+            self.active_terminal = match next {
+                Some((_, Some(n))) => if n > i { n - 1 } else { n },
+                Some((gi, None)) => self.groups.get(gi.saturating_sub(1)).or(self.groups.first()).and_then(|g| g.first().copied()).unwrap_or(0),
+                None => 0,
+            };
+        } else if self.active_terminal > i {
+            self.active_terminal -= 1;
+        }
+        self.selection = None;
+    }
+
+    /// The group of the active terminal.
+    pub fn active_group(&self) -> Vec<usize> {
+        self.groups.iter().find(|g| g.contains(&self.active_terminal)).cloned().unwrap_or_else(|| if self.terminals.is_empty() { Vec::new() } else { vec![self.active_terminal.min(self.terminals.len() - 1)] })
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct PanelOutput {
     pub close: bool,
     pub new_terminal: bool,
+    /// Split the active terminal (a new one in its group).
+    pub split_terminal: bool,
     pub kill_terminal: bool,
+    /// Kill this terminal (a tab's trash button).
+    pub kill_index: Option<usize>,
     pub forward_port: bool,
 }
 
@@ -189,7 +268,9 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
     if icon_button(ui, &painter, at(42.0), max_icon, max_tip, id) {
         state.maximized = !state.maximized;
     }
+    let tabs_shown = state.view == PanelView::Terminal && state.terminals.len() > 1;
     let view_actions: &[(&str, &str)] = match state.view {
+        PanelView::Terminal if tabs_shown => &[("ellipsis", "Views and More Actions...")],
         PanelView::Problems => &[("list-flat", "View as Table"), ("collapse-all", "Collapse All")],
         PanelView::Output => &[("ellipsis", "More Actions..."), ("unlock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
         PanelView::DebugConsole => &[("clear-all", "Clear Console"), ("search", "Find")],
@@ -201,16 +282,22 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
     }
     for (i, (name, tip)) in view_actions.iter().enumerate() {
         let from = 77.0 + 25.75 * i as f32;
-        if icon_button(ui, &painter, at(from), name, tip, id) && *name == "trash" {
-            out.kill_terminal = true;
+        if icon_button(ui, &painter, at(from), name, tip, id) {
+            match *name {
+                "trash" => out.kill_terminal = true,
+                "split-horizontal" => out.split_terminal = true,
+                _ => {}
+            }
         }
     }
     match state.view {
         PanelView::Terminal => {
-            if icon_button(ui, &painter, at(152.0), "chevron-down", "Launch Profile...", id) {
+            // With the tabs list, Kill and Split move into its rows.
+            let (chevron, add) = if tabs_shown { (100.0, 116.0) } else { (152.0, 168.5) };
+            if icon_button(ui, &painter, at(chevron), "chevron-down", "Launch Profile...", id) {
                 out.new_terminal = true;
             }
-            if icon_button(ui, &painter, at(168.5), "add", "New Terminal (⌃⇧`)", id) {
+            if icon_button(ui, &painter, at(add), "add", "New Terminal (⌃⇧`)", id) {
                 out.new_terminal = true;
             }
         }
@@ -265,9 +352,89 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
                 out.forward_port = true;
             }
         }
-        PanelView::Terminal => terminal_view(ui, &painter, content, state, id),
+        PanelView::Terminal => {
+            let mut panes = content;
+            if tabs_shown {
+                let list = Rect::from_min_max(Pos2::new(card.right() - 121.0, card.top() + 33.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
+                terminal_tabs(ui, &painter, list, state, &mut out, id);
+                panes.max.x = list.left();
+            }
+            // The active group's terminals side by side.
+            let group = state.active_group();
+            let n = group.len().max(1) as f32;
+            let w = panes.width() / n;
+            for (k, &ti) in group.iter().enumerate() {
+                let left = (panes.left() + w * k as f32).round();
+                let right = if k + 1 == group.len() { panes.right() } else { (panes.left() + w * (k + 1) as f32).round() };
+                let pane = Rect::from_min_max(Pos2::new(left, panes.top()), Pos2::new(right, panes.bottom()));
+                if k > 0 {
+                    painter.vline(left + 0.5, (card.top() + 33.0)..=(card.bottom() - 1.0), Stroke::new(1.0, Palette::TERMINAL_BORDER()));
+                }
+                terminal_view(ui, &painter, pane, state, id, ti);
+            }
+        }
     }
     out
+}
+
+/// The terminal tabs list (terminalTabsList.ts).
+fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut PanelState, out: &mut PanelOutput, id: egui::Id) {
+    painter.vline(list.left() + 0.5, list.y_range(), Stroke::new(1.0, Palette::TERMINAL_BORDER()));
+    let mut y = list.top();
+    let groups = state.groups.clone();
+    for g in &groups {
+        for (k, &ti) in g.iter().enumerate() {
+            let row = Rect::from_min_max(Pos2::new(list.left() + 5.0, y), Pos2::new(list.right() - 4.0, y + 22.0));
+            y += 22.0;
+            let Some(term) = state.terminals.get(ti) else { continue };
+            let resp = ui.interact(row, id.with(("tab", ti)), Sense::click());
+            let active = ti == state.active_terminal;
+            if active {
+                painter.rect_filled(row, 4.0, Palette::LIST_INACTIVE_SELECTION_BG());
+            } else if resp.hovered() {
+                painter.rect_filled(row, 4.0, Palette::LIST_HOVER_BG());
+            }
+            let fg = if active { Palette::LIST_INACTIVE_SELECTION_FG() } else { Palette::FG() };
+            let cy = row.center().y;
+            let mut x = row.left() + 8.0;
+            if g.len() > 1 {
+                let glyph = if k == 0 { "┌" } else if k + 1 == g.len() { "└" } else { "├" };
+                painter.text(Pos2::new(x, cy - 0.5), Align2::LEFT_CENTER, glyph, FontId::proportional(13.0), fg);
+                x += 16.5;
+            }
+            painter.text(Pos2::new(x + 8.0, cy + 0.5), Align2::CENTER_CENTER, icons::codicon_by_name("terminal").unwrap_or('>').to_string(), icons::codicon_font(16.0), fg);
+            painter.text(Pos2::new(x + 19.5, cy - 0.5), Align2::LEFT_CENTER, &term.title, FontId::proportional(13.0), fg);
+            let label = format!("terminal-tab:{} {}", ti + 1, term.title);
+            resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label.clone()));
+            let mut on_action = false;
+            if resp.hovered() || ui.rect_contains_pointer(row) {
+                for (from_right, name, tip) in [(38.0, "split-horizontal", "Split (⌃⇧5)"), (18.0, "trash", "Kill (⌘Backspace)")] {
+                    let r = Rect::from_center_size(Pos2::new(row.right() - from_right, cy), Vec2::splat(20.0));
+                    let b = ui.interact(r, id.with(("tab-action", ti, name)), Sense::click());
+                    if b.hovered() {
+                        on_action = true;
+                        painter.rect_filled(r, 4.0, Palette::VSCE_TOOLBAR_HOVER_BG());
+                    }
+                    painter.text(r.center(), Align2::CENTER_CENTER, icons::codicon_by_name(name).unwrap_or('?').to_string(), icons::codicon_font(16.0), fg);
+                    b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+                    if b.clicked() {
+                        on_action = true;
+                        if name == "trash" {
+                            out.kill_index = Some(ti);
+                        } else {
+                            state.active_terminal = ti;
+                            out.split_terminal = true;
+                        }
+                    }
+                }
+            }
+            if resp.clicked() && !on_action {
+                state.active_terminal = ti;
+                state.selection = None;
+                state.focus_pending = true;
+            }
+        }
+    }
 }
 
 /// xterm's 256-colour palette entry `i` (16 theme colours, the 6×6×6 cube,
@@ -311,15 +478,28 @@ pub const CELL_H: f32 = 14.0;
 const PAD_LEFT: f32 = 20.0;
 const PAD_TOP: f32 = 6.0;
 
-fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mut PanelState, id: egui::Id) {
+fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mut PanelState, id: egui::Id, index: usize) {
+    let is_active = index == state.active_terminal;
     let font = icons::editor_mono_font(12.0);
     let cell_w = ui.fonts_mut(|f| f.glyph_width(&font, 'W'));
     let area = Rect::from_min_max(Pos2::new(content.left() + PAD_LEFT - 1.0, content.top() + PAD_TOP), Pos2::new(content.right() - 14.0, content.bottom() - 2.0));
     let rows = ((area.height() / CELL_H).floor() as u16).max(1);
     let cols = ((area.width() / cell_w).floor() as u16).max(2);
-    let tid = id.with("terminal");
+    let tid = id.with(("terminal", index));
     let resp = ui.interact(content, tid, Sense::click_and_drag());
+    if (resp.clicked() || resp.drag_started()) && !is_active {
+        // Clicking another pane of the group makes it the active one.
+        state.active_terminal = index;
+        state.selection = None;
+        state.focus_pending = true;
+        return;
+    }
     if resp.clicked() || resp.drag_started() {
+        resp.request_focus();
+    }
+    // A terminal made active elsewhere (tabs list, split, new) takes the
+    // keyboard once.
+    if is_active && std::mem::take(&mut state.focus_pending) {
         resp.request_focus();
     }
     // Mouse → selection (xterm.js SelectionService: drag selects cells,
@@ -329,7 +509,7 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
         let r = ((p.y - area.top()) / CELL_H).floor().clamp(0.0, (rows - 1) as f32) as u16;
         (r, c)
     };
-    if let Some(p) = resp.interact_pointer_pos() {
+    if let Some(p) = resp.interact_pointer_pos().filter(|_| is_active) {
         if resp.drag_started() {
             // Anchor where the button went down, not where the drag began.
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
@@ -346,13 +526,15 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
         }
     }
     let focused = resp.has_focus();
-    state.terminal_focused = focused;
+    if is_active {
+        state.terminal_focused = focused;
+    }
     if focused {
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(tid, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true })
         });
     }
-    let Some(term) = state.terminals.get_mut(state.active_terminal) else { return };
+    let Some(term) = state.terminals.get_mut(index) else { return };
     term.resize(rows, cols);
 
     // Keyboard → the shell.
@@ -411,7 +593,7 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
             }
         }
     }
-    let selection = state.selection.map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
+    let selection = state.selection.filter(|_| is_active).map(|(a, b)| if a <= b { (a, b) } else { (b, a) });
 
     let fg_default = Palette::TERMINAL_FG();
     let bg_default = Palette::TERMINAL_BG();
@@ -482,7 +664,7 @@ fn terminal_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, state: &mu
             }
         }
     });
-    let label = "Terminal 1".to_string();
+    let label = format!("Terminal {}", index + 1);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label.clone()));
 }
 
@@ -494,4 +676,38 @@ fn selected_text(term: &mut Terminal, selection: Option<((u16, u16), (u16, u16))
     let text = term.with_screen(|s| s.contents_between(a.0, a.1, b.0, b.1 + 1));
     let text = text.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
     (!text.is_empty()).then_some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn term() -> Terminal {
+        Terminal::spawn(None, 24, 80, || {}).expect("shell")
+    }
+
+    #[test]
+    fn terminals_split_into_groups_and_close() {
+        let mut s = PanelState::default();
+        s.add_terminal(term(), false); // 0
+        s.add_terminal(term(), false); // 1, its own group
+        s.add_terminal(term(), true); // 2, split beside 1
+        assert_eq!(s.groups, vec![vec![0], vec![1, 2]]);
+        assert_eq!(s.active_terminal, 2);
+        assert_eq!(s.active_group(), vec![1, 2]);
+        // Killing the active split pane activates its neighbour.
+        s.remove_terminal(2);
+        assert_eq!(s.groups, vec![vec![0], vec![1]]);
+        assert_eq!(s.active_terminal, 1);
+        // Killing a whole group activates the previous group.
+        s.remove_terminal(1);
+        assert_eq!(s.groups, vec![vec![0]]);
+        assert_eq!(s.active_terminal, 0);
+        // Removing an earlier terminal renumbers the later ones.
+        s.add_terminal(term(), true); // 1, split beside 0
+        s.active_terminal = 1;
+        s.remove_terminal(0);
+        assert_eq!(s.groups, vec![vec![0]]);
+        assert_eq!(s.active_terminal, 0);
+    }
 }

@@ -438,6 +438,8 @@ palette! {
     KEYBINDING_TABLE_HEADER_BG = Id("keybindingTable.headerBackground");
     KEYBINDING_TABLE_ROWS_BG = Id("keybindingTable.rowsBackground");
     TABLE_COLUMNS_BORDER = Id("tree.tableColumnsBorder");
+    TERMINAL_BORDER = Id("terminal.border");
+    LIST_INACTIVE_SELECTION_FG = OneOf(&["list.inactiveSelectionForeground", "foreground"]);
 }
 
 impl Palette {
