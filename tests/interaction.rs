@@ -627,3 +627,25 @@ fn keybindings_editor_searches_and_redefines_a_keybinding() {
     assert!(json.contains("\"key\": \"alt+cmd+s\",\n        \"command\": \"workbench.action.files.save\""), "{json}");
     assert!(json.contains("\"command\": \"-workbench.action.files.save\""), "{json}");
 }
+
+#[test]
+fn command_palette_gear_configures_the_keybinding() {
+    let mut harness = launch(Some(workspace_path()), vec![], None);
+    harness.run();
+    harness.run();
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+    harness.run();
+    harness.event(egui::Event::Text("color theme".into()));
+    harness.run();
+    harness.run();
+    // The selected command row has the gear (commandsQuickAccess.ts).
+    harness.get_by_label("Configure Keybinding").click();
+    harness.run();
+    harness.run();
+    harness.run();
+    // The Keyboard Shortcuts editor shows only that command.
+    let _ = harness.get_by_label("Type to search in keybindings");
+    let _ = harness.get_by_label("Preferences: Color Theme");
+    assert!(harness.query_by_label("File: Save").is_none());
+}

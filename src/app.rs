@@ -3484,6 +3484,7 @@ impl App {
             }
             PaletteAction::GoToLine(line) => self.go_to_line(line),
             PaletteAction::RemoveRecent(path) => self.recent_files.retain(|p| p != &path),
+            PaletteAction::ConfigureKeybinding(id) => self.open_keybindings_editor(Some(&format!("@command:{id}"))),
             PaletteAction::ExtensionCommand(id) => {
                 self.extensions.execute(&id, serde_json::json!([]))
             }

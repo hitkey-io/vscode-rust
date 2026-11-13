@@ -44,6 +44,34 @@ pub enum CommandId {
     ManageWorkspaceTrust,
 }
 
+impl CommandId {
+    /// The VS Code command this one ports (Configure Keybinding searches
+    /// the Keyboard Shortcuts editor for it).
+    pub fn vscode_id(self) -> &'static str {
+        match self {
+            CommandId::OpenFolder => "workbench.action.files.openFolder",
+            CommandId::OpenFile => "workbench.action.files.openFile",
+            CommandId::CloseFolder => "workbench.action.closeFolder",
+            CommandId::Save => "workbench.action.files.save",
+            CommandId::SaveAll => "workbench.action.files.saveAll",
+            CommandId::CloseFile => "workbench.action.closeActiveEditor",
+            CommandId::CloseAllFiles => "workbench.action.closeAllEditors",
+            CommandId::ToggleSidebar => "workbench.action.toggleSidebarVisibility",
+            CommandId::ShowExplorer => "workbench.view.explorer",
+            CommandId::ShowSearch => "workbench.view.search",
+            CommandId::QuickOpen => "workbench.action.quickOpen",
+            CommandId::Quit => "workbench.action.quit",
+            CommandId::SelectColorTheme => "workbench.action.selectTheme",
+            CommandId::OpenSettings => "workbench.action.openSettings2",
+            CommandId::OpenKeybindings => "workbench.action.openGlobalKeybindings",
+            CommandId::OpenKeybindingsJson => "workbench.action.openGlobalKeybindingsFile",
+            CommandId::OpenUserSettingsJson => "workbench.action.openSettingsJson",
+            CommandId::OpenWorkspaceSettings => "workbench.action.openWorkspaceSettings",
+            CommandId::ManageWorkspaceTrust => "workbench.trust.manage",
+        }
+    }
+}
+
 pub struct CommandEntry {
     pub id: CommandId,
     pub title: &'static str,
@@ -98,6 +126,10 @@ pub enum PaletteAction {
     /// The row's "Remove from Recently Opened" button: drop the file from
     /// the editor history. The popup stays open.
     RemoveRecent(PathBuf),
+    /// A command row's gear, "Configure Keybinding": open the Keyboard
+    /// Shortcuts editor on `@command:<id>` (commandsQuickAccess.ts). The
+    /// popup closes.
+    ConfigureKeybinding(String),
     /// A command contributed by an extension (run by the extension host).
     ExtensionCommand(String),
     /// An extension's `showQuickPick` finished: the picked index, or `None`
@@ -1041,8 +1073,11 @@ fn palette_list(
             }
             _ => None,
         };
+        let is_command = matches!(item.kind, ItemKind::Command(_) | ItemKind::ExtCommand(_));
         let button = if item.from_history {
             Some((crate::icons::CLOSE, "Remove from Recently Opened"))
+        } else if is_command {
+            Some((crate::icons::codicon_by_name("gear").unwrap_or('*'), "Configure Keybinding"))
         } else {
             pick_button
         };
@@ -1063,6 +1098,14 @@ fn palette_list(
         if action_clicked {
             match &item.kind {
                 ItemKind::File { path, .. } => removed = Some(path.clone()),
+                ItemKind::Command(i) => {
+                    *chosen = Some(PaletteAction::ConfigureKeybinding(COMMANDS[*i].id.vscode_id().to_string()));
+                    state.visible = false;
+                }
+                ItemKind::ExtCommand(_) => {
+                    *chosen = Some(PaletteAction::ConfigureKeybinding(item.command_id.clone()));
+                    state.visible = false;
+                }
                 ItemKind::Pick(request_id, index) => {
                     *chosen = Some(PaletteAction::PickItemButton { request_id: *request_id, index: *index });
                 }
@@ -1211,8 +1254,9 @@ fn paint_row(
     if let ItemKind::Command(i) = item.kind {
         if let Some(sc) = COMMANDS[i].shortcut {
             // `.quick-input-list-entry-keybinding { margin-right: 8px }`, left
-            // of the (empty) row action bar and its 4px margin.
-            paint_kbd(ui, egui::pos2(rect.right() - ENTRY_PAD_X - ACTION_BAR_MARGIN - 8.0, cy), sc);
+            // of the row action bar (its 4px margin, plus the gear while the
+            // row is focused or hovered).
+            paint_kbd(ui, egui::pos2(right - 8.0, cy), sc);
         }
     } else if let Some(sep) = item.separator {
         painter.text(
