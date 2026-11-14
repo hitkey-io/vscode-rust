@@ -15,11 +15,27 @@ use crate::workbench::{cards,
     status_bar, tabs, ActivityView,
 };
 
+/// What the editor groups hand back to `render_impl`.
+#[derive(Default)]
+struct GroupRender {
+    editor_output: Option<crate::editor::view::EditorOutput>,
+    welcome_action: Option<(crate::workbench::welcome::WelcomeAction, bool)>,
+    find_matches: Vec<(usize, usize)>,
+}
+
 pub struct App {
     workspace_root: Option<PathBuf>,
     file_tree: Option<FileNode>,
     documents: Vec<Document>,
     active_doc: Option<usize>,
+    /// The editor group that has the keyboard (0 = left, 1 = right of a
+    /// split); `active_doc` is that group's active editor.
+    focused_group: u8,
+    /// The active editor of the group that doesn't have the focus.
+    split_active: [Option<usize>; 2],
+    /// Hash of each file's text the last time its editors were in step
+    /// (`sync_twins`).
+    twin_hashes: std::collections::HashMap<PathBuf, u64>,
     active_view: ActivityView,
     sidebar_visible: bool,
     sidebar_width: f32,
@@ -389,6 +405,9 @@ impl App {
             file_tree: None,
             documents: Vec::new(),
             active_doc: None,
+            focused_group: 0,
+            split_active: [None, None],
+            twin_hashes: std::collections::HashMap::new(),
             active_view: ActivityView::Explorer,
             sidebar_visible: true,
             // layout.ts: `Math.min(300, width / 4)`.
@@ -501,6 +520,17 @@ impl App {
             "workbench.action.files.saveAll" => CommandId::SaveAll,
             "workbench.action.closeActiveEditor" => CommandId::CloseFile,
             "workbench.action.closeAllEditors" => CommandId::CloseAllFiles,
+            "workbench.action.splitEditor" | "workbench.action.splitEditorRight" => CommandId::SplitEditor,
+            "workbench.action.focusFirstEditorGroup" => {
+                self.focus_group(0);
+                return true;
+            }
+            "workbench.action.focusSecondEditorGroup" => {
+                if self.is_split() {
+                    self.focus_group(1);
+                }
+                return true;
+            }
             "workbench.action.toggleSidebarVisibility" => CommandId::ToggleSidebar,
             "workbench.view.explorer" => CommandId::ShowExplorer,
             "workbench.view.search" => CommandId::ShowSearch,
@@ -784,7 +814,7 @@ impl App {
                 }
                 crate::extensions::EditorRequest::OpenDiff { request_id, path, base, text, title } => {
                     self.show_welcome = false;
-                    self.documents.push(crate::editor::Document::diff(path, base, text, title));
+                    self.push_doc(crate::editor::Document::diff(path, base, text, title));
                     self.active_doc = Some(self.documents.len() - 1);
                     self.extensions.answer(request_id, serde_json::json!(true));
                 }
@@ -1209,13 +1239,18 @@ impl App {
     fn sync_webview_tabs(&mut self) {
         for handle in std::mem::take(&mut self.extensions.opened_panels) {
             let Some(w) = self.extensions.webviews.get(&handle) else { continue };
-            self.documents.push(crate::editor::Document::webview(handle, w.title.clone()));
+            self.push_doc(crate::editor::Document::webview(handle, w.title.clone()));
             self.active_doc = Some(self.documents.len() - 1);
             self.show_welcome = false;
         }
         for handle in std::mem::take(&mut self.extensions.closed_panels) {
             if let Some(i) = self.documents.iter().position(|d| d.webview == Some(handle)) {
                 self.documents.remove(i);
+                self.split_active.iter_mut().for_each(|a| match *a {
+                    Some(x) if x == i => *a = None,
+                    Some(x) if x > i => *a = Some(x - 1),
+                    _ => {}
+                });
                 self.active_doc = match self.active_doc {
                     _ if self.documents.is_empty() => None,
                     Some(a) if a > i => Some(a - 1),
@@ -1310,7 +1345,7 @@ impl App {
                 self.active_doc = Some(i);
             }
             None => {
-                self.documents.push(doc);
+                self.push_doc(doc);
                 self.active_doc = Some(self.documents.len() - 1);
             }
         }
@@ -1996,7 +2031,7 @@ impl App {
     fn apply_extension_edits(&mut self, path: &std::path::Path, edits: &[crate::extensions::WireEdit]) -> bool {
         if !self.documents.iter().any(|d| d.path == path) {
             match crate::editor::Document::open(path.to_path_buf()) {
-                Ok(doc) => self.documents.push(doc),
+                Ok(doc) => self.push_doc(doc),
                 Err(_) => return false,
             }
         }
@@ -2284,6 +2319,16 @@ impl App {
         self.open_file_with(path, true);
     }
 
+    /// "Open to the Side" (⌘Enter in Quick Open): the file in the right
+    /// group, which is created when needed.
+    fn open_file_to_side(&mut self, path: PathBuf) {
+        if self.focused_group == 0 {
+            self.split_active[0] = self.active_doc;
+            self.focused_group = 1;
+        }
+        self.open_file_with(path, true);
+    }
+
     /// Opens `path` in an editor: `pinned` keeps it, otherwise it takes the
     /// preview slot (a single click in the Explorer).
     fn open_file_with(&mut self, path: PathBuf, pinned: bool) {
@@ -2292,7 +2337,7 @@ impl App {
         if let Some(root) = self.file_tree.as_mut() {
             root.reveal(&path);
         }
-        if let Some(idx) = self.documents.iter().position(|d| d.path == path && d.diff_base.is_none() && !d.read_only && d.webview.is_none()) {
+        if let Some(idx) = self.documents.iter().position(|d| d.group == self.focused_group && d.path == path && d.diff_base.is_none() && !d.read_only && d.webview.is_none()) {
             if pinned {
                 self.documents[idx].preview = false;
             }
@@ -2350,10 +2395,311 @@ impl App {
         match Document::open(path.clone()) {
             Ok(mut doc) => {
                 doc.diff_base = Some(base);
-                self.documents.push(doc);
+                self.push_doc(doc);
                 self.active_doc = Some(self.documents.len() - 1);
             }
             Err(_) => self.open_file(path),
+        }
+    }
+
+
+
+    /// One editor group: its tab strip and the editor (or page) under it.
+    fn render_group(&mut self, ui: &mut egui::Ui, group: u8, res: &mut GroupRender) {
+        // The editor (or page) starts right under the tab strip.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let members = self.group_members(group);
+        let active = self.group_active(group);
+        let has_any_tab = !members.is_empty();
+        // A click anywhere in the group gives it the keyboard.
+        let group_rect = ui.max_rect();
+        if ui.input(|i| i.pointer.any_pressed()) && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| group_rect.contains(p)) {
+            self.focus_group(group);
+        }
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+
+        if has_any_tab {
+            let tabs_action = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 32.0),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        {
+                            let docs: Vec<&Document> = members.iter().map(|&i| &self.documents[i]).collect();
+                            let pos = active.and_then(|a| members.iter().position(|&m| m == a));
+                            tabs::show(ui, &docs, pos, false)
+                        }
+                    },
+                )
+                .inner;
+
+            if let Some(idx) = tabs_action.activate.and_then(|i| members.get(i).copied()) {
+                self.focus_group(group);
+                self.active_doc = Some(idx);
+                self.refresh_git_line_changes();
+            }
+            if let Some(idx) = tabs_action.close.and_then(|i| members.get(i).copied()) {
+                self.close_doc(idx);
+            }
+            if let Some(idx) = tabs_action.keep.and_then(|i| members.get(i).copied()) {
+                if let Some(doc) = self.documents.get_mut(idx) {
+                    doc.preview = false;
+                }
+            }
+            if let Some(pos) = tabs_action.more_actions {
+                self.pending_editor_menu = Some(pos);
+            }
+            if let Some(idx) = tabs_action.toggle_pin.and_then(|i| members.get(i).copied()) {
+                if let Some(doc) = self.documents.get_mut(idx) {
+                    doc.pinned = !doc.pinned;
+                }
+            }
+            if let Some(idx) = tabs_action.right_clicked.and_then(|i| members.get(i).copied()) {
+                let pos = ctx
+                    .pointer_interact_pos()
+                    .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+                self.tab_menu = Some((idx, pos));
+            }
+            if tabs_action.split {
+                self.focus_group(group);
+                self.split_editor();
+            }
+            if tabs_action.close_welcome {
+                self.show_welcome = false;
+            }
+
+            self.show_tab_context_menu(ctx);
+        }
+
+        let webview_tab = active.and_then(|i| self.documents.get(i)).and_then(|d| d.webview);
+        if let Some(handle) = webview_tab {
+            // An extension's webview panel fills the editor area.
+            let rect = ui.available_rect_before_wrap();
+            ui.allocate_rect(rect, egui::Sense::hover());
+            if self.extensions.webviews.get(&handle).is_some_and(|w| w.html.is_empty()) {
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(13.0), Palette::FG_DESCRIPTION());
+            }
+            self.webview_host.place(handle, rect);
+        } else if active.and_then(|i| self.documents.get(i)).is_some_and(|d| d.welcome) {
+            let show_on_startup = self.settings.get_str("workbench.startupEditor").unwrap_or("welcomePage") == "welcomePage";
+            let model = crate::workbench::welcome::WelcomeModel {
+                git_available: crate::git::available(),
+                recent: &self.recent_folders,
+                show_on_startup,
+            };
+            let act = crate::workbench::welcome::show(ui, &model);
+            res.welcome_action = Some((act, show_on_startup));
+        } else if let Some(idx) = active {
+            // Breadcrumbs row (path of the active file); an
+            // untitled editor has none.
+            if let Some(doc) = self.documents.get(idx).filter(|d| !d.untitled) {
+                crate::workbench::breadcrumbs::show(
+                    ui,
+                    &doc.path,
+                    self.workspace_root.as_deref(),
+                );
+            }
+            // Find matches for the active document (Cmd+F widget).
+            let find_matches: Vec<(usize, usize)> = if self.find.open {
+                self.documents
+                    .get(idx)
+                    .map(|d| {
+                        crate::editor::find::compute_matches(
+                            &d.text,
+                            &self.find.query,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let mut find_hl =
+                crate::editor::find::highlight_for(&self.find, &find_matches);
+            if let Some(doc) = self.documents.get(idx) {
+                let spans = self.extension_decoration_spans(doc);
+                if !spans.is_empty() {
+                    find_hl
+                        .get_or_insert_with(|| crate::editor::highlight::FindHighlight {
+                            ranges: Vec::new(),
+                            current: 0,
+                            decorations: Vec::new(),
+                        })
+                        .decorations = spans;
+                }
+            }
+            let squiggles = self
+                .documents
+                .get(idx)
+                .map(|d| self.problem_squiggles(d))
+                .unwrap_or_default();
+            if let Some(doc) = self.documents.get_mut(idx) {
+                let out = crate::editor::view::show_with_squiggles(
+                    ui,
+                    doc,
+                    &self.git_line_changes,
+                    find_hl.as_ref(),
+                    &squiggles,
+                );
+                if group == self.focused_group {
+                        res.editor_output = Some(out);
+                    }
+            }
+            if group == self.focused_group {
+                    res.find_matches = find_matches;
+                }
+        } else {
+            empty_editor_hints(ui);
+        }
+    }
+
+    /// Add an editor to the focused group.
+    fn push_doc(&mut self, mut doc: Document) {
+        doc.group = self.focused_group;
+        self.documents.push(doc);
+    }
+
+    /// Indices of the editors in `group`, in tab order.
+    fn group_members(&self, group: u8) -> Vec<usize> {
+        self.documents.iter().enumerate().filter(|(_, d)| d.group == group).map(|(i, _)| i).collect()
+    }
+
+    fn is_split(&self) -> bool {
+        self.documents.iter().any(|d| d.group == 1)
+    }
+
+    /// The active editor of `group`: `active_doc` for the focused one.
+    fn group_active(&self, group: u8) -> Option<usize> {
+        let held = if group == self.focused_group { self.active_doc } else { self.split_active[group as usize] };
+        held.filter(|&i| self.documents.get(i).is_some_and(|d| d.group == group))
+            .or_else(|| self.group_members(group).last().copied())
+    }
+
+    /// Give the keyboard to `group` (a click in it, or a command).
+    fn focus_group(&mut self, group: u8) {
+        if group == self.focused_group {
+            return;
+        }
+        let target = self.group_active(group);
+        self.split_active[self.focused_group as usize] = self.active_doc;
+        self.focused_group = group;
+        self.active_doc = target;
+        self.refresh_git_line_changes();
+    }
+
+    /// Keep the groups consistent: an empty right group collapses, an empty
+    /// left one hands its place to the right one, and the active editor
+    /// belongs to the focused group.
+    fn normalize_groups(&mut self) {
+        let left = self.documents.iter().any(|d| d.group == 0);
+        let right = self.documents.iter().any(|d| d.group == 1);
+        if right && !left {
+            for d in &mut self.documents {
+                d.group = 0;
+            }
+        }
+        if !right || !left {
+            self.focused_group = 0;
+            self.split_active = [None, None];
+        }
+        if let Some(d) = self.active_doc.and_then(|i| self.documents.get(i)) {
+            if d.group != self.focused_group {
+                self.focused_group = d.group;
+            }
+        } else if !self.documents.is_empty() && !self.show_welcome {
+            self.active_doc = self.group_active(self.focused_group);
+        }
+    }
+
+    /// After removing the editor at `idx`, point the remembered indices at
+    /// the editors that moved.
+    fn shift_after_remove(&mut self, idx: usize) {
+        let fix = |a: &mut Option<usize>| match *a {
+            Some(x) if x == idx => *a = None,
+            Some(x) if x > idx => *a = Some(x - 1),
+            _ => {}
+        };
+        fix(&mut self.active_doc);
+        fix(&mut self.split_active[0]);
+        fix(&mut self.split_active[1]);
+    }
+
+    /// Split Editor Right (⌘\): the active editor again in a new group on
+    /// the right, which takes the focus.
+    fn split_editor(&mut self) {
+        if self.focused_group == 1 {
+            return;
+        }
+        let Some(src) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        if src.welcome || src.webview.is_some() {
+            return;
+        }
+        let existing = self.documents.iter().position(|d| d.group == 1 && d.path == src.path && d.diff_title == src.diff_title);
+        let at = match existing {
+            Some(i) => i,
+            None => {
+                let mut copy = src.clone();
+                copy.group = 1;
+                copy.preview = false;
+                copy.pinned = false;
+                self.documents.push(copy);
+                self.documents.len() - 1
+            }
+        };
+        self.split_active[0] = self.active_doc;
+        self.focused_group = 1;
+        self.active_doc = Some(at);
+        self.refresh_git_line_changes();
+    }
+
+    /// Keep the editors of one file in step: when one of them changed since
+    /// the last frame, the others take its text.
+    fn sync_twins(&mut self) {
+        use std::hash::{Hash, Hasher};
+        let hash = |t: &str| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            t.hash(&mut h);
+            h.finish()
+        };
+        let mut by_path: std::collections::HashMap<PathBuf, Vec<usize>> = std::collections::HashMap::new();
+        for (i, d) in self.documents.iter().enumerate() {
+            if !d.untitled && !d.welcome && d.webview.is_none() && d.diff_base.is_none() && d.diff_title.is_none() {
+                by_path.entry(d.path.clone()).or_default().push(i);
+            }
+        }
+        for (path, idxs) in by_path {
+            if idxs.len() < 2 {
+                self.twin_hashes.remove(&path);
+                continue;
+            }
+            let hashes: Vec<u64> = idxs.iter().map(|&i| hash(&self.documents[i].text)).collect();
+            let known = self.twin_hashes.get(&path).copied();
+            if hashes.iter().all(|h| *h == hashes[0]) {
+                self.twin_hashes.insert(path, hashes[0]);
+                continue;
+            }
+            // The changed one (the active editor first) is the source.
+            let source = idxs
+                .iter()
+                .zip(&hashes)
+                .filter(|(_, h)| Some(**h) != known)
+                .map(|(&i, _)| i)
+                .find(|&i| Some(i) == self.active_doc)
+                .or_else(|| idxs.iter().zip(&hashes).find(|(_, h)| Some(**h) != known).map(|(&i, _)| i))
+                .unwrap_or(idxs[0]);
+            let (text, saved, dirty) = {
+                let d = &self.documents[source];
+                (d.text.clone(), d.saved_text.clone(), d.dirty)
+            };
+            for &i in &idxs {
+                if i != source {
+                    let d = &mut self.documents[i];
+                    d.text = text.clone();
+                    d.saved_text = saved.clone();
+                    d.dirty = dirty;
+                }
+            }
+            self.twin_hashes.insert(path, hash(&text));
         }
     }
 
@@ -2361,16 +2707,28 @@ impl App {
         if idx >= self.documents.len() {
             return;
         }
+        let group = self.documents[idx].group;
+        let was_active = self.group_active(group) == Some(idx);
+        // The neighbour that takes over: the one before, else the one after.
+        let members = self.group_members(group);
+        let next = members.iter().rev().find(|&&m| m < idx).or_else(|| members.iter().find(|&&m| m > idx)).copied();
         self.documents.remove(idx);
+        self.shift_after_remove(idx);
         if self.documents.is_empty() {
             self.active_doc = None;
-        } else {
-            let new_active = match self.active_doc {
-                Some(a) if a == idx => idx.saturating_sub(1).min(self.documents.len() - 1),
-                Some(a) if a > idx => a - 1,
-                other => other.unwrap_or(0).min(self.documents.len() - 1),
-            };
-            self.active_doc = Some(new_active);
+            return;
+        }
+        if was_active {
+            let next = next.map(|n| if n > idx { n - 1 } else { n });
+            if group == self.focused_group {
+                self.active_doc = next.or(self.active_doc);
+            } else {
+                self.split_active[group as usize] = next;
+            }
+        }
+        self.normalize_groups();
+        if self.active_doc.is_none() {
+            self.active_doc = self.group_active(self.focused_group);
         }
     }
 
@@ -2383,21 +2741,26 @@ impl App {
     fn close_all(&mut self) {
         self.documents.clear();
         self.active_doc = None;
+        self.focused_group = 0;
+        self.split_active = [None, None];
         self.set_status("Closed all editors");
     }
 
-    /// Close every editor except `keep` (pinned tabs are never closed).
+    /// Close every editor of the group except `keep` (pinned tabs are
+    /// never closed).
     fn close_others(&mut self, keep: usize) {
-        let Some(keep_path) = self.documents.get(keep).map(|d| d.path.clone()) else {
+        let Some((keep_path, group)) = self.documents.get(keep).map(|d| (d.path.clone(), d.group)) else {
             return;
         };
-        self.documents
-            .retain(|d| d.pinned || d.path == keep_path);
+        self.documents.retain(|d| d.group != group || d.pinned || d.path == keep_path);
+        self.split_active = [None, None];
+        self.focused_group = group;
         self.active_doc = self
             .documents
             .iter()
-            .position(|d| d.path == keep_path)
+            .position(|d| d.group == group && d.path == keep_path)
             .or(if self.documents.is_empty() { None } else { Some(0) });
+        self.normalize_groups();
     }
 
     /// Apply the Source Control view's events.
@@ -2490,7 +2853,7 @@ impl App {
                 let text = crate::git::head_blob(&root, &rel).unwrap_or_default();
                 let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
                 let doc = Document::diff(root.join(&rel), text.clone(), text, format!("{name} (HEAD)"));
-                self.documents.push(doc);
+                self.push_doc(doc);
                 self.active_doc = Some(self.documents.len() - 1);
             }
             ScmAction::OpenGroupChanges { root, kind } => {
@@ -3414,7 +3777,7 @@ impl App {
         self.keep_welcome();
         let pinned = pinned || !self.preview_enabled();
         if let Some(i) = self.documents.iter().position(|d| {
-            d.path == doc.path && d.diff_title == doc.diff_title && d.diff_base.is_some() == doc.diff_base.is_some() && d.webview.is_none()
+            d.group == self.focused_group && d.path == doc.path && d.diff_title == doc.diff_title && d.diff_base.is_some() == doc.diff_base.is_some() && d.webview.is_none()
         }) {
             let d = &mut self.documents[i];
             if d.read_only {
@@ -3429,16 +3792,17 @@ impl App {
             return;
         }
         doc.preview = !pinned;
-        match self.documents.iter().position(|d| d.preview && !d.dirty) {
+        match self.documents.iter().position(|d| d.preview && !d.dirty && d.group == self.focused_group) {
             Some(i) => {
                 if let Some(h) = self.documents[i].webview {
                     self.webview_host.remove_internal_page(h);
                 }
+                doc.group = self.focused_group;
                 self.documents[i] = doc;
                 self.active_doc = Some(i);
             }
             None => {
-                self.documents.push(doc);
+                self.push_doc(doc);
                 self.active_doc = Some(self.documents.len() - 1);
             }
         }
@@ -3629,7 +3993,7 @@ impl App {
         } else {
             match Document::open(path.clone()) {
                 Ok(doc) => {
-                    self.documents.push(doc);
+                    self.push_doc(doc);
                     self.active_doc = Some(self.documents.len() - 1);
                 }
                 Err(e) => {
@@ -3683,6 +4047,13 @@ impl App {
             PaletteAction::OpenFile { path, line } => {
                 self.show_welcome = false;
                 self.open_file(path.clone());
+                if let Some(line) = line {
+                    self.go_to_line(line);
+                }
+            }
+            PaletteAction::OpenFileToSide { path, line } => {
+                self.show_welcome = false;
+                self.open_file_to_side(path);
                 if let Some(line) = line {
                     self.go_to_line(line);
                 }
@@ -3779,7 +4150,7 @@ impl App {
             self.active_doc = Some(i);
             return;
         }
-        self.documents.push(crate::editor::Document::welcome());
+        self.push_doc(crate::editor::Document::welcome());
         self.active_doc = Some(self.documents.len() - 1);
     }
 
@@ -4112,6 +4483,7 @@ impl App {
             CommandId::Save => self.save_active(),
             CommandId::SaveAll => self.save_all(),
             CommandId::CloseFile => self.close_active(),
+            CommandId::SplitEditor => self.split_editor(),
             CommandId::CloseAllFiles => self.close_all(),
             CommandId::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             CommandId::ShowExplorer => self.show_view(ActivityView::Explorer),
@@ -4388,6 +4760,10 @@ impl App {
             return;
         }
         if self.dispatch_user_keybindings(ctx) {
+            return;
+        }
+        if !(self.panel.terminal_focused && self.panel.visible) && ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Backslash))) {
+            self.run_vscode_command(ctx, "workbench.action.splitEditor");
             return;
         }
         if self.panel.terminal_focused && self.panel.visible {
@@ -4887,131 +5263,34 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.painter().rect_filled(ui.max_rect().expand(1.0), 0.0, Palette::EDITOR_BG());
-                ui.vertical(|ui| {
-                    // The editor (or page) starts right under the tab strip.
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let has_any_tab = !self.documents.is_empty();
-
-                    if has_any_tab {
-                        let tabs_action = ui
-                            .allocate_ui_with_layout(
-                                egui::vec2(ui.available_width(), 32.0),
-                                egui::Layout::left_to_right(egui::Align::Min),
-                                |ui| {
-                                    tabs::show(ui, &self.documents, self.active_doc, false)
-                                },
-                            )
-                            .inner;
-
-                        if let Some(idx) = tabs_action.activate {
-                            self.active_doc = Some(idx);
-                            self.refresh_git_line_changes();
-                        }
-                        if let Some(idx) = tabs_action.close {
-                            self.close_doc(idx);
-                        }
-                        if let Some(idx) = tabs_action.keep {
-                            if let Some(doc) = self.documents.get_mut(idx) {
-                                doc.preview = false;
-                            }
-                        }
-                        if let Some(pos) = tabs_action.more_actions {
-                            self.pending_editor_menu = Some(pos);
-                        }
-                        if let Some(idx) = tabs_action.toggle_pin {
-                            if let Some(doc) = self.documents.get_mut(idx) {
-                                doc.pinned = !doc.pinned;
-                            }
-                        }
-                        if let Some(idx) = tabs_action.right_clicked {
-                            let pos = ctx
-                                .pointer_interact_pos()
-                                .unwrap_or_else(|| egui::pos2(0.0, 0.0));
-                            self.tab_menu = Some((idx, pos));
-                        }
-                        if tabs_action.close_welcome {
-                            self.show_welcome = false;
-                        }
-
-                        self.show_tab_context_menu(ctx);
-                    }
-
-                    let webview_tab = self.active_doc.and_then(|i| self.documents.get(i)).and_then(|d| d.webview);
-                    if let Some(handle) = webview_tab {
-                        // An extension's webview panel fills the editor area.
-                        let rect = ui.available_rect_before_wrap();
-                        ui.allocate_rect(rect, egui::Sense::hover());
-                        if self.extensions.webviews.get(&handle).is_some_and(|w| w.html.is_empty()) {
-                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(13.0), Palette::FG_DESCRIPTION());
-                        }
-                        self.webview_host.place(handle, rect);
-                    } else if self.active_doc.and_then(|i| self.documents.get(i)).is_some_and(|d| d.welcome) {
-                        let show_on_startup = self.settings.get_str("workbench.startupEditor").unwrap_or("welcomePage") == "welcomePage";
-                        let model = crate::workbench::welcome::WelcomeModel {
-                            git_available: crate::git::available(),
-                            recent: &self.recent_folders,
-                            show_on_startup,
-                        };
-                        let act = crate::workbench::welcome::show(ui, &model);
-                        welcome_action = Some((act, show_on_startup));
-                    } else if let Some(idx) = self.active_doc {
-                        // Breadcrumbs row (path of the active file); an
-                        // untitled editor has none.
-                        if let Some(doc) = self.documents.get(idx).filter(|d| !d.untitled) {
-                            crate::workbench::breadcrumbs::show(
-                                ui,
-                                &doc.path,
-                                self.workspace_root.as_deref(),
-                            );
-                        }
-                        // Find matches for the active document (Cmd+F widget).
-                        let find_matches: Vec<(usize, usize)> = if self.find.open {
-                            self.documents
-                                .get(idx)
-                                .map(|d| {
-                                    crate::editor::find::compute_matches(
-                                        &d.text,
-                                        &self.find.query,
-                                    )
-                                })
-                                .unwrap_or_default()
+                let full = ui.max_rect();
+                self.normalize_groups();
+                self.sync_twins();
+                let groups: u8 = if self.is_split() { 2 } else { 1 };
+                let mut res = GroupRender::default();
+                for group in 0..groups {
+                    let rect = if groups == 2 {
+                        let half = ((full.width() - 1.0) / 2.0).floor();
+                        if group == 0 {
+                            egui::Rect::from_min_size(full.min, egui::vec2(half, full.height()))
                         } else {
-                            Vec::new()
-                        };
-                        let mut find_hl =
-                            crate::editor::find::highlight_for(&self.find, &find_matches);
-                        if let Some(doc) = self.documents.get(idx) {
-                            let spans = self.extension_decoration_spans(doc);
-                            if !spans.is_empty() {
-                                find_hl
-                                    .get_or_insert_with(|| crate::editor::highlight::FindHighlight {
-                                        ranges: Vec::new(),
-                                        current: 0,
-                                        decorations: Vec::new(),
-                                    })
-                                    .decorations = spans;
-                            }
+                            egui::Rect::from_min_max(egui::pos2(full.left() + half + 1.0, full.top()), full.max)
                         }
-                        let squiggles = self
-                            .documents
-                            .get(idx)
-                            .map(|d| self.problem_squiggles(d))
-                            .unwrap_or_default();
-                        if let Some(doc) = self.documents.get_mut(idx) {
-                            let out = crate::editor::view::show_with_squiggles(
-                                ui,
-                                doc,
-                                &self.git_line_changes,
-                                find_hl.as_ref(),
-                                &squiggles,
-                            );
-                            editor_output = Some(out);
-                        }
-                        find_matches_for_widget = find_matches;
                     } else {
-                        empty_editor_hints(ui);
-                    }
-                });
+                        full
+                    };
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt(("editor-group", group)), |ui| {
+                        ui.set_clip_rect(rect.intersect(ui.clip_rect()));
+                        ui.vertical(|ui| self.render_group(ui, group, &mut res));
+                    });
+                }
+                if groups == 2 {
+                    let x = full.left() + ((full.width() - 1.0) / 2.0).floor();
+                    ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(x, full.top()), egui::vec2(1.0, full.height())), 0.0, Palette::EDITOR_GROUP_BORDER());
+                }
+                editor_output = res.editor_output;
+                welcome_action = res.welcome_action;
+                find_matches_for_widget = res.find_matches;
             });
         {
             let r = editor_panel.response.rect;

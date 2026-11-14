@@ -19,11 +19,13 @@ pub struct TabsAction {
     /// "More Actions..." (`…`) at the strip's right end: where to open its
     /// menu.
     pub more_actions: Option<egui::Pos2>,
+    /// "Split Editor Right" was clicked.
+    pub split: bool,
 }
 
-pub fn show(
+pub fn show<D: std::borrow::Borrow<Document>>(
     ui: &mut Ui,
-    docs: &[Document],
+    docs: &[D],
     active: Option<usize>,
     show_welcome_tab: bool,
 ) -> TabsAction {
@@ -35,6 +37,7 @@ pub fn show(
         toggle_pin: None,
         keep: None,
         more_actions: None,
+        split: false,
     };
 
     let rect = ui.max_rect();
@@ -46,6 +49,7 @@ pub fn show(
     let labels: Vec<String> = docs
         .iter()
         .map(|d| {
+            let d = d.borrow();
             if let Some(t) = &d.diff_title {
                 t.clone()
             } else if d.diff_base.is_some() {
@@ -57,11 +61,11 @@ pub fn show(
         .collect();
     let tooltips: Vec<String> = docs
         .iter()
-        .map(|d| d.path.to_string_lossy().into_owned())
+        .map(|d| d.borrow().path.to_string_lossy().into_owned())
         .collect();
-    let dirty_flags: Vec<bool> = docs.iter().map(|d| d.dirty).collect();
-    let pinned_flags: Vec<bool> = docs.iter().map(|d| d.pinned).collect();
-    let preview_flags: Vec<bool> = docs.iter().map(|d| d.preview).collect();
+    let dirty_flags: Vec<bool> = docs.iter().map(|d| d.borrow().dirty).collect();
+    let pinned_flags: Vec<bool> = docs.iter().map(|d| d.borrow().pinned).collect();
+    let preview_flags: Vec<bool> = docs.iter().map(|d| d.borrow().preview).collect();
     let mut items: Vec<Tab<'_>> = Vec::with_capacity(docs.len() + 1);
     if show_welcome_tab {
         // The Welcome page opens as a preview editor (italic title).
@@ -73,12 +77,13 @@ pub fn show(
     }
     for (idx, label) in labels.iter().enumerate() {
         // File-type icon from the Seti theme (codicon file glyph as fallback).
-        let extension_page = docs[idx].webview.is_some_and(|h| h >= crate::workbench::webviews::INTERNAL_HANDLE_BASE);
+        let extension_page = docs[idx].borrow().webview.is_some_and(|h| h >= crate::workbench::webviews::INTERNAL_HANDLE_BASE);
         let welcome_logo = docs[idx]
+            .borrow()
             .welcome
             .then(|| crate::assets::svg_texture_in_colour(ui.ctx(), "vscode-logo", crate::assets::VSCODE_LOGO, 32))
             .flatten();
-        let mut t = match crate::file_icons::icon_for(&docs[idx].path) {
+        let mut t = match crate::file_icons::icon_for(&docs[idx].borrow().path) {
             // The Welcome page: the product logo.
             _ if welcome_logo.is_some() => Tab::new(label).image(welcome_logo.as_ref().map(|t| t.id()).unwrap()),
             // The extension editor's tab shows the Extensions icon.
@@ -168,6 +173,9 @@ pub fn show(
         let label = tip.to_string();
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
         let resp = resp.on_hover_text(tip);
+        if i == 0 && resp.clicked() {
+            action.split = true;
+        }
         if i == 1 && resp.clicked() {
             action.more_actions = Some(r.left_bottom());
         }

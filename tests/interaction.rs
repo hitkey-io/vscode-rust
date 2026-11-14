@@ -851,3 +851,32 @@ fn settings_editor_checkbox_list_toggles_entries() {
     harness.run();
     assert_eq!(*seen.borrow(), None);
 }
+
+#[test]
+fn split_editor_opens_a_second_group_and_open_to_the_side() {
+    use egui::{Key, Modifiers};
+    let ws = workspace_path();
+    let mut harness = launch(Some(ws.clone()), vec![ws.join("tsconfig.json")], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    assert_eq!(harness.get_all_by_label("tab:tsconfig.json").count(), 1);
+    harness.get_by_label("Split Editor Right (⌘\\)").click();
+    harness.run();
+    harness.run();
+    // The same file is open in both groups.
+    assert_eq!(harness.get_all_by_label("tab:tsconfig.json").count(), 2);
+    // ⌘Enter in Quick Open opens the file in the right group.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("site".to_string()));
+    harness.run();
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.get_all_by_label("tab:SiteHeader.vue").count(), 1);
+    assert_eq!(harness.get_all_by_label("tab:tsconfig.json").count(), 2);
+    harness.snapshot("interaction_split_editor");
+}

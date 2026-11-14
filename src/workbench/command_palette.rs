@@ -30,6 +30,7 @@ pub enum CommandId {
     SaveAll,
     CloseFile,
     CloseAllFiles,
+    SplitEditor,
     ToggleSidebar,
     ShowExplorer,
     ShowSearch,
@@ -56,6 +57,7 @@ impl CommandId {
             CommandId::SaveAll => "workbench.action.files.saveAll",
             CommandId::CloseFile => "workbench.action.closeActiveEditor",
             CommandId::CloseAllFiles => "workbench.action.closeAllEditors",
+            CommandId::SplitEditor => "workbench.action.splitEditor",
             CommandId::ToggleSidebar => "workbench.action.toggleSidebarVisibility",
             CommandId::ShowExplorer => "workbench.view.explorer",
             CommandId::ShowSearch => "workbench.view.search",
@@ -100,6 +102,7 @@ pub const COMMANDS: &[CommandEntry] = &[
     CommandEntry { id: CommandId::SaveAll,       title: "Save All",                category: "File", shortcut: Some("⌥⌘S") },
     CommandEntry { id: CommandId::CloseFile,     title: "Close Editor",            category: "File", shortcut: Some("⌘W") },
     CommandEntry { id: CommandId::CloseAllFiles, title: "Close All Editors",       category: "File", shortcut: None },
+    CommandEntry { id: CommandId::SplitEditor,   title: "Split Editor",            category: "View", shortcut: Some("⌘\\") },
     CommandEntry { id: CommandId::ToggleSidebar, title: "Toggle Sidebar Visibility", category: "View", shortcut: Some("⌘B") },
     CommandEntry { id: CommandId::ShowExplorer,  title: "Show Explorer",           category: "View", shortcut: Some("⇧⌘E") },
     CommandEntry { id: CommandId::ShowSearch,    title: "Show Search",             category: "View", shortcut: Some("⇧⌘F") },
@@ -121,6 +124,8 @@ pub enum PaletteAction {
     Command(CommandId),
     /// A Quick Open file result, optionally with a `:line` suffix.
     OpenFile { path: PathBuf, line: Option<usize> },
+    /// ⌘Enter on a Quick Open file result: "Open to the Side".
+    OpenFileToSide { path: PathBuf, line: Option<usize> },
     /// `:N` with no file name — go to line N in the active editor.
     GoToLine(usize),
     /// The row's "Remove from Recently Opened" button: drop the file from
@@ -744,6 +749,12 @@ pub fn show(ctx: &Context, state: &mut CommandPaletteState) -> Option<PaletteAct
         }
         if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
             state.selected = state.selected.saturating_sub(1);
+        }
+        if i.consume_key(Modifiers::COMMAND, Key::Enter) {
+            if let Some(ItemKind::File { path, line }) = items.get(state.selected).map(|item| item.kind.clone()) {
+                chosen = Some(PaletteAction::OpenFileToSide { path, line });
+                state.visible = false;
+            }
         }
         if i.consume_key(Modifiers::NONE, Key::Enter) {
             if let Some(item) = items.get(state.selected) {

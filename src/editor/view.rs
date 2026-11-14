@@ -48,6 +48,12 @@ pub struct EditorOutput {
     pub caret_char: Option<usize>,
 }
 
+/// The scroll info of the editor whose area starts at `origin`: each
+/// editor group keeps its own.
+fn scroll_key(origin: egui::Pos2) -> egui::Id {
+    egui::Id::new(SCROLL_INFO).with((origin.x.round() as i32, origin.y.round() as i32))
+}
+
 pub fn show(
     ui: &mut Ui,
     doc: &mut Document,
@@ -127,7 +133,7 @@ pub fn show_with_squiggles(
         let visible_rows = (editor_rect.height() / LINE_HEIGHT).ceil() as usize;
         let top_line = ui
             .ctx()
-            .data(|d| d.get_temp::<(egui::Id, f32, f32, f32)>(egui::Id::new(SCROLL_INFO)))
+            .data(|d| d.get_temp::<(egui::Id, f32, f32, f32)>(scroll_key(full.min)))
             .map(|(_, off, _, _)| (off / LINE_HEIGHT) as usize)
             .unwrap_or(0);
         super::minimap::show(ui, mm_rect, doc, top_line, visible_rows);
@@ -386,7 +392,7 @@ fn show_editable(
         ;
     ui.ctx().data_mut(|d| {
         d.insert_temp(
-            egui::Id::new(SCROLL_INFO),
+            scroll_key(ui.max_rect().min),
             (scroll.id, scroll.state.offset.y, scroll.content_size.y, scroll.inner_rect.height()),
         )
     });
@@ -660,7 +666,7 @@ fn paint_indent_guides(ui: &Ui, text: &str, content_left: f32, top: f32, cursor_
 /// while the pointer is over the editor, draggable.
 fn paint_scrollbar(ui: &mut Ui, strip: egui::Rect, editor: egui::Rect, cursor_line: usize) {
     let Some((id, offset, content_h, view_h)) =
-        ui.ctx().data(|d| d.get_temp::<(egui::Id, f32, f32, f32)>(egui::Id::new(SCROLL_INFO)))
+        ui.ctx().data(|d| d.get_temp::<(egui::Id, f32, f32, f32)>(scroll_key(editor.min)))
     else {
         return;
     };

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct Document {
     pub path: PathBuf,
     pub text: String,
@@ -36,6 +37,8 @@ pub struct Document {
     /// The Welcome page (`GettingStartedInput`), shown in a tab like any
     /// editor.
     pub welcome: bool,
+    /// The editor group (0 = left, 1 = right of a split) the tab lives in.
+    pub group: u8,
 }
 
 impl Document {
@@ -69,6 +72,7 @@ impl Document {
             read_only: false,
             untitled: false,
             welcome: false,
+            group: 0,
         })
     }
 
@@ -95,6 +99,7 @@ impl Document {
             read_only: true,
             untitled: false,
             welcome: false,
+            group: 0,
         }
     }
 
@@ -126,6 +131,7 @@ impl Document {
             read_only: true,
             untitled: false,
             welcome: false,
+            group: 0,
         }
     }
 
