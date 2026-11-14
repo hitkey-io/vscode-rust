@@ -127,7 +127,7 @@ struct OutputKey {
 #[derive(Clone)]
 struct OutRow {
     text: String,
-    spans: Vec<(usize, usize, Color32)>,
+    spans: Vec<(usize, usize, Color32, bool)>,
 }
 
 #[derive(Default)]
@@ -575,7 +575,7 @@ fn log_regex() -> &'static regex::Regex {
 }
 
 /// Coloured char ranges of one output line.
-fn log_spans(line: &str, colours: &[(&'static str, Color32)]) -> Vec<(usize, usize, Color32)> {
+fn log_spans(line: &str, colours: &[(&'static str, Color32)], bold: &[&str]) -> Vec<(usize, usize, Color32, bool)> {
     let colour = |name: &str| colours.iter().find(|(n, _)| *n == name).map(|(_, c)| *c);
     let mut spans = Vec::new();
     for cap in log_regex().captures_iter(line) {
@@ -584,7 +584,7 @@ fn log_spans(line: &str, colours: &[(&'static str, Color32)]) -> Vec<(usize, usi
             if cap.name(name).is_some() {
                 if let Some(c) = colour(name) {
                     let a = line[..m.start()].chars().count();
-                    spans.push((a, a + m.as_str().chars().count(), c));
+                    spans.push((a, a + m.as_str().chars().count(), c, bold.contains(name)));
                 }
                 break;
             }
@@ -667,12 +667,27 @@ fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, 
         .into_iter()
         .filter_map(|(n, scopes)| crate::theme::token_style(scopes).0.map(|c| (n, c)))
         .collect();
+        let bold: Vec<&str> = [
+            ("date", &["comment", "log.date"][..]),
+            ("verbose", &["comment", "log.verbose"][..]),
+            ("debug", &["markup.changed", "log.debug"][..]),
+            ("info", &["markup.inserted", "log.info"][..]),
+            ("warn", &["markup.deleted", "log.warning"][..]),
+            ("error", &["string.regexp", "strong", "log.error"][..]),
+            ("url", &["constant.language", "log.constant"][..]),
+            ("string", &["string", "log.string"][..]),
+            ("constant", &["constant.language", "log.constant"][..]),
+        ]
+        .into_iter()
+        .filter(|(_, scopes)| crate::theme::token_style(scopes).1.is_some_and(|f| f.split_whitespace().any(|w| w == "bold")))
+        .map(|(n, _)| n)
+        .collect();
         let mut rows = Vec::new();
         for line in text.split('\n').map(|l| l.trim_end_matches('\r')) {
             if !output_filter_passes(line, &filter) {
                 continue;
             }
-            let spans = log_spans(line, &colours);
+            let spans = log_spans(line, &colours, &bold);
             let chars: Vec<char> = line.chars().collect();
             let indent = chars.iter().take_while(|c| **c == ' ').count().min(cols.saturating_sub(8));
             for (k, (a, b)) in wrap_ranges(line, cols).into_iter().enumerate() {
@@ -681,8 +696,8 @@ fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, 
                 row_text.extend(chars[a..b].iter());
                 let row_spans = spans
                     .iter()
-                    .filter(|(s, e, _)| *s < b && *e > a)
-                    .map(|(s, e, c)| (prefix + (*s).max(a) - a, prefix + (*e).min(b) - a, *c))
+                    .filter(|(s, e, _, _)| *s < b && *e > a)
+                    .map(|(s, e, c, bd)| (prefix + (*s).max(a) - a, prefix + (*e).min(b) - a, *c, *bd))
                     .collect();
                 rows.push(OutRow { text: row_text, spans: row_spans });
             }
@@ -718,22 +733,23 @@ fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, 
         let chars: Vec<char> = row.text.chars().collect();
         let mut job = egui::text::LayoutJob::default();
         let mut at = 0;
-        let mut push = |job: &mut egui::text::LayoutJob, a: usize, b: usize, c: Color32| {
+        let bold_font = icons::editor_mono_bold_font(12.0);
+        let mut push = |job: &mut egui::text::LayoutJob, a: usize, b: usize, c: Color32, bd: bool| {
             if b > a {
-                job.append(&chars[a..b].iter().collect::<String>(), 0.0, egui::TextFormat { font_id: font.clone(), color: c, line_height: Some(LINE), ..Default::default() });
+                job.append(&chars[a..b].iter().collect::<String>(), 0.0, egui::TextFormat { font_id: if bd { bold_font.clone() } else { font.clone() }, color: c, line_height: Some(LINE), ..Default::default() });
             }
         };
         let mut spans = row.spans.clone();
         spans.sort_by_key(|s| s.0);
-        for (a, b, c) in spans {
+        for (a, b, c, bd) in spans {
             if a < at {
                 continue;
             }
-            push(&mut job, at, a, fg);
-            push(&mut job, a, b, c);
+            push(&mut job, at, a, fg, false);
+            push(&mut job, a, b, c, bd);
             at = b;
         }
-        push(&mut job, at, chars.len(), fg);
+        push(&mut job, at, chars.len(), fg, false);
         let g = ui.fonts_mut(|f| f.layout_job(job));
         clip.galley(Pos2::new(area.left(), y), g, fg);
         y += LINE;
@@ -1296,12 +1312,13 @@ mod tests {
         let colours: Vec<(&'static str, Color32)> =
             vec![("date", Color32::GRAY), ("info", Color32::GREEN), ("error", Color32::RED), ("url", Color32::BLUE), ("constant", Color32::YELLOW)];
         let line = "2026-11-14 09:58:54.816 [error] [Network] #132: https://example.com/a - failed";
-        let spans = log_spans(line, &colours);
-        let text = |s: &(usize, usize, Color32)| line.chars().skip(s.0).take(s.1 - s.0).collect::<String>();
+        let spans = log_spans(line, &colours, &["error"]);
+        let text = |s: &(usize, usize, Color32, bool)| line.chars().skip(s.0).take(s.1 - s.0).collect::<String>();
         assert_eq!(text(&spans[0]), "2026-11-14");
         assert_eq!(text(&spans[1]), "09:58:54.816");
         assert_eq!(text(&spans[2]), "[error]");
         assert_eq!(spans[2].2, Color32::RED);
+        assert!(spans[2].3 && !spans[0].3, "only [error] is bold");
         assert!(spans.iter().any(|s| text(s) == "132" && s.2 == Color32::YELLOW));
         assert!(spans.iter().any(|s| text(s) == "https://example.com/a" && s.2 == Color32::BLUE));
     }

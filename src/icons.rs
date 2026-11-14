@@ -20,6 +20,13 @@ pub fn editor_mono_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name(EDITOR_MONO_FAMILY.into()))
 }
 
+/// Menlo Bold, for bold spans in monospace text (the log's `[error]`).
+pub const EDITOR_MONO_BOLD_FAMILY: &str = "editor-mono-bold";
+
+pub fn editor_mono_bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(EDITOR_MONO_BOLD_FAMILY.into()))
+}
+
 pub fn register_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -50,6 +57,14 @@ pub fn register_fonts(ctx: &egui::Context) {
             egui::FontFamily::Name(EDITOR_MONO_FAMILY.into()),
             vec!["Menlo".to_owned()],
         );
+        // Menlo Bold is face 1 of the collection.
+        let mut bold = egui::FontData::from_owned(std::fs::read("/System/Library/Fonts/Menlo.ttc").unwrap_or_default());
+        bold.index = 1;
+        fonts.font_data.insert("MenloBold".to_owned(), std::sync::Arc::new(bold));
+        fonts.families.insert(
+            egui::FontFamily::Name(EDITOR_MONO_BOLD_FAMILY.into()),
+            vec!["MenloBold".to_owned(), "Menlo".to_owned()],
+        );
         // Also make Menlo the head of the generic Monospace family so any
         // FontId::monospace(...) renders in it.
         fonts
@@ -75,6 +90,8 @@ pub fn register_fonts(ctx: &egui::Context) {
                 .cloned()
                 .unwrap_or_default(),
         );
+        let mono = fonts.families.get(&egui::FontFamily::Monospace).cloned().unwrap_or_default();
+        fonts.families.insert(egui::FontFamily::Name(EDITOR_MONO_BOLD_FAMILY.into()), mono);
     }
 
     ctx.set_fonts(fonts);
