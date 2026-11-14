@@ -92,6 +92,18 @@ pub struct SettingDef {
     /// For objects whose keys are all booleans: key → description.
     #[serde(default)]
     pub properties: serde_json::Map<String, Value>,
+    /// Object settings: the schema of fixed keys (`properties`), of keys
+    /// matching a pattern (`patternProperties`, pattern → schema) and of
+    /// any other (`additionalProperties`); each `{type: string | boolean |
+    /// enum, enum?, description?}`.
+    #[serde(default)]
+    pub object_properties: serde_json::Map<String, Value>,
+    #[serde(default)]
+    pub object_pattern_properties: Vec<(String, Value)>,
+    pub object_additional: Option<Value>,
+    /// No other keys than the listed ones (`additionalProperties: false`).
+    #[serde(default)]
+    pub object_closed: bool,
     #[serde(default)]
     pub section: Section,
     pub source: Option<Source>,

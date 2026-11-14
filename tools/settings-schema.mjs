@@ -192,6 +192,37 @@ for (const [key, raw] of Object.entries(schema.properties)) {
 	if (allKeysAreBoolean) {
 		entry.properties = Object.fromEntries(Object.entries(s.properties).map(([k, p]) => [k, p.markdownDescription || p.description || '']));
 	}
+	if (entry.valueType === 'object') {
+		// What the object widget needs (settingsTreeModels.ts: objectProperties,
+		// objectPatternProperties, objectAdditionalProperties).
+		const valueSchema = (v) => {
+			if (!v || typeof v !== 'object') { return undefined; }
+			const o = { type: 'string' };
+			const branches = v.anyOf ? v.anyOf : [v];
+			if (branches.some((b) => b.type === 'string' && b.enum?.length > 0)) {
+				const e = branches.find((b) => b.type === 'string' && b.enum?.length > 0);
+				o.type = 'enum';
+				o.enum = e.enum;
+				o.enumDescriptions = e.markdownEnumDescriptions ?? e.enumDescriptions;
+			} else if (!v.anyOf && v.type === 'boolean') {
+				o.type = 'boolean';
+			}
+			o.description = v.markdownDescription || v.description || undefined;
+			return o;
+		};
+		if (s.properties) {
+			entry.objectProperties = Object.fromEntries(Object.entries(s.properties).map(([k, p]) => [k, valueSchema(p) ?? { type: 'string' }]));
+		}
+		if (s.patternProperties) {
+			entry.objectPatternProperties = Object.entries(s.patternProperties).map(([k, p]) => [k, valueSchema(p) ?? { type: 'string' }]);
+		}
+		if (s.additionalProperties && typeof s.additionalProperties === 'object') {
+			entry.objectAdditional = valueSchema(s.additionalProperties);
+		}
+		if (s.additionalProperties === false || s.additionalProperties === undefined && (s.properties || s.patternProperties)) {
+			entry.objectClosed = true;
+		}
+	}
 	entry.section = { id: s.section.id || '', title: s.section.title || '', order: s.section.order };
 	if (s.source && typeof s.source === 'object') {
 		entry.source = { id: s.source.id, displayName: s.source.displayName };

@@ -796,3 +796,33 @@ fn extensions_needing_trust_wait_for_it() {
     assert_eq!(service.enablement("t.plain"), Enablement::Enabled);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn settings_editor_object_table_adds_and_resets_entries() {
+    let (mut harness, seen) = launch_settings_watching(Some("@id:files.associations"), "files.associations");
+    for _ in 0..4 {
+        harness.run();
+    }
+    let _ = harness.get_by_label("setting:files.associations");
+    harness.get_by_label("Add Item").click();
+    harness.run();
+    harness.get_by_label("Key").type_text("*.vue");
+    harness.run();
+    harness.get_by_label("Value").click();
+    harness.run();
+    harness.get_by_label("Value").type_text("html");
+    harness.run();
+    harness.get_by_label("OK").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), Some(serde_json::json!({"*.vue": "html"})));
+    let _ = harness.get_by_label("item:*.vue");
+    harness.snapshot("interaction_settings_object");
+    // Removing the only entry resets the setting.
+    harness.get_by_label("item:*.vue").hover();
+    harness.run();
+    harness.get_by_label("Remove Item").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), None);
+}
