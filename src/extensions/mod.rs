@@ -225,6 +225,9 @@ pub enum Enablement {
     Enabled,
     DisabledGlobally,
     DisabledWorkspace,
+    /// Enabled, but the workspace isn't trusted and the extension doesn't
+    /// support that (`EnablementState.DisabledByTrustRequirement`).
+    DisabledByTrust,
 }
 
 /// Choices per extension, kept in `<install dir>/.extension-state.json`.
@@ -283,6 +286,9 @@ pub struct ExtensionService {
     pub disabled: Vec<Extension>,
     /// Enablement and auto-update choices, kept beside the installs.
     pub state: ExtensionState,
+    /// The workspace is in Restricted Mode: extensions that don't support
+    /// untrusted workspaces don't run.
+    pub restricted: bool,
     /// `id@version` updates already started by auto-update.
     auto_updated: BTreeSet<String>,
     /// How long each running extension took to activate.
@@ -365,8 +371,11 @@ impl ExtensionService {
     /// Put each installed extension in `extensions` or `disabled`.
     fn split_enabled(&mut self, all: Vec<Extension>) {
         let workspace = self.workspace.clone();
-        let (enabled, disabled): (Vec<_>, Vec<_>) =
-            all.into_iter().partition(|e| self.state.enablement(&e.id, workspace.as_deref()) == Enablement::Enabled);
+        let restricted = self.restricted;
+        let (enabled, disabled): (Vec<_>, Vec<_>) = all.into_iter().partition(|e| {
+            self.state.enablement(&e.id, workspace.as_deref()) == Enablement::Enabled
+                && !(restricted && e.untrusted_support() == manifest::UntrustedSupport::No)
+        });
         self.extensions = enabled;
         self.disabled = disabled;
         self.activation = self
@@ -387,7 +396,27 @@ impl ExtensionService {
 
     /// Whether `id` runs, or why not.
     pub fn enablement(&self, id: &str) -> Enablement {
-        self.state.enablement(id, self.workspace.as_deref())
+        let state = self.state.enablement(id, self.workspace.as_deref());
+        if state == Enablement::Enabled && self.restricted && self.installed().any(|e| e.id == id && e.untrusted_support() == manifest::UntrustedSupport::No) {
+            return Enablement::DisabledByTrust;
+        }
+        state
+    }
+
+    /// The workspace's trust changed: extensions that need trust stop in
+    /// Restricted Mode and start again once it is trusted (the host restarts).
+    pub fn set_restricted(&mut self, restricted: bool) {
+        if self.restricted == restricted {
+            return;
+        }
+        self.restricted = restricted;
+        if self.wake.is_some() {
+            self.reload();
+        } else {
+            let mut all = std::mem::take(&mut self.extensions);
+            all.append(&mut self.disabled);
+            self.split_enabled(all);
+        }
     }
 
     /// Enable or disable `id` everywhere (`workspace: false`) or only in

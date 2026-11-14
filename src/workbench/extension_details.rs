@@ -46,6 +46,8 @@ pub enum Enabled {
     Yes,
     DisabledGlobally,
     DisabledWorkspace,
+    /// The workspace isn't trusted and the extension doesn't support that.
+    DisabledByTrust,
 }
 
 /// Another extension shown on the page (a dependency, a pack member).
@@ -1054,7 +1056,7 @@ fn actions_html(d: &DetailsData) -> String {
         }
         InstallState::Installed => {
             match d.enabled {
-                Enabled::Yes => a.push_str(&split("Disable", "disable", "disable", false)),
+                Enabled::Yes | Enabled::DisabledByTrust => a.push_str(&split("Disable", "disable", "disable", false)),
                 _ => a.push_str(&split("Enable", "enable", "enable", false)),
             }
             if d.can_uninstall {

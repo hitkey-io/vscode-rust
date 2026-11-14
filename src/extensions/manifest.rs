@@ -74,7 +74,37 @@ pub struct Extension {
     pub manifest: Value,
 }
 
+/// `capabilities.untrustedWorkspaces.supported`: whether an extension runs
+/// in a workspace that isn't trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UntrustedSupport {
+    /// Runs normally (`true`, or nothing to run).
+    Yes,
+    /// Runs and hides what needs trust (`"limited"`).
+    Limited,
+    /// Doesn't run until the workspace is trusted (`false`, or not declared).
+    No,
+}
+
 impl Extension {
+    /// `getExtensionUntrustedWorkspaceSupportType`: extensions without code
+    /// always run; otherwise the manifest's value, `false` when absent.
+    pub fn untrusted_support(&self) -> UntrustedSupport {
+        if self.main.is_none() && self.manifest.get("browser").is_none() {
+            return UntrustedSupport::Yes;
+        }
+        match self.manifest.pointer("/capabilities/untrustedWorkspaces/supported") {
+            Some(Value::Bool(true)) => UntrustedSupport::Yes,
+            Some(Value::String(s)) if s == "limited" => UntrustedSupport::Limited,
+            _ => UntrustedSupport::No,
+        }
+    }
+
+    /// The manifest's own explanation (`untrustedWorkspaces.description`).
+    pub fn untrusted_description(&self) -> Option<String> {
+        self.manifest.pointer("/capabilities/untrustedWorkspaces/description").and_then(Value::as_str).map(str::to_string)
+    }
+
     /// Read the extension in `dir`. `None` when there's no readable
     /// `package.json` or it lacks a name or publisher.
     pub fn read(dir: &Path) -> Option<Self> {

@@ -743,6 +743,8 @@ impl App {
         if self.extensions_pending_start {
             self.extensions_pending_start = false;
             let wake = ctx.clone();
+            let restricted = !self.workspace_trusted();
+            self.extensions.restricted = restricted;
             self.extensions
                 .start(self.workspace_root.as_deref(), move || wake.request_repaint());
             self.extensions.marketplace.load_recommendations(self.workspace_root.as_deref());
@@ -752,6 +754,10 @@ impl App {
             let wake = ctx.clone();
             self.extensions.marketplace.enable(move || wake.request_repaint());
         }
+        // Trusting the folder (or closing it) starts the extensions that need
+        // trust; Restricted Mode stops them.
+        let restricted = !self.workspace_trusted();
+        self.extensions.set_restricted(restricted);
         if self.extensions.tick_marketplace(ctx) {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -1371,6 +1377,7 @@ impl App {
                     crate::extensions::Enablement::Enabled => Enabled::Yes,
                     crate::extensions::Enablement::DisabledGlobally => Enabled::DisabledGlobally,
                     crate::extensions::Enablement::DisabledWorkspace => Enabled::DisabledWorkspace,
+                    crate::extensions::Enablement::DisabledByTrust => Enabled::DisabledByTrust,
                 };
                 d.can_uninstall = self.extensions.can_uninstall(&e.id);
                 d.auto_update = self.extensions.auto_update(&e.id);
@@ -1382,7 +1389,18 @@ impl App {
                     Enabled::DisabledWorkspace => {
                         d.status.push(("", "This extension is disabled for this workspace by the user.".into()))
                     }
-                    Enabled::Yes => {}
+                    Enabled::DisabledByTrust => d.status.push((
+                        "workspace-untrusted",
+                        e.untrusted_description().unwrap_or_else(|| "This extension has been disabled because the current workspace is not trusted.".into()),
+                    )),
+                    Enabled::Yes => {
+                        if !self.workspace_trusted() && e.untrusted_support() == crate::extensions::manifest::UntrustedSupport::Limited {
+                            d.status.push((
+                                "workspace-untrusted",
+                                e.untrusted_description().unwrap_or_else(|| "This extension has limited features because the current workspace is not trusted.".into()),
+                            ));
+                        }
+                    }
                 }
                 let activation = self.extensions.activation.get(&e.id).cloned();
                 match &activation {
@@ -1650,7 +1668,8 @@ impl App {
             // `ManageExtensionAction`: the ⚙ of a row in the Extensions view.
             "list" => {
                 let mut v = Vec::new();
-                if self.extensions.enablement(id) == crate::extensions::Enablement::Enabled {
+                // Disabled only by the workspace's trust still counts as enabled.
+                if matches!(self.extensions.enablement(id), crate::extensions::Enablement::Enabled | crate::extensions::Enablement::DisabledByTrust) {
                     v.push(item("Disable", ExtPageAction::Disable(false)));
                     if workspace {
                         v.push(item("Disable (Workspace)", ExtPageAction::Disable(true)));

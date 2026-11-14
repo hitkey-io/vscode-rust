@@ -752,3 +752,40 @@ fn output_view_shows_the_selected_channel() {
     let _ = harness.get_by_label("Output channel: Git");
     harness.snapshot("interaction_output_view");
 }
+
+#[test]
+fn extensions_needing_trust_wait_for_it() {
+    use vscode_rust::extensions::{manifest::UntrustedSupport, Enablement, ExtensionService};
+    // A throwaway extensions folder: one extension without a capability
+    // declaration, one that supports untrusted workspaces, one "limited".
+    let dir = std::env::temp_dir().join(format!("vscode-rust-trust-ext-{}", std::process::id()));
+    let make = |name: &str, caps: &str| {
+        let d = dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            format!(r#"{{"name":"{name}","publisher":"t","version":"1.0.0","engines":{{"vscode":"^1.0.0"}},"main":"./x.js"{caps}}}"#),
+        )
+        .unwrap();
+    };
+    make("plain", "");
+    make("safe", r#","capabilities":{"untrustedWorkspaces":{"supported":true}}"#);
+    make("limited", r#","capabilities":{"untrustedWorkspaces":{"supported":"limited"}}"#);
+    let mut service = ExtensionService::default();
+    service.load(&[dir.clone()]);
+    // Trusted: all three run.
+    assert!(service.extensions.iter().all(|e| ["t.plain", "t.safe", "t.limited"].contains(&e.id.as_str())));
+    assert_eq!(service.extensions.len(), 3);
+    // Restricted Mode: only the one that doesn't support it stops.
+    service.set_restricted(true);
+    let running: Vec<&str> = service.extensions.iter().map(|e| e.id.as_str()).collect();
+    assert!(running.contains(&"t.safe") && running.contains(&"t.limited") && !running.contains(&"t.plain"), "{running:?}");
+    assert_eq!(service.enablement("t.plain"), Enablement::DisabledByTrust);
+    assert_eq!(service.enablement("t.safe"), Enablement::Enabled);
+    assert_eq!(service.installed().find(|e| e.id == "t.limited").unwrap().untrusted_support(), UntrustedSupport::Limited);
+    // Trusting the folder brings it back.
+    service.set_restricted(false);
+    assert_eq!(service.extensions.len(), 3);
+    assert_eq!(service.enablement("t.plain"), Enablement::Enabled);
+    let _ = std::fs::remove_dir_all(&dir);
+}
