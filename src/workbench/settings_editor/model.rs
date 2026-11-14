@@ -699,6 +699,9 @@ pub struct Query {
     pub ids: Vec<String>,
     pub extensions: Vec<String>,
     pub features: Vec<String>,
+    /// `@lang:id`: the language-overridable settings, shown with the values
+    /// of the `[id]` section.
+    pub langs: Vec<String>,
 }
 
 /// `SettingMatchType` (preferences.ts): bigger is better.
@@ -871,6 +874,10 @@ impl Query {
                 q.extensions.push(t.to_lowercase());
             } else if let Some(t) = token.strip_prefix("@feature:") {
                 q.features.push(t.to_lowercase());
+            } else if let Some(t) = token.strip_prefix("@lang:") {
+                if !t.is_empty() {
+                    q.langs.push(t.to_string());
+                }
             } else {
                 rest.push(token);
             }
@@ -899,6 +906,10 @@ impl Query {
             return false;
         }
         if !self.extensions.is_empty() && !s.source.as_ref().is_some_and(|src| self.extensions.iter().any(|e| src.id.to_lowercase() == *e)) {
+            return false;
+        }
+        // Only settings a language can override (`ConfigurationScope.LANGUAGE_OVERRIDABLE`).
+        if !self.langs.is_empty() && s.scope != Some(6) {
             return false;
         }
         if !self.features.is_empty() && !self.features.iter().any(|f| s.key.to_lowercase().starts_with(&format!("{f}."))) {

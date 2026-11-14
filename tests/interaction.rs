@@ -992,3 +992,20 @@ fn dragging_a_tab_reorders_it_or_splits_the_editor() {
     harness.run();
     assert_eq!(harness.get_all_by_label("Split Editor Right (⌘\\)").count(), 2);
 }
+
+#[test]
+fn settings_editor_lang_filter_writes_the_language_section() {
+    let (mut harness, seen) = launch_settings_watching(Some("@lang:typescript @id:editor.insertSpaces"), "[typescript]");
+    for _ in 0..4 {
+        harness.run();
+    }
+    harness.get_by_label("editor.insertSpaces").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), Some(serde_json::json!({"editor.insertSpaces": false})));
+    // Back to the default: the section goes away.
+    harness.get_by_label("editor.insertSpaces").click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), None);
+}

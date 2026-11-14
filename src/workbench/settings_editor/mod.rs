@@ -208,6 +208,34 @@ fn text_fg() -> Color32 {
 
 /// Draws the editor in `rect`.
 pub fn show(ui: &mut Ui, rect: Rect, state: &mut SettingsEditorState, values: &Values<'_>) -> SettingsEditorOutput {
+    // `@lang:id` shows and writes the `[id]` section of the settings file.
+    let Some(lang) = model::Query::parse(&state.query).langs.first().cloned() else {
+        return show_values(ui, rect, state, values);
+    };
+    let section = format!("[{lang}]");
+    let pick = |m: &Map<String, Value>| m.get(&section).and_then(Value::as_object).cloned().unwrap_or_default();
+    let user = pick(values.user);
+    let workspace = values.workspace.map(pick);
+    let overrides = Values { user: &user, workspace: workspace.as_ref() };
+    let mut out = show_values(ui, rect, state, &overrides);
+    if let Some((target, key, value)) = out.set.take() {
+        let mut object = overrides.of(target).cloned().unwrap_or_default();
+        // Choosing the default drops the override, as in the main section.
+        let is_default = |v: &Value| !v.is_object() && !v.is_array() && model::find(&key).is_some_and(|i| model::settings()[i].default == *v);
+        match value {
+            Some(v) if !is_default(&v) => {
+                object.insert(key, v);
+            }
+            _ => {
+                object.remove(&key);
+            }
+        }
+        out.set = Some((target, section, (!object.is_empty()).then(|| Value::Object(object))));
+    }
+    out
+}
+
+fn show_values(ui: &mut Ui, rect: Rect, state: &mut SettingsEditorState, values: &Values<'_>) -> SettingsEditorOutput {
     let mut out = SettingsEditorOutput::default();
     let id = ui.id().with("settings-editor");
     ui.painter().rect_filled(rect, 0.0, Palette::EDITOR_BG());
