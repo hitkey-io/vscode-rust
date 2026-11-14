@@ -771,6 +771,9 @@ fn output_view_shows_the_selected_channel() {
     }
     let _ = harness.get_by_label("Output channel: Git");
     harness.snapshot("interaction_output_view");
+    // Dragging over the text selects it.
+    drag(&mut harness, egui::pos2(380.0, 571.0), egui::pos2(700.0, 590.0));
+    harness.snapshot("interaction_output_selection");
 }
 
 #[test]

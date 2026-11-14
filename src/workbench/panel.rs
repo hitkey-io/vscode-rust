@@ -150,6 +150,8 @@ pub struct PanelState {
     /// Auto scrolling follows new output (the lock button).
     pub output_follow: bool,
     pub output_scroll: f32,
+    /// Selected text of the Output view: anchor and head as (row, column).
+    output_sel: Option<((usize, usize), (usize, usize))>,
     output_seen: (String, usize),
     output_cache: Option<(OutputKey, Vec<OutRow>)>,
     /// Files collapsed in the Problems tree.
@@ -722,13 +724,65 @@ fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, 
         state.output_scroll -= ui.input(|i| i.smooth_scroll_delta.y);
     }
     state.output_scroll = state.output_scroll.clamp(0.0, max_scroll);
+    // Selecting text: drag over the rows, ⌘C copies (wrapped rows of one
+    // line join without a break).
+    let text_id = id.with("output-text");
+    let text_resp = ui.interact(area, text_id, Sense::click_and_drag());
+    let at_pos = |p: Pos2, scroll: f32| -> (usize, usize) {
+        let row = (((p.y - area.top() + scroll) / LINE).floor().max(0.0) as usize).min(rows.len().saturating_sub(1));
+        let col = (((p.x - area.left()) / cell_w).round().max(0.0) as usize).min(rows.get(row).map_or(0, |r| r.text.chars().count()));
+        (row, col)
+    };
+    if text_resp.drag_started() || text_resp.clicked() {
+        ui.memory_mut(|m| m.request_focus(text_id));
+    }
+    if text_resp.drag_started() {
+        if let Some(p) = ui.input(|i| i.pointer.press_origin()) {
+            let a = at_pos(p, state.output_scroll);
+            state.output_sel = Some((a, a));
+        }
+    } else if text_resp.dragged() {
+        if let (Some(p), Some((a, _))) = (text_resp.interact_pointer_pos(), state.output_sel) {
+            state.output_sel = Some((a, at_pos(p, state.output_scroll)));
+        }
+    } else if text_resp.clicked() {
+        state.output_sel = None;
+    }
+    let ordered_sel = state.output_sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) }).filter(|(a, b)| a != b);
+    if let Some((from, to)) = ordered_sel {
+        if ui.memory(|m| m.has_focus(text_id)) && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+            let mut out = String::new();
+            for r in from.0..=to.0.min(rows.len().saturating_sub(1)) {
+                let chars: Vec<char> = rows[r].text.chars().collect();
+                let a = if r == from.0 { from.1.min(chars.len()) } else { 0 };
+                let b = if r == to.0 { to.1.min(chars.len()) } else { chars.len() };
+                out.extend(chars[a..b.max(a)].iter());
+                if r != to.0 {
+                    out.push('\n');
+                }
+            }
+            ui.ctx().copy_text(out);
+        }
+    }
     let clip = painter.with_clip_rect(Rect::from_min_max(Pos2::new(content.left(), area.top()), Pos2::new(content.right(), area.bottom() + 5.0)));
     let first = (state.output_scroll / LINE).floor() as usize;
     let fg = Palette::EDITOR_FG();
     let mut y = area.top() + first as f32 * LINE - state.output_scroll;
-    for row in rows.iter().skip(first) {
+    for (k, row) in rows.iter().enumerate().skip(first) {
         if y > area.bottom() {
             break;
+        }
+        if let Some((from, to)) = ordered_sel {
+            let r = k;
+            if r >= from.0 && r <= to.0 {
+                let len = row.text.chars().count();
+                let a = if r == from.0 { from.1 } else { 0 };
+                let b = if r == to.0 { to.1 } else { len + 1 };
+                if b > a {
+                    let sel = Rect::from_min_max(Pos2::new(area.left() + a as f32 * cell_w, y), Pos2::new(area.left() + (b as f32 * cell_w).min(area.width()), y + LINE));
+                    clip.rect_filled(sel, 0.0, Palette::SELECTION_BG());
+                }
+            }
         }
         let chars: Vec<char> = row.text.chars().collect();
         let mut job = egui::text::LayoutJob::default();
