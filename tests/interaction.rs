@@ -1027,3 +1027,19 @@ fn settings_editor_keeps_the_group_header_pinned_while_scrolling() {
     }
     harness.snapshot("interaction_settings_sticky_header");
 }
+
+#[test]
+fn a_dragged_tab_shows_where_it_will_land() {
+    let mut harness = launch_two_tabs();
+    let from = egui::pos2(420.0, 77.0);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.step();
+    harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.step();
+    harness.event(egui::Event::PointerMoved(egui::pos2(500.0, 77.0)));
+    harness.step();
+    harness.event(egui::Event::PointerMoved(egui::pos2(640.0, 77.0)));
+    harness.step();
+    harness.step();
+    harness.snapshot("interaction_tab_drag_marker");
+}

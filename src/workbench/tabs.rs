@@ -130,6 +130,19 @@ pub fn show<D: std::borrow::Borrow<Document>>(
     action.rects = response.rects.iter().skip(skip).copied().collect();
     action.dragging = response.dragging.is_some_and(|i| i >= skip);
     action.dropped = response.dropped.and_then(|(i, p)| i.checked_sub(skip).map(|i| (i, p)));
+    // While a tab is dragged over its strip, a line shows where it lands
+    // (in front of the first tab whose centre is right of the pointer).
+    if action.dragging {
+        if let Some(p) = ui.ctx().input(|i| i.pointer.latest_pos()) {
+            if rect.contains(p) {
+                if let (Some(first), Some(last)) = (action.rects.first(), action.rects.last()) {
+                    let x = action.rects.iter().find(|r| r.center().x > p.x).map(|r| r.left()).unwrap_or(last.right()).max(first.left());
+                    let line = egui::Rect::from_min_max(egui::pos2(x - 1.0, rect.top() + 4.0), egui::pos2(x + 1.0, rect.bottom() - 4.0));
+                    ui.painter().rect_filled(line, 1.0, Palette::FOCUS_BORDER());
+                }
+            }
+        }
+    }
 
     // Translate the composite-widget response into the workbench's action
     // shape. The welcome tab occupies slot 0 when present; everything else
