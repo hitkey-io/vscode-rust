@@ -333,7 +333,7 @@ function createOutputChannel(name, options) {
 		appendLine(v) { send({ type: 'output', channel: name, text: String(v) + '\n' }); },
 		replace(v) { send({ type: 'output', channel: name, text: String(v), replace: true }); },
 		clear() { send({ type: 'output', channel: name, text: '', replace: true }); },
-		show() { }, hide() { }, dispose() { outputChannels.delete(name); },
+		show() { send({ type: 'outputShow', channel: name }); }, hide() { }, dispose() { outputChannels.delete(name); send({ type: 'outputDispose', channel: name }); },
 	};
 	// LogOutputChannel (createOutputChannel(name, { log: true })).
 	if (options && (options === true || options.log)) {
@@ -344,6 +344,7 @@ function createOutputChannel(name, options) {
 		ch.onDidChangeLogLevel = silentEvent;
 	}
 	outputChannels.set(name, ch);
+	send({ type: 'outputCreate', channel: name, log: !!(options && (options === true || options.log)) });
 	return ch;
 }
 

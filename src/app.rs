@@ -161,6 +161,8 @@ enum SettingsMenu {
     Filter { pos: egui::Pos2 },
     /// A row of the Keyboard Shortcuts editor.
     Keybinding(crate::workbench::keybindings_editor::RowMenu),
+    /// The Output view's channel dropdown.
+    Output { pos: egui::Pos2 },
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +172,7 @@ enum SettingsMenuAction {
     CopyJson(String),
     Filter(&'static str),
     Keybinding(usize, crate::workbench::keybindings_editor::MenuItem),
+    OutputChannel(String),
 }
 
 /// An entry of a native menu built for the Source Control view.
@@ -688,6 +691,13 @@ impl App {
         }
         ctx.input_mut(|i| i.consume_key(modifiers, key));
         true
+    }
+
+    /// Puts `text` in an extension's output channel (tests).
+    pub fn bootstrap_output(&mut self, channel: &str, text: &str) {
+        self.extensions.channels.insert(channel.to_string(), text.to_string());
+        self.panel.output_channel = channel.to_string();
+        self.panel.output_follow = true;
     }
 
     /// A folder is open.
@@ -5173,7 +5183,16 @@ impl App {
         } else {
             self.panel.height.unwrap_or_else(|| panel::default_height(window_h))
         };
+        if let Some(channel) = self.extensions.show_channel.take() {
+            // `channel.show()`: reveal the Output view on it.
+            self.panel.visible = true;
+            self.panel.view = panel::PanelView::Output;
+            self.panel.output_channel = channel;
+            self.panel.output_follow = true;
+        }
         let problems = self.problem_files();
+        let channel = if self.panel.output_channel.is_empty() { "Tasks" } else { self.panel.output_channel.as_str() };
+        let output_text = if channel == "Extension Host" { self.extensions.log.join("\n") } else { self.extensions.channels.get(channel).cloned().unwrap_or_default() };
         let mut out = TopBottomPanel::bottom("panel")
             .exact_height(card_h + cards::MARGIN)
             .show_separator_line(false)
@@ -5184,11 +5203,22 @@ impl App {
                     egui::pos2(r.left() + cards::MARGIN, r.top()),
                     egui::pos2(r.right() - cards::MARGIN, r.bottom() - cards::MARGIN),
                 );
-                panel::show(ui, card, &mut self.panel, &problems, "")
+                panel::show(ui, card, &mut self.panel, &problems, &panel::OutputText { text: &output_text }, "")
             })
             .inner;
         if out.close {
             self.panel.visible = false;
+        }
+        if let Some(pos) = out.output_menu.take() {
+            self.pending_settings_menu = Some(SettingsMenu::Output { pos });
+        }
+        if out.output_clear {
+            let name = self.panel.output_channel.clone();
+            if name == "Extension Host" {
+                self.extensions.log.clear();
+            } else if let Some(t) = self.extensions.channels.get_mut(&name) {
+                t.clear();
+            }
         }
         if let Some((path, line, col)) = out.open_problem.take() {
             // The marker's UTF-16 column → a byte offset in that line.
@@ -5694,6 +5724,27 @@ impl App {
                 }
                 m.pos
             }
+            SettingsMenu::Output { pos } => {
+                // The extensions' channels, a separator, then the built-in ones.
+                let mut own: Vec<String> = self.extensions.channels.keys().cloned().collect();
+                own.sort_by(|a, b| crate::workbench::settings_editor::model::locale_compare(a, b));
+                let current = self.panel.output_channel.clone();
+                let mut add = |root: &muda::Menu, name: &str, actions: &mut Vec<(muda::MenuId, SettingsMenuAction)>| {
+                    let item = muda::CheckMenuItem::new(name, true, name == current, None);
+                    actions.push((item.id().clone(), SettingsMenuAction::OutputChannel(name.to_string())));
+                    let _ = root.append(&item);
+                };
+                for name in &own {
+                    add(&root, name, &mut actions);
+                }
+                if !own.is_empty() {
+                    let _ = root.append(&muda::PredefinedMenuItem::separator());
+                }
+                for name in crate::workbench::panel::SYSTEM_CHANNELS {
+                    add(&root, name, &mut actions);
+                }
+                pos
+            }
             SettingsMenu::Filter { pos } => {
                 for f in crate::workbench::settings_editor::FILTERS {
                     let item = muda::MenuItem::new(*f, true, None);
@@ -5743,6 +5794,11 @@ impl App {
                 }
             }
             SettingsMenuAction::Keybinding(item, what) => self.keybinding_menu_action(ctx, item, what),
+            SettingsMenuAction::OutputChannel(name) => {
+                self.panel.output_channel = name;
+                self.panel.output_scroll = f32::MAX;
+                self.panel.output_follow = true;
+            }
         }
     }
 

@@ -105,6 +105,31 @@ impl PanelView {
     }
 }
 
+/// Channels VS Code always has (output service's built-ins), in the
+/// dropdown's order below the extensions' own.
+pub const SYSTEM_CHANNELS: &[&str] =
+    &["Extension Host", "Main", "MCP Gateway", "Pty Host", "Remote Tunnel Service", "Settings Sync", "Shared", "Tasks", "Terminal", "Text Model Changes Reason", "Window"];
+
+/// What the Output view needs of the app: the selected channel's text.
+pub struct OutputText<'a> {
+    pub text: &'a str,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct OutputKey {
+    channel: String,
+    len: usize,
+    cols: usize,
+    filter: String,
+}
+
+/// One wrapped row of output with its coloured spans (char ranges).
+#[derive(Clone)]
+struct OutRow {
+    text: String,
+    spans: Vec<(usize, usize, Color32)>,
+}
+
 #[derive(Default)]
 pub struct PanelState {
     pub visible: bool,
@@ -120,6 +145,13 @@ pub struct PanelState {
     /// The active terminal should take the keyboard on the next frame.
     pub focus_pending: bool,
     pub problems_filter: String,
+    /// The Output view's channel (the dropdown's selection).
+    pub output_channel: String,
+    /// Auto scrolling follows new output (the lock button).
+    pub output_follow: bool,
+    pub output_scroll: f32,
+    output_seen: (String, usize),
+    output_cache: Option<(OutputKey, Vec<OutRow>)>,
     /// Files collapsed in the Problems tree.
     pub problems_collapsed: HashSet<PathBuf>,
     /// The selected problem: file and index in its (sorted) problems.
@@ -203,6 +235,10 @@ pub struct PanelOutput {
     pub kill_terminal: bool,
     /// Kill this terminal (a tab's trash button).
     pub kill_index: Option<usize>,
+    /// The channel dropdown was clicked: where its menu opens.
+    pub output_menu: Option<Pos2>,
+    /// Clear Output on the selected channel.
+    pub output_clear: bool,
     /// A problem was activated: open the file at (line, UTF-16 column),
     /// both 0-based.
     pub open_problem: Option<(PathBuf, usize, usize)>,
@@ -255,7 +291,11 @@ fn filter_box(ui: &mut Ui, painter: &egui::Painter, rect: Rect, text: &mut Strin
 }
 
 /// Draws the panel card in `rect` (the area under the editor card).
-pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[ProblemFile], cwd_label: &str) -> PanelOutput {
+pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[ProblemFile], output: &OutputText<'_>, cwd_label: &str) -> PanelOutput {
+    if state.output_channel.is_empty() {
+        state.output_channel = "Tasks".to_string();
+        state.output_follow = true;
+    }
     let _ = cwd_label;
     let mut out = PanelOutput::default();
     let id = ui.id().with("panel");
@@ -336,7 +376,8 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
     let view_actions: &[(&str, &str)] = match state.view {
         PanelView::Terminal if tabs_shown => &[("ellipsis", "Views and More Actions...")],
         PanelView::Problems => &[("list-flat", "View as Table"), ("collapse-all", "Collapse All")],
-        PanelView::Output => &[("ellipsis", "More Actions..."), ("unlock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
+        PanelView::Output if state.output_follow => &[("ellipsis", "Views and More Actions..."), ("lock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
+        PanelView::Output => &[("ellipsis", "Views and More Actions..."), ("unlock", "Turn Auto Scrolling On"), ("clear-all", "Clear Output")],
         PanelView::DebugConsole => &[("clear-all", "Clear Console"), ("search", "Find")],
         PanelView::Terminal => &[("ellipsis", "More Actions..."), ("trash", "Kill Terminal"), ("split-horizontal", "Split Terminal (⌘\\)")],
         PanelView::Ports => &[],
@@ -349,6 +390,8 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
         if icon_button(ui, &painter, at(from), name, tip, id) {
             match *name {
                 "collapse-all" => state.problems_collapsed = problems.iter().map(|f| f.path.clone()).collect(),
+                "lock" | "unlock" => state.output_follow = !state.output_follow,
+                "clear-all" if state.view == PanelView::Output => out.output_clear = true,
                 "trash" => out.kill_terminal = true,
                 "split-horizontal" => out.split_terminal = true,
                 _ => {}
@@ -378,7 +421,13 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
         PanelView::Output => {
             let dd = Rect::from_min_max(Pos2::new(card.right() - 314.0, ty), Pos2::new(card.right() - 144.0, ty + 24.0));
             painter.rect(dd, 4.0, Palette::SETTINGS_DROPDOWN_BG(), Stroke::new(1.0, Palette::SETTINGS_DROPDOWN_BORDER()), egui::StrokeKind::Inside);
-            painter.text(Pos2::new(dd.left() + 7.0, dd.center().y), Align2::LEFT_CENTER, "Tasks", FontId::proportional(12.0), Palette::FG());
+            let dresp = ui.interact(dd, id.with("output-channel"), Sense::click());
+            let channel = state.output_channel.clone();
+            dresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("Output channel: {channel}")));
+            if dresp.clicked() {
+                out.output_menu = Some(Pos2::new(dd.left(), dd.bottom() + 2.0));
+            }
+            painter.text(Pos2::new(dd.left() + 7.0, dd.center().y), Align2::LEFT_CENTER, &state.output_channel, FontId::proportional(12.0), Palette::FG());
             painter.text(Pos2::new(dd.right() - 12.0, dd.center().y), Align2::CENTER_CENTER, icons::codicon_by_name("chevron-down").unwrap_or('v').to_string(), icons::codicon_font(16.0), Palette::FG());
             let r = Rect::from_min_max(Pos2::new(card.right() - 518.0, ty), Pos2::new(card.right() - 318.0, ty + 24.0));
             filter_box(ui, &painter, r, &mut state.output_filter, "Filter (e.g. text, !excludeText, text1,text2)", false, id.with("filter-output"));
@@ -390,7 +439,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
     let content = Rect::from_min_max(Pos2::new(card.left() + 1.0, card.top() + 35.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
     match state.view {
         PanelView::Problems => problems_view(ui, &painter, card, problems, state, &mut out, id),
-        PanelView::Output => {}
+        PanelView::Output => output_view(ui, &painter, content, output.text, state, id),
         PanelView::DebugConsole => {
             let row = Rect::from_min_max(Pos2::new(content.left(), card.bottom() - 22.0), Pos2::new(content.right(), card.bottom() - 1.0));
             painter.hline(row.x_range(), row.top() + 0.5, Stroke::new(1.0, Palette::INPUT_BORDER()));
@@ -497,6 +546,203 @@ fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut P
             }
         }
     }
+}
+
+/// Log-output highlighting: the grammar of VS Code's `log` language
+/// (extensions/log/syntaxes/log.tmLanguage.json, the parts that matter),
+/// coloured by the theme's `tokenColors`.
+fn log_regex() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?x)
+            (?P<date>\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\b)
+            |(?P<verbose>\[(?i:verbose|verb|trace)\]|\b(?:TRACE|Trace)\b)
+            |(?P<debug>\[(?i:debug|dbug|dbg)\]|\b(?:DEBUG|Debug)\b)
+            |(?P<info>\[(?i:information|info|inf)\]|\b(?:INFO|Info|NOTICE|HINT)\b)
+            |(?P<warn>\[(?i:warning|warn|wrn)\]|\b(?:WARNING|WARN|Warn)\b)
+            |(?P<error>\[(?i:error|eror|err|fatal)\]|\b(?:ERROR|Error|FATAL|Fatal|CRITICAL)\b)
+            |(?P<url>\b[a-z][a-z0-9+.-]*://\S+)
+            |(?P<string>"[^"]*"|'[^']*')
+            |(?P<constant>\b(?:0x[0-9a-fA-F]+|[0-9]+|true|false|null)\b)
+            "#,
+        )
+        .expect("log grammar")
+    })
+}
+
+/// Coloured char ranges of one output line.
+fn log_spans(line: &str, colours: &[(&'static str, Color32)]) -> Vec<(usize, usize, Color32)> {
+    let colour = |name: &str| colours.iter().find(|(n, _)| *n == name).map(|(_, c)| *c);
+    let mut spans = Vec::new();
+    for cap in log_regex().captures_iter(line) {
+        let m = cap.get(0).unwrap();
+        for (name, _) in colours {
+            if cap.name(name).is_some() {
+                if let Some(c) = colour(name) {
+                    let a = line[..m.start()].chars().count();
+                    spans.push((a, a + m.as_str().chars().count(), c));
+                }
+                break;
+            }
+        }
+    }
+    spans
+}
+
+/// Wraps `line` at `cols` columns on spaces, continuation rows keeping the
+/// line's indentation (`wrappingIndent: same`); returns (start, end) char
+/// ranges of each row.
+fn wrap_ranges(line: &str, cols: usize) -> Vec<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= cols {
+        return vec![(0, chars.len())];
+    }
+    let indent = chars.iter().take_while(|c| **c == ' ').count().min(cols.saturating_sub(8));
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let room = if start == 0 { cols } else { cols - indent };
+        if chars.len() - start <= room {
+            out.push((start, chars.len()));
+            break;
+        }
+        // Break after the last space that fits, else hard at the limit.
+        let limit = start + room;
+        let mut at = (start + 1..=limit).rev().find(|&i| chars[i - 1] == ' ' && i > start).unwrap_or(limit);
+        if at <= start {
+            at = limit;
+        }
+        out.push((start, at));
+        start = at;
+    }
+    out
+}
+
+/// Whether `line` passes the filter box (`text`, `!excluded`, `a,b` any of).
+fn output_filter_passes(line: &str, filter: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let lower = line.to_lowercase();
+    let (mut includes, mut excludes) = (Vec::new(), Vec::new());
+    for term in filter.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+        match term.strip_prefix('!') {
+            Some(x) if !x.is_empty() => excludes.push(x.to_lowercase()),
+            Some(_) => {}
+            None => includes.push(term.to_lowercase()),
+        }
+    }
+    (includes.is_empty() || includes.iter().any(|t| lower.contains(t))) && !excludes.iter().any(|t| lower.contains(t))
+}
+
+/// The Output view (output editor): the channel's text in the editor font
+/// (12px Menlo, 18px lines, 20px in, no gutter), word-wrapped, log lines
+/// coloured like VS Code's `log` language, following new output while
+/// auto-scroll is on.
+fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, state: &mut PanelState, id: egui::Id) {
+    const LINE: f32 = 18.0;
+    // The editor starts 33px under the card top (content is at +35).
+    let area = Rect::from_min_max(Pos2::new(content.left() + 20.0, content.top() - 2.0), Pos2::new(content.right() - 14.0, content.bottom() - 5.0));
+    let font = icons::editor_mono_font(12.0);
+    let cell_w = ui.fonts_mut(|f| f.glyph_width(&font, 'W'));
+    let cols = ((area.width() / cell_w).floor() as usize).max(8);
+    let filter = state.output_filter.trim().to_string();
+    let key = OutputKey { channel: state.output_channel.clone(), len: text.len(), cols, filter: filter.clone() };
+    if state.output_cache.as_ref().map(|(k, _)| k) != Some(&key) {
+        let colours: Vec<(&'static str, Color32)> = [
+            ("date", &["comment", "log.date"][..]),
+            ("verbose", &["comment", "log.verbose"][..]),
+            ("debug", &["markup.changed", "log.debug"][..]),
+            ("info", &["markup.inserted", "log.info"][..]),
+            ("warn", &["markup.deleted", "log.warning"][..]),
+            ("error", &["string.regexp", "strong", "log.error"][..]),
+            ("url", &["constant.language", "log.constant"][..]),
+            ("string", &["string", "log.string"][..]),
+            ("constant", &["constant.language", "log.constant"][..]),
+        ]
+        .into_iter()
+        .filter_map(|(n, scopes)| crate::theme::token_style(scopes).0.map(|c| (n, c)))
+        .collect();
+        let mut rows = Vec::new();
+        for line in text.split('\n').map(|l| l.trim_end_matches('\r')) {
+            if !output_filter_passes(line, &filter) {
+                continue;
+            }
+            let spans = log_spans(line, &colours);
+            let chars: Vec<char> = line.chars().collect();
+            let indent = chars.iter().take_while(|c| **c == ' ').count().min(cols.saturating_sub(8));
+            for (k, (a, b)) in wrap_ranges(line, cols).into_iter().enumerate() {
+                let prefix = if k == 0 { 0 } else { indent };
+                let mut row_text: String = " ".repeat(prefix);
+                row_text.extend(chars[a..b].iter());
+                let row_spans = spans
+                    .iter()
+                    .filter(|(s, e, _)| *s < b && *e > a)
+                    .map(|(s, e, c)| (prefix + (*s).max(a) - a, prefix + (*e).min(b) - a, *c))
+                    .collect();
+                rows.push(OutRow { text: row_text, spans: row_spans });
+            }
+        }
+        // The text ends with a newline: that final empty line isn't a row.
+        if text.ends_with('\n') && rows.last().is_some_and(|r| r.text.is_empty()) {
+            rows.pop();
+        }
+        state.output_cache = Some((key, rows));
+    }
+    let rows = &state.output_cache.as_ref().unwrap().1;
+    let total = rows.len() as f32 * LINE;
+    let viewport = area.height();
+    let max_scroll = (total - viewport).max(0.0);
+    // New output (or another channel) scrolls to the end while following.
+    let seen = (state.output_channel.clone(), text.len());
+    if state.output_follow && state.output_seen != seen {
+        state.output_scroll = max_scroll;
+    }
+    state.output_seen = seen;
+    if ui.rect_contains_pointer(Rect::from_min_max(content.min, content.max)) {
+        state.output_scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    state.output_scroll = state.output_scroll.clamp(0.0, max_scroll);
+    let clip = painter.with_clip_rect(Rect::from_min_max(Pos2::new(content.left(), area.top()), Pos2::new(content.right(), area.bottom() + 5.0)));
+    let first = (state.output_scroll / LINE).floor() as usize;
+    let fg = Palette::EDITOR_FG();
+    let mut y = area.top() + first as f32 * LINE - state.output_scroll;
+    for row in rows.iter().skip(first) {
+        if y > area.bottom() {
+            break;
+        }
+        let chars: Vec<char> = row.text.chars().collect();
+        let mut job = egui::text::LayoutJob::default();
+        let mut at = 0;
+        let mut push = |job: &mut egui::text::LayoutJob, a: usize, b: usize, c: Color32| {
+            if b > a {
+                job.append(&chars[a..b].iter().collect::<String>(), 0.0, egui::TextFormat { font_id: font.clone(), color: c, line_height: Some(LINE), ..Default::default() });
+            }
+        };
+        let mut spans = row.spans.clone();
+        spans.sort_by_key(|s| s.0);
+        for (a, b, c) in spans {
+            if a < at {
+                continue;
+            }
+            push(&mut job, at, a, fg);
+            push(&mut job, a, b, c);
+            at = b;
+        }
+        push(&mut job, at, chars.len(), fg);
+        let g = ui.fonts_mut(|f| f.layout_job(job));
+        clip.galley(Pos2::new(area.left(), y), g, fg);
+        y += LINE;
+    }
+    // Overlay scrollbar (10px) while hovered.
+    if max_scroll > 0.0 && ui.rect_contains_pointer(content) {
+        let track = Rect::from_min_max(Pos2::new(content.right() - 10.0, area.top()), Pos2::new(content.right(), area.bottom()));
+        let thumb_h = (viewport / total * viewport).max(20.0);
+        let thumb_top = track.top() + (state.output_scroll / max_scroll) * (viewport - thumb_h);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(track.left(), thumb_top), Vec2::new(10.0, thumb_h)), 0.0, Palette::VSCE_SCROLLBAR_SLIDER_BG());
+    }
+    let _ = id;
 }
 
 fn severity_icon(severity: u8) -> (&'static str, Color32) {
@@ -941,6 +1187,47 @@ mod tests {
 
     fn term() -> Terminal {
         Terminal::spawn(None, 24, 80, || {}).expect("shell")
+    }
+
+    #[test]
+    fn output_wraps_on_spaces_keeping_the_indent() {
+        assert_eq!(wrap_ranges("short", 20), vec![(0, 5)]);
+        // "    at some function (file)" at 14 columns: breaks after spaces.
+        let line = "    at some function (file)";
+        let rows = wrap_ranges(line, 14);
+        let chars: Vec<char> = line.chars().collect();
+        assert!(rows.len() > 1);
+        assert_eq!(rows.first().unwrap().0, 0);
+        assert_eq!(rows.last().unwrap().1, chars.len());
+        // Rows are contiguous and every one but the first fits in cols - indent.
+        for w in rows.windows(2) {
+            assert_eq!(w[0].1, w[1].0);
+        }
+        assert!(rows.iter().skip(1).all(|(a, b)| b - a <= 14 - 4));
+    }
+
+    #[test]
+    fn output_filter_follows_the_box_syntax() {
+        assert!(output_filter_passes("Hello World", ""));
+        assert!(output_filter_passes("Hello World", "world"));
+        assert!(!output_filter_passes("Hello World", "!hello"));
+        assert!(output_filter_passes("Hello World", "foo,world"));
+        assert!(!output_filter_passes("Hello World", "foo,bar"));
+    }
+
+    #[test]
+    fn log_lines_are_tokenised_like_the_log_language() {
+        let colours: Vec<(&'static str, Color32)> =
+            vec![("date", Color32::GRAY), ("info", Color32::GREEN), ("error", Color32::RED), ("url", Color32::BLUE), ("constant", Color32::YELLOW)];
+        let line = "2026-11-14 09:58:54.816 [error] [Network] #132: https://example.com/a - failed";
+        let spans = log_spans(line, &colours);
+        let text = |s: &(usize, usize, Color32)| line.chars().skip(s.0).take(s.1 - s.0).collect::<String>();
+        assert_eq!(text(&spans[0]), "2026-11-14");
+        assert_eq!(text(&spans[1]), "09:58:54.816");
+        assert_eq!(text(&spans[2]), "[error]");
+        assert_eq!(spans[2].2, Color32::RED);
+        assert!(spans.iter().any(|s| text(s) == "132" && s.2 == Color32::YELLOW));
+        assert!(spans.iter().any(|s| text(s) == "https://example.com/a" && s.2 == Color32::BLUE));
     }
 
     #[test]

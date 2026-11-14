@@ -542,6 +542,42 @@ pub fn color(id: &str) -> Option<Color32> {
     current().color(id).map(|c| c.to_color32())
 }
 
+/// The foreground the active theme's `tokenColors` give a token with these
+/// TextMate scopes (`["comment", "log.date"]`): the longest matching
+/// selector wins, later rules win ties; the font style of that rule comes
+/// along (`bold`, `italic`).
+pub fn token_style(scopes: &[&str]) -> (Option<Color32>, Option<String>) {
+    let theme = current();
+    // Foreground and font style are resolved separately: a rule that only
+    // sets `fontStyle` (`strong`) doesn't take the colour from a weaker
+    // rule that has one (`string.regexp`).
+    let mut fg: Option<(usize, usize, Color32)> = None;
+    let mut style: Option<(usize, usize, String)> = None;
+    for (order, rule) in theme.token_rules.iter().enumerate() {
+        for sel in &rule.scopes {
+            // Only simple selectors: `a.b`; descendant selectors don't apply here.
+            if sel.contains(' ') {
+                continue;
+            }
+            let hit = scopes.iter().any(|sc| *sc == sel || (sc.starts_with(sel.as_str()) && sc.as_bytes().get(sel.len()) == Some(&b'.')));
+            if !hit {
+                continue;
+            }
+            if let Some(c) = &rule.foreground {
+                if fg.as_ref().is_none_or(|(len, ord, _)| sel.len() > *len || (sel.len() == *len && order >= *ord)) {
+                    fg = Some((sel.len(), order, c.to_color32()));
+                }
+            }
+            if let Some(f) = &rule.font_style {
+                if style.as_ref().is_none_or(|(len, ord, _)| sel.len() > *len || (sel.len() == *len && order >= *ord)) {
+                    style = Some((sel.len(), order, f.clone()));
+                }
+            }
+        }
+    }
+    (fg.map(|(_, _, c)| c), style.map(|(_, _, f)| f))
+}
+
 const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }

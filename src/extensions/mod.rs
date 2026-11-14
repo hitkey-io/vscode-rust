@@ -298,6 +298,12 @@ pub struct ExtensionService {
     fired_events: BTreeSet<String>,
     /// Host log: extension console output, output channels, failures.
     pub log: Vec<String>,
+    /// Output channels extensions created (`window.createOutputChannel`),
+    /// by name: their text so far.
+    pub channels: BTreeMap<String, String>,
+    /// A channel an extension asked to show (`channel.show()`); the app
+    /// takes it and reveals the Output view.
+    pub show_channel: Option<String>,
     /// Commands run before the host was ready.
     queued: Vec<Value>,
     ready: bool,
@@ -1364,9 +1370,32 @@ impl ExtensionService {
                     let _ = std::process::Command::new("open").arg(&url).spawn();
                 }
             }
+            "outputCreate" => {
+                self.channels.entry(s("channel")).or_default();
+            }
+            "outputDispose" => {
+                self.channels.remove(&s("channel"));
+            }
+            "outputShow" => {
+                let channel = s("channel");
+                self.channels.entry(channel.clone()).or_default();
+                self.show_channel = Some(channel);
+            }
             "output" => {
                 let channel = s("channel");
-                for line in s("text").lines() {
+                let text = s("text");
+                let entry = self.channels.entry(channel.clone()).or_default();
+                if msg.get("replace").and_then(Value::as_bool).unwrap_or(false) {
+                    entry.clear();
+                }
+                entry.push_str(&text);
+                // Output channels keep the last ~1 MiB, as the output service does.
+                if entry.len() > 1 << 20 {
+                    let cut = entry.len() - (1 << 20);
+                    let at = entry[cut..].find('\n').map(|n| cut + n + 1).unwrap_or(cut);
+                    entry.drain(..at);
+                }
+                for line in text.lines() {
                     self.push_log(format!("[{channel}] {line}"));
                 }
             }

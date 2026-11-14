@@ -725,3 +725,30 @@ fn problems_view_lists_diagnostics_and_opens_them() {
     // The file opens at the problem: its tab is active.
     let _ = harness.get_by_label("tab:tsconfig.json");
 }
+
+#[test]
+fn output_view_shows_the_selected_channel() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_output(
+                "Git",
+                "2026-11-14 09:58:54.816 [info] > git rev-parse --show-toplevel [12ms]\n2026-11-14 09:58:54.817 [warning] [Window] Failed to request chat control data Offline\n2026-11-14 09:59:30.813 [error] [Network] #132: https://main.vscode-cdn.net/extensions/chat.json - error GET Offline\n    at async Fyt.fetchAlerts (vscode-file://vscode-app/Applications/Visual%20Studio%20Code.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js:6193:7551)\n",
+            );
+            a.bootstrap_panel(ctx, "output");
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    let _ = harness.get_by_label("Output channel: Git");
+    harness.snapshot("interaction_output_view");
+}
