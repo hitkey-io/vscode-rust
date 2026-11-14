@@ -19,6 +19,7 @@
 //!   radius 6; the modified bar 2px wide 5px in; the gear 22px left of the
 //!   row on hover.
 
+pub mod bool_object;
 pub mod list;
 pub mod object;
 pub mod markdown;
@@ -421,6 +422,8 @@ fn relayout(ui: &Ui, state: &mut SettingsEditorState, values: &Values<'_>, width
             list::items(s, values.of(target).and_then(|m| m.get(&s.key))).len()
         } else if object::is_object(s.value_type) {
             object::rows(s, values.of(target).and_then(|m| m.get(&s.key))).len()
+        } else if bool_object::is_bool_object(s.value_type) {
+            bool_object::rows(s, values.of(target).and_then(|m| m.get(&s.key))).len()
         } else {
             0
         };
@@ -494,6 +497,7 @@ fn setting_height(ui: &Ui, s: &SettingDef, list_items: usize, width: f32) -> f32
     match s.value_type {
         vt if list::is_list(vt) => DESC_TOP + blocks_height(ui, &blocks, width) + list::control_height(list_items) + PAD_BOTTOM_LIST,
         vt if object::is_object(vt) => DESC_TOP + blocks_height(ui, &blocks, width) + object::control_height(list_items) + PAD_BOTTOM_LIST,
+        vt if bool_object::is_bool_object(vt) => DESC_TOP + blocks_height(ui, &blocks, width) + bool_object::control_height(list_items) + PAD_BOTTOM_LIST,
         ValueType::Boolean => DESC_TOP + blocks_height(ui, &blocks, width - 27.0).max(18.0) + PAD_BOTTOM_BOOL,
         vt => {
             let desc = blocks_height(ui, &blocks, width);
@@ -788,7 +792,7 @@ fn setting_row(
 
     // Modified indicator.
     if configured {
-        let bottom = if s.value_type == ValueType::Boolean || list::is_list(s.value_type) || object::is_object(s.value_type) { 23.0 } else { 18.0 };
+        let bottom = if s.value_type == ValueType::Boolean || list::is_list(s.value_type) || object::is_object(s.value_type) || bool_object::is_bool_object(s.value_type) { 23.0 } else { 18.0 };
         painter.rect_filled(
             Rect::from_min_max(Pos2::new(row.left() + 5.0, row.top() + 15.0), Pos2::new(row.left() + 7.0, row.bottom() - bottom)),
             0.0,
@@ -943,6 +947,13 @@ fn setting_row(
         vt if list::is_list(vt) => {
             let configured_value = values.of(target).and_then(|m| m.get(&key));
             if let Some(change) = list::show(ui, painter, s, configured_value, &mut state.list_edit, left, width, desc_top + desc_h, id.with(("list", &key)), clip) {
+                out.set = Some((target, key.clone(), change));
+                state.focused_row = Some(key.clone());
+            }
+        }
+        vt if bool_object::is_bool_object(vt) => {
+            let configured_value = values.of(target).and_then(|m| m.get(&key));
+            if let Some(change) = bool_object::show(ui, painter, s, configured_value, left, width, desc_top + desc_h, id.with(("boolobj", &key)), clip) {
                 out.set = Some((target, key.clone(), change));
                 state.focused_row = Some(key.clone());
             }

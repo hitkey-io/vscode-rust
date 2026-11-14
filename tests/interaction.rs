@@ -826,3 +826,28 @@ fn settings_editor_object_table_adds_and_resets_entries() {
     harness.run();
     assert_eq!(*seen.borrow(), None);
 }
+
+#[test]
+fn settings_editor_checkbox_list_toggles_entries() {
+    let (mut harness, seen) = launch_settings_watching(Some("@id:scm.diffDecorationsGutterPattern"), "scm.diffDecorationsGutterPattern");
+    for _ in 0..4 {
+        harness.run();
+    }
+    use egui_kittest::kittest::NodeT;
+    let on = |harness: &egui_kittest::Harness<'_>, label: &str| harness.get_by_label(label).accesskit_node().toggled().map(|t| format!("{t:?}") == "True");
+    let added = "Use pattern for the diff decorations in gutter for added lines. (added)";
+    let modified = "Use pattern for the diff decorations in gutter for modified lines. (modified)";
+    assert_eq!(on(&harness, added), Some(false));
+    assert_eq!(on(&harness, modified), Some(true));
+    harness.get_by_label(added).click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), Some(serde_json::json!({"added": true})));
+    assert_eq!(on(&harness, added), Some(true));
+    harness.snapshot("interaction_settings_checkbox_list");
+    // Back to the defaults: the setting resets.
+    harness.get_by_label(added).click();
+    harness.run();
+    harness.run();
+    assert_eq!(*seen.borrow(), None);
+}
