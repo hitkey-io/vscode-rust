@@ -148,6 +148,8 @@ pub struct StatusBarOutput {
     pub extension_command: Option<(String, serde_json::Value)>,
     /// The Restricted Mode item was clicked (Manage Workspace Trust).
     pub manage_trust: bool,
+    /// The problems item was clicked (View: Focus Problems).
+    pub problems_clicked: bool,
 }
 
 /// A `kind: 'prominent'` item (Restricted Mode): `$(icon) text` on
@@ -323,7 +325,7 @@ pub fn show_with_extensions(
             // One item, as VS Code's `status.problems`: `$(error) 0 $(warning) 0`.
             let parts = [(icons::ERROR_ICON, errors.to_string()), (icons::WARNING_ICON, warnings.to_string())];
             if parts_segment(ui, &parts, &tip).clicked() {
-                out.palette_requested = true;
+                out.problems_clicked = true;
             }
             for item in &left_items {
                 if extension_segment(ui, item).clicked() {

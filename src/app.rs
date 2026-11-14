@@ -4689,6 +4689,12 @@ impl App {
                 if sb.manage_trust {
                     self.open_trust_editor();
                 }
+                if sb.problems_clicked {
+                    // `status.problems` runs workbench.actions.view.problems: the
+                    // view opens (it doesn't toggle shut when already showing).
+                    self.panel.visible = true;
+                    self.panel.view = crate::workbench::panel::PanelView::Problems;
+                }
                 if let Some((command, args)) = sb.extension_command.clone() {
                     self.extensions.execute(&command, args);
                 }

@@ -157,6 +157,9 @@ pub struct PanelState {
     /// The selected problem: file and index in its (sorted) problems.
     pub problems_selected: Option<(PathBuf, usize)>,
     pub problems_scroll: f32,
+    /// The list keeps the keyboard after a click opened a problem in the
+    /// editor (preserveFocus); only Enter moves focus to the editor.
+    problems_refocus: u8,
     pub output_filter: String,
     pub debug_filter: String,
     /// The terminal has the keyboard.
@@ -805,7 +808,45 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
         state.problems_scroll -= ui.input(|i| i.smooth_scroll_delta.y);
     }
     state.problems_scroll = state.problems_scroll.clamp(0.0, max_scroll);
-    let list_focused = ui.memory(|m| m.has_focus(id.with("problems-list")));
+    let list_id = id.with("problems-list");
+    if state.problems_refocus > 0 {
+        state.problems_refocus -= 1;
+        ui.memory_mut(|m| m.request_focus(list_id));
+    }
+    let list_focused = ui.memory(|m| m.has_focus(list_id));
+    // Keyboard: ↑ / ↓ move through the problems, Enter opens the selected one.
+    if list_focused {
+        ui.memory_mut(|m| m.set_focus_lock_filter(list_id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+        let (up, down, enter) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter)));
+        let flat: Vec<(&ProblemFile, usize)> = rows.iter().filter_map(|r| if let Row::Item(f, k) = r { Some((*f, *k)) } else { None }).collect();
+        let at = state.problems_selected.as_ref().and_then(|(p, i)| flat.iter().position(|(f, k)| &f.path == p && k == i));
+        let next = if down {
+            Some(at.map(|a| (a + 1).min(flat.len().saturating_sub(1))).unwrap_or(0))
+        } else if up {
+            Some(at.map(|a| a.saturating_sub(1)).unwrap_or(0))
+        } else {
+            None
+        };
+        if let Some(n) = next.filter(|_| !flat.is_empty()) {
+            let (f, k) = flat[n];
+            state.problems_selected = Some((f.path.clone(), k));
+            // Keep the selected row in view.
+            let row_index = rows.iter().position(|r| matches!(r, Row::Item(rf, rk) if rf.path == f.path && *rk == k)).unwrap_or(0);
+            let top = row_index as f32 * 22.0;
+            if top < state.problems_scroll {
+                state.problems_scroll = top;
+            } else if top + 22.0 > state.problems_scroll + viewport {
+                state.problems_scroll = top + 22.0 - viewport;
+            }
+        }
+        if enter {
+            if let Some((p, i)) = &state.problems_selected {
+                if let Some(item) = flat.iter().find(|(f, k)| &f.path == p && k == i).map(|(f, k)| &f.items[*k]) {
+                    out.open_problem = Some((p.clone(), item.line, item.col));
+                }
+            }
+        }
+    }
     let clip = painter.with_clip_rect(area);
     let guide = Palette::VSCE_TREE_INACTIVE_INDENT_GUIDE();
     let guide_active = Palette::VSCE_TREE_ACTIVE_INDENT_GUIDE();
@@ -912,6 +953,9 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                     ui.memory_mut(|m| m.request_focus(id.with("problems-list")));
                     if rresp.double_clicked() || rresp.clicked() {
                         out.open_problem = Some((f.path.clone(), item.line, item.col));
+                        // Opening from the list leaves the keyboard in it for a
+                        // few frames, while the editor takes its cursor.
+                        state.problems_refocus = 3;
                     }
                 }
                 match guide_runs.last_mut() {

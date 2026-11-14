@@ -724,6 +724,13 @@ fn problems_view_lists_diagnostics_and_opens_them() {
     harness.run();
     // The file opens at the problem: its tab is active.
     let _ = harness.get_by_label("tab:tsconfig.json");
+    // ↓ moves the selection to the next problem.
+    use egui_kittest::kittest::NodeT;
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.get_by_label("warning Unused variable, ts").accesskit_node().toggled().map(|t| format!("{t:?}") == "True"), Some(true));
+    assert_ne!(harness.get_by_label("error Value expected, json").accesskit_node().toggled().map(|t| format!("{t:?}") == "True"), Some(true));
 }
 
 #[test]
