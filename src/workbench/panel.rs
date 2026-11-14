@@ -152,6 +152,9 @@ pub struct PanelState {
     pub output_scroll: f32,
     /// Selected text of the Output view: anchor and head as (row, column).
     output_sel: Option<((usize, usize), (usize, usize))>,
+    /// A terminal tab being renamed: its index and the text so far.
+    terminal_rename: Option<(usize, String)>,
+    terminal_rename_focus: bool,
     output_seen: (String, usize),
     output_cache: Option<(OutputKey, Vec<OutRow>)>,
     /// Files collapsed in the Problems tree.
@@ -519,6 +522,36 @@ fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut P
                 x += 16.5;
             }
             painter.text(Pos2::new(x + 8.0, cy + 0.5), Align2::CENTER_CENTER, icons::codicon_by_name("terminal").unwrap_or('>').to_string(), icons::codicon_font(16.0), fg);
+            let renaming = state.terminal_rename.as_ref().is_some_and(|(i, _)| *i == ti);
+            if renaming {
+                // Rename (double click): an input in the row; Enter keeps the
+                // new name, Escape (or an empty name) the old one.
+                let input = Rect::from_min_max(Pos2::new(x + 17.0, row.top() + 2.0), Pos2::new(row.right() - 4.0, row.bottom() - 2.0));
+                painter.rect(input, 2.0, Palette::INPUT_BG(), Stroke::new(1.0, Palette::FOCUS_BORDER()), egui::StrokeKind::Inside);
+                let mut text = state.terminal_rename.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
+                let edit_id = id.with(("tab-rename", ti));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(input.shrink2(Vec2::new(4.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                let resp_edit = child.add(egui::TextEdit::singleline(&mut text).id(edit_id).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(FontId::proportional(13.0)).text_color(Palette::INPUT_FG()).desired_width(input.width() - 8.0));
+                if state.terminal_rename_focus {
+                    resp_edit.request_focus();
+                    state.terminal_rename_focus = false;
+                }
+                let enter = resp_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if enter {
+                    if !text.trim().is_empty() {
+                        if let Some(t) = state.terminals.get_mut(ti) {
+                            t.title = text.trim().to_string();
+                        }
+                    }
+                    state.terminal_rename = None;
+                } else if escape || (resp_edit.lost_focus() && !enter) {
+                    state.terminal_rename = None;
+                } else {
+                    state.terminal_rename = Some((ti, text));
+                }
+                continue;
+            }
             painter.text(Pos2::new(x + 19.5, cy - 0.5), Align2::LEFT_CENTER, &term.title, FontId::proportional(13.0), fg);
             let label = format!("terminal-tab:{} {}", ti + 1, term.title);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label.clone()));
@@ -543,6 +576,10 @@ fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut P
                         }
                     }
                 }
+            }
+            if resp.double_clicked() && !on_action {
+                state.terminal_rename = Some((ti, state.terminals.get(ti).map(|t| t.title.clone()).unwrap_or_default()));
+                state.terminal_rename_focus = true;
             }
             if resp.clicked() && !on_action {
                 state.active_terminal = ti;
@@ -1375,6 +1412,39 @@ mod tests {
         assert!(spans[2].3 && !spans[0].3, "only [error] is bold");
         assert!(spans.iter().any(|s| text(s) == "132" && s.2 == Color32::YELLOW));
         assert!(spans.iter().any(|s| text(s) == "https://example.com/a" && s.2 == Color32::BLUE));
+    }
+
+    #[test]
+    fn a_terminal_tab_is_renamed_in_place() {
+        use egui_kittest::Harness;
+        let mut state = PanelState::default();
+        state.add_terminal(term(), false);
+        state.add_terminal(term(), false);
+        state.terminal_rename = Some((1, state.terminals[1].title.clone()));
+        state.terminal_rename_focus = true;
+        let mut out = PanelOutput::default();
+        let mut first = true;
+        let mut harness = Harness::builder().with_size(Vec2::new(400.0, 200.0)).build_ui(move |ui| {
+            // Fonts are set up before the first real frame (as the app does).
+            if std::mem::take(&mut first) {
+                crate::icons::register_fonts(ui.ctx());
+                return;
+            }
+            let list = Rect::from_min_size(Pos2::new(100.0, 10.0), Vec2::new(121.0, 150.0));
+            let painter = ui.painter().clone();
+            terminal_tabs(ui, &painter, list, &mut state, &mut out, egui::Id::new("tabs"));
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("title"), state.terminals[1].title.clone()));
+        });
+        harness.run();
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        harness.event(egui::Event::Text("build".to_string()));
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.run();
+        let title: String = harness.ctx.data(|d| d.get_temp(egui::Id::new("title"))).unwrap_or_default();
+        assert_eq!(title, "build");
     }
 
     #[test]
