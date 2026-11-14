@@ -750,6 +750,49 @@ fn tree(ui: &mut Ui, rect: Rect, state: &mut SettingsEditorState, values: &Value
         }
     }
 
+    // Sticky group headers (`stickyScroll` of the settings tree): the
+    // headers of the groups that started above the top stay pinned, outer
+    // group first, over the editor colour with the scrollbar's shadow below.
+    if state.layout.found.is_none() && state.scroll > 0.0 {
+        // (level, label, height, where the group ends)
+        let rows = &state.layout.rows;
+        let mut stack: Vec<(u8, &str, f32, f32)> = Vec::new();
+        for (i, r) in rows.iter().enumerate().take_while(|(_, r)| r.y < state.scroll) {
+            if let RowKind::Group { label, level, .. } = &r.kind {
+                let end = rows[i + 1..]
+                    .iter()
+                    .find(|n| matches!(&n.kind, RowKind::Group { level: l, .. } if l <= level))
+                    .map(|n| n.y)
+                    .unwrap_or(state.layout.total);
+                stack.retain(|(l, ..)| l < level);
+                stack.push((*level, label.as_str(), r.h, end));
+            }
+        }
+        let mut slot = 0.0f32;
+        let mut shadow_y = 0.0f32;
+        for (level, label, h, end) in &stack {
+            // A header is pushed up by the next one of its level or above.
+            let y = slot.min(end - state.scroll - h);
+            slot += h;
+            if y + h <= 0.0 {
+                continue;
+            }
+            let top = rect.top() + y;
+            let band = Rect::from_min_max(Pos2::new(rect.left(), top.max(rect.top())), Pos2::new(rect.right(), (top + h).min(rect.bottom())));
+            painter.rect_filled(band, 0.0, Palette::EDITOR_BG());
+            let size = match level {
+                1 => 26.0,
+                2 => 22.0,
+                _ => 18.0,
+            };
+            painter.text(Pos2::new(content_left + 15.0, top + 10.0 + 9.1), Align2::LEFT_CENTER, label, crate::ui_font::heading(size), Palette::SETTINGS_HEADER_FG());
+            shadow_y = shadow_y.max(y + h);
+        }
+        if shadow_y > 0.0 {
+            painter.rect_filled(Rect::from_min_size(Pos2::new(rect.left(), rect.top() + shadow_y), Vec2::new(rect.width(), 3.0)), 0.0, Palette::VSCE_SCROLLBAR_SHADOW().gamma_multiply(0.5));
+        }
+    }
+
     // Overlay scrollbar (10px).
     if max_scroll > 0.0 {
         let track = Rect::from_min_max(Pos2::new(rect.right() - 10.0, rect.top()), rect.right_bottom());

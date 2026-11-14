@@ -1009,3 +1009,18 @@ fn settings_editor_lang_filter_writes_the_language_section() {
     harness.run();
     assert_eq!(*seen.borrow(), None);
 }
+
+#[test]
+fn settings_editor_keeps_the_group_header_pinned_while_scrolling() {
+    let (mut harness, _) = launch_settings(None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    harness.event(egui::Event::PointerMoved(egui::pos2(700.0, 400.0)));
+    harness.step();
+    harness.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -1900.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE });
+    for _ in 0..3 {
+        harness.step();
+    }
+    harness.snapshot("interaction_settings_sticky_header");
+}
