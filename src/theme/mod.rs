@@ -439,6 +439,9 @@ palette! {
     KEYBINDING_TABLE_ROWS_BG = Id("keybindingTable.rowsBackground");
     TABLE_COLUMNS_BORDER = Id("tree.tableColumnsBorder");
     TERMINAL_BORDER = Id("terminal.border");
+    PROBLEMS_ERROR_FG = Id("problemsErrorIcon.foreground");
+    PROBLEMS_WARNING_FG = Id("problemsWarningIcon.foreground");
+    PROBLEMS_INFO_FG = Id("problemsInfoIcon.foreground");
     LIST_INACTIVE_SELECTION_FG = OneOf(&["list.inactiveSelectionForeground", "foreground"]);
 }
 

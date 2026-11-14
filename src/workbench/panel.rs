@@ -32,11 +32,54 @@
 //! title then keeps only New Terminal (116), Launch Profile (100) and More
 //! (77).
 
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::icons;
 use crate::terminal::Terminal;
 use crate::theme::Palette;
+
+/// One problem of the Problems view (markersTreeViewer.ts `Marker`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProblemItem {
+    /// 0 error, 1 warning, 2 information, 3 hint.
+    pub severity: u8,
+    pub message: String,
+    pub source: Option<String>,
+    pub code: Option<String>,
+    /// 0-based line and UTF-16 column.
+    pub line: usize,
+    pub col: usize,
+}
+
+/// A file with problems (`ResourceMarkers`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProblemFile {
+    pub path: PathBuf,
+    pub name: String,
+    /// The folder, relative to the workspace (the resource label's
+    /// description); empty at the root.
+    pub dir: String,
+    pub items: Vec<ProblemItem>,
+}
+
+/// The files to list, in VS Code's order (`compareResourceMarkers`: the
+/// first problem's severity, then path), problems by severity and position
+/// (`_compareMarkers`).
+pub fn sort_problems(mut files: Vec<ProblemFile>) -> Vec<ProblemFile> {
+    for f in files.iter_mut() {
+        f.items.sort_by_key(|i| (i.severity, i.line, i.col));
+    }
+    files.retain(|f| !f.items.is_empty());
+    files.sort_by(|a, b| {
+        let sa = a.items.first().map(|i| i.severity).unwrap_or(9);
+        let sb = b.items.first().map(|i| i.severity).unwrap_or(9);
+        sa.cmp(&sb).then_with(|| crate::workbench::settings_editor::model::locale_compare(&a.path.to_string_lossy(), &b.path.to_string_lossy())).then_with(|| a.name.cmp(&b.name))
+    });
+    files
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PanelView {
@@ -77,6 +120,11 @@ pub struct PanelState {
     /// The active terminal should take the keyboard on the next frame.
     pub focus_pending: bool,
     pub problems_filter: String,
+    /// Files collapsed in the Problems tree.
+    pub problems_collapsed: HashSet<PathBuf>,
+    /// The selected problem: file and index in its (sorted) problems.
+    pub problems_selected: Option<(PathBuf, usize)>,
+    pub problems_scroll: f32,
     pub output_filter: String,
     pub debug_filter: String,
     /// The terminal has the keyboard.
@@ -155,6 +203,9 @@ pub struct PanelOutput {
     pub kill_terminal: bool,
     /// Kill this terminal (a tab's trash button).
     pub kill_index: Option<usize>,
+    /// A problem was activated: open the file at (line, UTF-16 column),
+    /// both 0-based.
+    pub open_problem: Option<(PathBuf, usize, usize)>,
     pub forward_port: bool,
 }
 
@@ -204,7 +255,7 @@ fn filter_box(ui: &mut Ui, painter: &egui::Painter, rect: Rect, text: &mut Strin
 }
 
 /// Draws the panel card in `rect` (the area under the editor card).
-pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cwd_label: &str) -> PanelOutput {
+pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[ProblemFile], cwd_label: &str) -> PanelOutput {
     let _ = cwd_label;
     let mut out = PanelOutput::default();
     let id = ui.id().with("panel");
@@ -232,9 +283,16 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
     // Tabs.
     let mut x = card.left() + 5.0;
     let ty = card.top() + 5.0;
+    let problem_total: usize = problems.iter().map(|f| f.items.len()).sum();
     for view in PanelView::ALL {
         let g = painter.layout_no_wrap(view.label().to_string(), FontId::proportional(13.0), Color32::PLACEHOLDER);
-        let r = Rect::from_min_size(Pos2::new(x, ty), Vec2::new(g.size().x + 16.0, 24.0));
+        // Problems carries a count badge (16px, 10px text) 6px after its label.
+        let badge = (view == PanelView::Problems && problem_total > 0).then(|| {
+            let t = painter.layout_no_wrap(problem_total.to_string(), FontId::proportional(10.0), Palette::BADGE_FG());
+            (t.size().x.max(6.0) + 10.2).max(16.2)
+        });
+        let width = g.size().x + 16.0 + badge.map(|b| 6.0 + b - 2.5).unwrap_or(0.0);
+        let r = Rect::from_min_size(Pos2::new(x, ty), Vec2::new(width, 24.0));
         let resp = ui.interact(r, id.with(("tab", view.label())), Sense::click());
         let active = state.view == view;
         let colour = if active {
@@ -246,7 +304,13 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
         } else {
             Palette::PANEL_TITLE_INACTIVE_FG()
         };
+        let text_w = g.size().x;
         painter.galley(Pos2::new(r.left() + 8.0, r.center().y - g.size().y / 2.0), g, colour);
+        if let Some(bw) = badge {
+            let b = Rect::from_min_size(Pos2::new(r.left() + 8.0 + text_w + 6.0, r.center().y - 8.0), Vec2::new(bw, 16.0));
+            painter.rect_filled(b, 8.0, Palette::BADGE_BG());
+            painter.text(b.center(), Align2::CENTER_CENTER, problem_total.to_string(), FontId::proportional(10.0), Palette::BADGE_FG());
+        }
         let label = format!("panel:{}", view.label());
         resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, active, label.clone()));
         if resp.clicked() {
@@ -284,6 +348,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
         let from = 77.0 + 25.75 * i as f32;
         if icon_button(ui, &painter, at(from), name, tip, id) {
             match *name {
+                "collapse-all" => state.problems_collapsed = problems.iter().map(|f| f.path.clone()).collect(),
                 "trash" => out.kill_terminal = true,
                 "split-horizontal" => out.split_terminal = true,
                 _ => {}
@@ -324,10 +389,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: usize, cw
     // Content.
     let content = Rect::from_min_max(Pos2::new(card.left() + 1.0, card.top() + 35.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
     match state.view {
-        PanelView::Problems => {
-            let text = if problems == 0 { "No problems have been detected in the workspace." } else { "Problems are shown in the editor (hover a squiggle)." };
-            painter.text(Pos2::new(card.left() + 22.0, card.top() + 45.0), Align2::LEFT_CENTER, text, FontId::proportional(13.0), Palette::FG());
-        }
+        PanelView::Problems => problems_view(ui, &painter, card, problems, state, &mut out, id),
         PanelView::Output => {}
         PanelView::DebugConsole => {
             let row = Rect::from_min_max(Pos2::new(content.left(), card.bottom() - 22.0), Pos2::new(content.right(), card.bottom() - 1.0));
@@ -434,6 +496,201 @@ fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut P
                 state.focus_pending = true;
             }
         }
+    }
+}
+
+fn severity_icon(severity: u8) -> (&'static str, Color32) {
+    match severity {
+        0 => ("error", Palette::PROBLEMS_ERROR_FG()),
+        1 => ("warning", Palette::PROBLEMS_WARNING_FG()),
+        _ => ("info", Palette::PROBLEMS_INFO_FG()),
+    }
+}
+
+/// Whether `file` or one of its problems matches the filter box text (words
+/// of the text, each in the message, source, code or file name).
+fn problem_matches(f: &ProblemFile, i: &ProblemItem, filter: &str) -> bool {
+    let hay = format!("{} {} {} {}", i.message, i.source.as_deref().unwrap_or(""), i.code.as_deref().unwrap_or(""), f.name).to_lowercase();
+    filter.split_whitespace().all(|w| match w.strip_prefix('!') {
+        Some(ex) => ex.is_empty() || !hay.contains(&ex.to_lowercase()),
+        None => hay.contains(&w.to_lowercase()),
+    })
+}
+
+/// The Problems view (markersView.ts, markersTreeViewer.ts), the tree: a
+/// file row (twistie, file icon, name, folder, count badge) with its
+/// problems under it. Measured against 1.145.2: rows 22px inset 5 from the
+/// card edge (4 from the content), twistie centred 18 in, file icon 30,
+/// label 52; problem icon 44 (16px), message 66, then source and `(code)`
+/// right after it and `[Ln, Col]` 6px on, those at 70% opacity; indent
+/// guide 16px in; selection `list.activeSelectionBackground` with a
+/// `list.focusOutline` while the list has focus; `problemsErrorIcon.*`.
+fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[ProblemFile], state: &mut PanelState, out: &mut PanelOutput, id: egui::Id) {
+    let top = card.top() + 33.0;
+    let area = Rect::from_min_max(Pos2::new(card.left() + 1.0, top), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
+    let filter = state.problems_filter.trim().to_string();
+    let shown: Vec<(&ProblemFile, Vec<usize>)> = problems
+        .iter()
+        .map(|f| (f, (0..f.items.len()).filter(|&k| filter.is_empty() || problem_matches(f, &f.items[k], &filter)).collect::<Vec<_>>()))
+        .filter(|(_, idx)| !idx.is_empty())
+        .collect();
+    if shown.is_empty() {
+        let text = if problems.is_empty() { "No problems have been detected in the workspace." } else { "No results found with provided filter criteria." };
+        painter.text(Pos2::new(card.left() + 22.0, card.top() + 45.0), Align2::LEFT_CENTER, text, FontId::proportional(13.0), Palette::FG());
+        return;
+    }
+    // Flatten the visible rows.
+    enum Row<'a> {
+        File(&'a ProblemFile, usize),
+        Item(&'a ProblemFile, usize),
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for (f, idx) in &shown {
+        rows.push(Row::File(f, idx.len()));
+        if !state.problems_collapsed.contains(&f.path) {
+            rows.extend(idx.iter().map(|&k| Row::Item(f, k)));
+        }
+    }
+    let total_h = rows.len() as f32 * 22.0;
+    let viewport = area.height();
+    let max_scroll = (total_h - viewport).max(0.0);
+    let resp = ui.interact(area, id.with("problems-list"), Sense::click());
+    if ui.rect_contains_pointer(area) {
+        state.problems_scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    state.problems_scroll = state.problems_scroll.clamp(0.0, max_scroll);
+    let list_focused = ui.memory(|m| m.has_focus(id.with("problems-list")));
+    let clip = painter.with_clip_rect(area);
+    let guide = Palette::VSCE_TREE_INACTIVE_INDENT_GUIDE();
+    let guide_active = Palette::VSCE_TREE_ACTIVE_INDENT_GUIDE();
+    let row_left = area.left() + 4.0;
+    let row_right = area.right() - 4.0;
+    let mut guide_runs: Vec<(f32, f32, bool)> = Vec::new();
+    let mut y = area.top() - state.problems_scroll;
+    let mut clicked_file: Option<PathBuf> = None;
+    for row in &rows {
+        let r = Rect::from_min_max(Pos2::new(row_left, y), Pos2::new(row_right, y + 22.0));
+        y += 22.0;
+        if r.bottom() < area.top() || r.top() > area.bottom() {
+            if let Row::Item(f, _) = row {
+                let sel = state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path);
+                match guide_runs.last_mut() {
+                    Some(last) if last.1 >= r.top() - 0.5 && last.2 == sel => last.1 = r.bottom(),
+                    _ => guide_runs.push((r.top(), r.bottom(), sel)),
+                }
+            }
+            continue;
+        }
+        let visible = r.intersect(area);
+        let (path, selected) = match row {
+            Row::File(f, _) => (f.path.clone(), false),
+            Row::Item(f, k) => (f.path.clone(), state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && i == k)),
+        };
+        let rid = match row {
+            Row::File(f, _) => id.with(("problem-file", &f.path)),
+            Row::Item(f, k) => id.with(("problem", &f.path, *k)),
+        };
+        let rresp = ui.interact(visible, rid, Sense::click());
+        if selected {
+            let bg = if list_focused { Palette::LIST_ACTIVE_SELECTION_BG() } else { Palette::LIST_INACTIVE_SELECTION_BG() };
+            clip.rect_filled(r, 4.0, bg);
+            if list_focused {
+                clip.rect_stroke(r, 4.0, Stroke::new(1.0, Palette::VSCE_LIST_FOCUS_OUTLINE_2026()), egui::StrokeKind::Inside);
+            }
+        } else if rresp.hovered() {
+            clip.rect_filled(r, 4.0, Palette::LIST_HOVER_BG());
+        }
+        let fg = if selected && list_focused { Palette::LIST_ACTIVE_SELECTION_FG() } else { Palette::FG() };
+        let cy = r.center().y;
+        match row {
+            Row::File(f, count) => {
+                let collapsed = state.problems_collapsed.contains(&f.path);
+                let chev = if collapsed { "chevron-right" } else { "chevron-down" };
+                clip.text(Pos2::new(r.left() + 18.0, cy), Align2::CENTER_CENTER, icons::codicon_by_name(chev).unwrap_or('v').to_string(), icons::codicon_font(16.0), Palette::FG());
+                if let Some((glyph, colour)) = crate::file_icons::icon_for(&f.path) {
+                    clip.text(Pos2::new(r.left() + 38.0, cy + 0.5), Align2::CENTER_CENTER, glyph.to_string(), crate::file_icons::seti_font(18.0), colour);
+                }
+                let g = clip.layout_no_wrap(f.name.clone(), FontId::proportional(13.0), fg);
+                let name_w = g.size().x;
+                clip.galley(Pos2::new(r.left() + 52.0, cy - g.size().y / 2.0 - 0.5), g, fg);
+                let mut x = r.left() + 52.0 + name_w;
+                if !f.dir.is_empty() {
+                    let d = clip.layout_no_wrap(f.dir.clone(), FontId::proportional(11.7), Palette::FG_DESCRIPTION());
+                    let dw = d.size().x;
+                    clip.galley(Pos2::new(x + 6.0, cy - d.size().y / 2.0 - 0.5), d, Palette::FG_DESCRIPTION());
+                    x += 6.0 + dw;
+                }
+                let t = clip.layout_no_wrap(count.to_string(), FontId::proportional(10.0), Palette::BADGE_FG());
+                let bw = (t.size().x + 12.0).max(19.0);
+                let b = Rect::from_min_size(Pos2::new(x + 10.0, cy - 9.5), Vec2::new(bw, 19.0));
+                clip.rect_filled(b, 9.5, Palette::BADGE_BG());
+                clip.galley(Pos2::new(b.center().x - t.size().x / 2.0, b.center().y - t.size().y / 2.0), t, Palette::BADGE_FG());
+                let label = format!("{}, {} problems", f.name, count);
+                rresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+                if rresp.clicked() {
+                    clicked_file = Some(f.path.clone());
+                }
+            }
+            Row::Item(f, k) => {
+                let item = &f.items[*k];
+                let (icon, colour) = severity_icon(item.severity);
+                let icon_colour = if selected && list_focused { Palette::LIST_ACTIVE_SELECTION_FG() } else { colour };
+                clip.text(Pos2::new(r.left() + 52.0, cy), Align2::CENTER_CENTER, icons::codicon_by_name(icon).unwrap_or('!').to_string(), icons::codicon_font(16.0), icon_colour);
+                let first_line = item.message.lines().next().unwrap_or("");
+                let g = clip.layout_no_wrap(first_line.to_string(), FontId::proportional(13.0), fg);
+                let mut x = r.left() + 66.0 + g.size().x;
+                clip.galley(Pos2::new(r.left() + 66.0, cy - g.size().y / 2.0 - 0.5), g, fg);
+                let dim = fg.gamma_multiply(0.7);
+                if let Some(src) = &item.source {
+                    let g = clip.layout_no_wrap(src.clone(), FontId::proportional(13.0), dim);
+                    let w = g.size().x;
+                    clip.galley(Pos2::new(x + 6.0, cy - g.size().y / 2.0 - 0.5), g, dim);
+                    x += 6.0 + w;
+                }
+                if let Some(code) = &item.code {
+                    let text = format!("({code})");
+                    let g = clip.layout_no_wrap(text, FontId::proportional(13.0), dim);
+                    let w = g.size().x;
+                    // Directly after the source, or 6px after the message.
+                    let gap = if item.source.is_some() { 0.0 } else { 6.0 };
+                    clip.galley(Pos2::new(x + gap, cy - g.size().y / 2.0 - 0.5), g, dim);
+                    x += gap + w;
+                }
+                let pos = format!("[Ln {}, Col {}]", item.line + 1, item.col + 1);
+                let g = clip.layout_no_wrap(pos, FontId::proportional(13.0), dim);
+                clip.galley(Pos2::new(x + 6.0, cy - g.size().y / 2.0 - 0.5), g, dim);
+                let label = format!("{} {}, {}", icon, item.message, item.source.as_deref().unwrap_or(""));
+                rresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
+                if rresp.clicked() || rresp.double_clicked() {
+                    state.problems_selected = Some((path.clone(), *k));
+                    ui.memory_mut(|m| m.request_focus(id.with("problems-list")));
+                    if rresp.double_clicked() || rresp.clicked() {
+                        out.open_problem = Some((f.path.clone(), item.line, item.col));
+                    }
+                }
+                match guide_runs.last_mut() {
+                    Some(last) if last.1 >= r.top() - 0.5 && last.2 == state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path) => last.1 = r.bottom(),
+                    _ => guide_runs.push((r.top(), r.bottom(), state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path))),
+                }
+            }
+        }
+    }
+    for (a, b, active) in guide_runs {
+        clip.vline(row_left + 12.0, a..=b, Stroke::new(1.0, if active { guide_active } else { guide }));
+    }
+    if let Some(p) = clicked_file {
+        if !state.problems_collapsed.remove(&p) {
+            state.problems_collapsed.insert(p);
+        }
+        ui.memory_mut(|m| m.request_focus(id.with("problems-list")));
+    }
+    let _ = resp;
+    // Overlay scrollbar (10px).
+    if max_scroll > 0.0 && ui.rect_contains_pointer(area) {
+        let track = Rect::from_min_max(Pos2::new(area.right() - 10.0, area.top()), area.right_bottom());
+        let thumb_h = (viewport / total_h * viewport).max(20.0);
+        let thumb_top = track.top() + (state.problems_scroll / max_scroll) * (viewport - thumb_h);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(track.left(), thumb_top), Vec2::new(10.0, thumb_h)), 0.0, Palette::VSCE_SCROLLBAR_SLIDER_BG());
     }
 }
 

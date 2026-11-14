@@ -690,3 +690,38 @@ fn keybindings_json_rebinds_app_shortcuts() {
     harness.run();
     assert!(harness.query_by_label("README.md").is_none(), "⌥⌘B hides the side bar");
 }
+
+#[test]
+fn problems_view_lists_diagnostics_and_opens_them() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_problems(
+                workspace_path().join("tsconfig.json"),
+                vec![(1, "Unused variable", Some("ts"), Some("6133"), 4, 2), (0, "Value expected", Some("json"), Some("516"), 2, 7)],
+            );
+            a.bootstrap_panel(ctx, "problems");
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    // The file, its two problems (errors first), the count badge.
+    let _ = harness.get_by_label("tsconfig.json, 2 problems");
+    let _ = harness.get_by_label("error Value expected, json");
+    let _ = harness.get_by_label("warning Unused variable, ts");
+    harness.snapshot("interaction_problems_view");
+    harness.get_by_label("error Value expected, json").click();
+    harness.run();
+    harness.run();
+    // The file opens at the problem: its tab is active.
+    let _ = harness.get_by_label("tab:tsconfig.json");
+}

@@ -690,6 +690,11 @@ impl App {
         true
     }
 
+    /// A folder is open.
+    pub fn has_workspace(&self) -> bool {
+        self.workspace_root.is_some()
+    }
+
     pub fn bootstrap_workspace(&mut self, path: PathBuf) {
         self.set_workspace(path);
     }
@@ -1998,6 +2003,22 @@ impl App {
     /// `workbench.action.openSettings` with a query).
     pub fn bootstrap_settings(&mut self, query: Option<&str>) {
         self.open_settings_editor(query);
+    }
+
+    /// Reports `problems` (severity, message, source, code, line, column) for
+    /// `path`, as an extension's diagnostic collection would (tests).
+    pub fn bootstrap_problems(&mut self, path: PathBuf, problems: Vec<(u8, &str, Option<&str>, Option<&str>, usize, usize)>) {
+        let list = problems
+            .into_iter()
+            .map(|(severity, message, source, code, line, col)| crate::extensions::Diagnostic {
+                range: [line, col, line, col + 1],
+                message: message.to_string(),
+                severity,
+                source: source.map(str::to_string),
+                code: code.map(str::to_string),
+            })
+            .collect();
+        self.extensions.diagnostics.entry(path).or_default().insert("test".to_string(), list);
     }
 
     /// Opens the Keyboard Shortcuts editor (⌘K ⌘S), optionally searching.
@@ -5105,6 +5126,32 @@ impl App {
         }
     }
 
+    /// The Problems view's data: every file the extensions reported
+    /// diagnostics for (`DiagnosticCollection`), sorted like VS Code.
+    fn problem_files(&self) -> Vec<crate::workbench::panel::ProblemFile> {
+        use crate::workbench::panel::{sort_problems, ProblemFile, ProblemItem};
+        let root = self.workspace_root.clone();
+        let files = self
+            .extensions
+            .diagnostics
+            .iter()
+            .map(|(path, collections)| {
+                let rel = root.as_ref().and_then(|r| path.strip_prefix(r).ok()).unwrap_or(path.as_path());
+                ProblemFile {
+                    path: path.clone(),
+                    name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                    dir: rel.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+                    items: collections
+                        .values()
+                        .flatten()
+                        .map(|d| ProblemItem { severity: d.severity, message: d.message.clone(), source: d.source.clone(), code: d.code.clone(), line: d.range[0], col: d.range[1] })
+                        .collect(),
+                }
+            })
+            .collect();
+        sort_problems(files)
+    }
+
     fn panel_part(&mut self, ctx: &Context) {
         use crate::workbench::panel;
         // Exited shells close their terminal; the last one hides the panel.
@@ -5126,8 +5173,8 @@ impl App {
         } else {
             self.panel.height.unwrap_or_else(|| panel::default_height(window_h))
         };
-        let problems = { let (e, w) = self.extensions.problem_counts(); e + w };
-        let out = TopBottomPanel::bottom("panel")
+        let problems = self.problem_files();
+        let mut out = TopBottomPanel::bottom("panel")
             .exact_height(card_h + cards::MARGIN)
             .show_separator_line(false)
             .frame(Frame::NONE)
@@ -5137,11 +5184,24 @@ impl App {
                     egui::pos2(r.left() + cards::MARGIN, r.top()),
                     egui::pos2(r.right() - cards::MARGIN, r.bottom() - cards::MARGIN),
                 );
-                panel::show(ui, card, &mut self.panel, problems, "")
+                panel::show(ui, card, &mut self.panel, &problems, "")
             })
             .inner;
         if out.close {
             self.panel.visible = false;
+        }
+        if let Some((path, line, col)) = out.open_problem.take() {
+            // The marker's UTF-16 column → a byte offset in that line.
+            let byte = std::fs::read_to_string(&path)
+                .ok()
+                .or_else(|| self.documents.iter().find(|d| d.path == path).map(|d| d.text.clone()))
+                .map(|t| {
+                    let at = crate::extensions::text::utf16_to_byte(&t, line, col);
+                    let line_start = t[..at].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                    at - line_start
+                })
+                .unwrap_or(col);
+            self.navigate_to(path, line + 1, byte);
         }
         if out.new_terminal {
             self.create_terminal(ctx);
