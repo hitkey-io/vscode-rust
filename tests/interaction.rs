@@ -892,3 +892,36 @@ fn split_editor_opens_a_second_group_and_open_to_the_side() {
     harness.step();
     harness.snapshot("interaction_split_editor_resized");
 }
+
+#[test]
+fn keybinding_moves_the_editor_to_the_next_group() {
+    let ws = workspace_path();
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if a.user_keybindings_json().matches("command").count() == 0 {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_open_file(workspace_path().join("tsconfig.json"));
+            a.bootstrap_open_file(workspace_path().join("package.json"));
+            a.bootstrap_user_keybindings(r#"[{ "key": "cmd+m", "command": "workbench.action.moveEditorToNextGroup" }]"#);
+        }
+        a.render(ctx);
+    };
+    let _ = ws;
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    assert_eq!(harness.get_all_by_label("Split Editor Right (⌘\\)").count(), 1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::M);
+    harness.run();
+    harness.run();
+    // Two groups now: each has its own tab strip with the title actions.
+    assert_eq!(harness.get_all_by_label("Split Editor Right (⌘\\)").count(), 2);
+    let _ = harness.get_by_label("tab:tsconfig.json");
+    let _ = harness.get_by_label("tab:package.json");
+}

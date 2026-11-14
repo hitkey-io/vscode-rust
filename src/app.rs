@@ -524,6 +524,24 @@ impl App {
             "workbench.action.closeActiveEditor" => CommandId::CloseFile,
             "workbench.action.closeAllEditors" => CommandId::CloseAllFiles,
             "workbench.action.splitEditor" | "workbench.action.splitEditorRight" => CommandId::SplitEditor,
+            "workbench.action.moveEditorToNextGroup" | "workbench.action.moveEditorToRightGroup" => {
+                self.move_editor_to_group(1);
+                return true;
+            }
+            "workbench.action.moveEditorToPreviousGroup" | "workbench.action.moveEditorToLeftGroup" => {
+                self.move_editor_to_group(0);
+                return true;
+            }
+            "workbench.action.focusNextGroup" | "workbench.action.focusRightGroup" => {
+                if self.is_split() {
+                    self.focus_group(1);
+                }
+                return true;
+            }
+            "workbench.action.focusPreviousGroup" | "workbench.action.focusLeftGroup" => {
+                self.focus_group(0);
+                return true;
+            }
             "workbench.action.focusFirstEditorGroup" => {
                 self.focus_group(0);
                 return true;
@@ -2653,6 +2671,41 @@ impl App {
         self.focused_group = 1;
         self.split_ratio = 0.5;
         self.active_doc = Some(at);
+        self.refresh_git_line_changes();
+    }
+
+    /// Move the active editor into `target` (0 = left, 1 = right, created
+    /// when needed). When that group already shows the file, the two merge.
+    fn move_editor_to_group(&mut self, target: u8) {
+        let Some(idx) = self.active_doc else { return };
+        let Some(src) = self.documents.get(idx) else { return };
+        if src.group == target || src.welcome {
+            return;
+        }
+        let twin = self
+            .documents
+            .iter()
+            .position(|d| d.group == target && d.path == src.path && d.diff_title == src.diff_title && d.webview == src.webview);
+        match twin {
+            Some(t) => {
+                self.close_doc(idx);
+                let t = if t > idx { t - 1 } else { t };
+                self.focus_group(target);
+                self.active_doc = Some(t);
+            }
+            None => {
+                let from = self.documents[idx].group;
+                self.documents[idx].group = target;
+                self.split_active[from as usize] = None;
+                self.split_active[target as usize] = None;
+                self.focused_group = target;
+                self.active_doc = Some(idx);
+                if target == 1 {
+                    self.split_ratio = 0.5;
+                }
+            }
+        }
+        self.normalize_groups();
         self.refresh_git_line_changes();
     }
 
