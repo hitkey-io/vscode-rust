@@ -879,4 +879,16 @@ fn split_editor_opens_a_second_group_and_open_to_the_side() {
     assert_eq!(harness.get_all_by_label("tab:SiteHeader.vue").count(), 1);
     assert_eq!(harness.get_all_by_label("tab:tsconfig.json").count(), 2);
     harness.snapshot("interaction_split_editor");
+    // Dragging the sash between the groups resizes them.
+    let seam = egui::pos2(853.0, 500.0);
+    harness.event(egui::Event::PointerMoved(seam));
+    harness.step();
+    harness.event(egui::Event::PointerButton { pos: seam, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    harness.step();
+    harness.event(egui::Event::PointerMoved(egui::pos2(700.0, 500.0)));
+    harness.step();
+    harness.event(egui::Event::PointerButton { pos: egui::pos2(700.0, 500.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
+    harness.step();
+    harness.step();
+    harness.snapshot("interaction_split_editor_resized");
 }

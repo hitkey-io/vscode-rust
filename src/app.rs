@@ -31,6 +31,8 @@ pub struct App {
     /// The editor group that has the keyboard (0 = left, 1 = right of a
     /// split); `active_doc` is that group's active editor.
     focused_group: u8,
+    /// Share of the editor area the left group takes (the sash between the groups).
+    split_ratio: f32,
     /// The active editor of the group that doesn't have the focus.
     split_active: [Option<usize>; 2],
     /// Hash of each file's text the last time its editors were in step
@@ -406,6 +408,7 @@ impl App {
             documents: Vec::new(),
             active_doc: None,
             focused_group: 0,
+            split_ratio: 0.5,
             split_active: [None, None],
             twin_hashes: std::collections::HashMap::new(),
             active_view: ActivityView::Explorer,
@@ -2648,6 +2651,7 @@ impl App {
         };
         self.split_active[0] = self.active_doc;
         self.focused_group = 1;
+        self.split_ratio = 0.5;
         self.active_doc = Some(at);
         self.refresh_git_line_changes();
     }
@@ -5267,10 +5271,14 @@ impl App {
                 self.normalize_groups();
                 self.sync_twins();
                 let groups: u8 = if self.is_split() { 2 } else { 1 };
+                // The sash between the groups: drag to resize (each keeps at
+                // least 220px), double click for equal halves.
+                let min_w = 220.0f32.min((full.width() - 1.0) / 2.0);
+                let left_w = ((full.width() - 1.0) * self.split_ratio).round().clamp(min_w, (full.width() - 1.0 - min_w).max(min_w));
                 let mut res = GroupRender::default();
                 for group in 0..groups {
                     let rect = if groups == 2 {
-                        let half = ((full.width() - 1.0) / 2.0).floor();
+                        let half = left_w;
                         if group == 0 {
                             egui::Rect::from_min_size(full.min, egui::vec2(half, full.height()))
                         } else {
@@ -5285,7 +5293,24 @@ impl App {
                     });
                 }
                 if groups == 2 {
-                    let x = full.left() + ((full.width() - 1.0) / 2.0).floor();
+                    let sash = egui::Rect::from_min_size(egui::pos2(full.left() + left_w - 2.0, full.top()), egui::vec2(5.0, full.height()));
+                    let resp = ui.interact(sash, egui::Id::new("editor-group-sash"), egui::Sense::click_and_drag());
+                    if resp.hovered() || resp.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    }
+                    if resp.double_clicked() {
+                        self.split_ratio = 0.5;
+                    } else if resp.dragged() {
+                        if let Some(p) = resp.interact_pointer_pos() {
+                            self.split_ratio = ((p.x - full.left()) / (full.width() - 1.0)).clamp(0.05, 0.95);
+                        }
+                    }
+                    if resp.dragged() || resp.double_clicked() {
+                        ui.ctx().request_repaint();
+                    }
+                }
+                if groups == 2 {
+                    let x = full.left() + left_w;
                     ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(x, full.top()), egui::vec2(1.0, full.height())), 0.0, Palette::EDITOR_GROUP_BORDER());
                 }
                 editor_output = res.editor_output;
