@@ -938,3 +938,57 @@ fn keybinding_moves_the_editor_to_the_next_group() {
     let _ = harness.get_by_label("tab:tsconfig.json");
     let _ = harness.get_by_label("tab:package.json");
 }
+
+/// Drag a tab from `from` to `to` with the primary button.
+fn drag(harness: &mut Harness<'static>, from: egui::Pos2, to: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(from));
+    harness.step();
+    harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.step();
+    let mid = egui::pos2((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
+    harness.event(egui::Event::PointerMoved(mid));
+    harness.step();
+    harness.event(egui::Event::PointerMoved(to));
+    harness.step();
+    harness.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    harness.step();
+    harness.step();
+}
+
+fn launch_two_tabs() -> Harness<'static> {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_open_file(workspace_path().join("tsconfig.json"));
+            a.bootstrap_open_file(workspace_path().join("package.json"));
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    harness
+}
+
+#[test]
+fn dragging_a_tab_reorders_it_or_splits_the_editor() {
+    let mut harness = launch_two_tabs();
+    let order = |h: &Harness<'static>| h.get_all_by_label_contains("tab:").map(|n| n.accesskit_node().label().unwrap_or_default().to_string()).collect::<Vec<_>>();
+    use egui_kittest::kittest::NodeT;
+    assert_eq!(order(&harness), vec!["tab:tsconfig.json", "tab:package.json"]);
+    // The first tab dropped past the last one goes to the end.
+    drag(&mut harness, egui::pos2(420.0, 77.0), egui::pos2(900.0, 77.0));
+    assert_eq!(order(&harness), vec!["tab:package.json", "tab:tsconfig.json"]);
+    // Dropped on the right of the editor area it opens a second group.
+    assert_eq!(harness.get_all_by_label("Split Editor Right (⌘\\)").count(), 1);
+    drag(&mut harness, egui::pos2(420.0, 77.0), egui::pos2(1100.0, 400.0));
+    harness.run();
+    assert_eq!(harness.get_all_by_label("Split Editor Right (⌘\\)").count(), 2);
+}

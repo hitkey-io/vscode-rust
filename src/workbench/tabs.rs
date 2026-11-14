@@ -21,6 +21,12 @@ pub struct TabsAction {
     pub more_actions: Option<egui::Pos2>,
     /// "Split Editor Right" was clicked.
     pub split: bool,
+    /// A tab was dragged and dropped: index into `docs` and the pointer.
+    pub dropped: Option<(usize, egui::Pos2)>,
+    /// Where the tabs were drawn (index into `docs`).
+    pub rects: Vec<egui::Rect>,
+    /// A tab is being dragged.
+    pub dragging: bool,
 }
 
 pub fn show<D: std::borrow::Borrow<Document>>(
@@ -38,6 +44,9 @@ pub fn show<D: std::borrow::Borrow<Document>>(
         keep: None,
         more_actions: None,
         split: false,
+        dropped: None,
+        rects: Vec::new(),
+        dragging: false,
     };
 
     let rect = ui.max_rect();
@@ -116,6 +125,11 @@ pub fn show<D: std::borrow::Borrow<Document>>(
     // The composite widget owns its own horizontal scroll area + scroll-into
     // view, so we hand it the full strip directly.
     let response = vsce_tabs(ui, &TabsProps::connected(), &items, &mut active_idx);
+
+    let skip = if show_welcome_tab { 1 } else { 0 };
+    action.rects = response.rects.iter().skip(skip).copied().collect();
+    action.dragging = response.dragging.is_some_and(|i| i >= skip);
+    action.dropped = response.dropped.and_then(|(i, p)| i.checked_sub(skip).map(|i| (i, p)));
 
     // Translate the composite-widget response into the workbench's action
     // shape. The welcome tab occupies slot 0 when present; everything else

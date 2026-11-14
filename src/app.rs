@@ -33,6 +33,8 @@ pub struct App {
     focused_group: u8,
     /// Share of the editor area the left group takes (the sash between the groups).
     split_ratio: f32,
+    /// Where each editor group was drawn last frame (drop targets).
+    group_rects: [egui::Rect; 2],
     /// The active editor of the group that doesn't have the focus.
     split_active: [Option<usize>; 2],
     /// Hash of each file's text the last time its editors were in step
@@ -409,6 +411,7 @@ impl App {
             active_doc: None,
             focused_group: 0,
             split_ratio: 0.5,
+            group_rects: [egui::Rect::NOTHING; 2],
             split_active: [None, None],
             twin_hashes: std::collections::HashMap::new(),
             active_view: ActivityView::Explorer,
@@ -2482,6 +2485,26 @@ impl App {
                     .unwrap_or_else(|| egui::pos2(0.0, 0.0));
                 self.tab_menu = Some((idx, pos));
             }
+            if tabs_action.dragging {
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+            if let Some((i, pos)) = tabs_action.dropped {
+                if let Some(&doc_idx) = members.get(i) {
+                    let strip = egui::Rect::from_min_size(group_rect.min, egui::vec2(group_rect.width(), 32.0));
+                    let in_other = self.is_split() && self.group_rects[1 - group as usize].contains(pos);
+                    let makes_split = !self.is_split() && members.len() > 1 && group_rect.contains(pos) && pos.y > strip.bottom() && pos.x > group_rect.left() + group_rect.width() * 0.66;
+                    if in_other {
+                        self.move_doc_to_group(doc_idx, 1 - group);
+                    } else if makes_split {
+                        self.move_doc_to_group(doc_idx, 1);
+                    } else if strip.contains(pos) {
+                        let before = tabs_action.rects.iter().position(|r| r.center().x > pos.x).and_then(|k| members.get(k).copied());
+                        if before != Some(doc_idx) {
+                            self.reorder_doc(doc_idx, before);
+                        }
+                    }
+                }
+            }
             if tabs_action.split {
                 self.focus_group(group);
                 self.split_editor();
@@ -2677,21 +2700,29 @@ impl App {
     /// Move the active editor into `target` (0 = left, 1 = right, created
     /// when needed). When that group already shows the file, the two merge.
     fn move_editor_to_group(&mut self, target: u8) {
-        let Some(idx) = self.active_doc else { return };
-        let Some(src) = self.documents.get(idx) else { return };
+        if let Some(idx) = self.active_doc {
+            self.move_doc_to_group(idx, target);
+        }
+    }
+
+    /// Move the editor at `idx` into `target`; returns where it (or the
+    /// tab it merged into) is now.
+    fn move_doc_to_group(&mut self, idx: usize, target: u8) -> Option<usize> {
+        let src = self.documents.get(idx)?;
         if src.group == target || src.welcome {
-            return;
+            return Some(idx);
         }
         let twin = self
             .documents
             .iter()
             .position(|d| d.group == target && d.path == src.path && d.diff_title == src.diff_title && d.webview == src.webview);
-        match twin {
+        let now = match twin {
             Some(t) => {
                 self.close_doc(idx);
                 let t = if t > idx { t - 1 } else { t };
                 self.focus_group(target);
                 self.active_doc = Some(t);
+                t
             }
             None => {
                 let from = self.documents[idx].group;
@@ -2700,13 +2731,52 @@ impl App {
                 self.split_active[target as usize] = None;
                 self.focused_group = target;
                 self.active_doc = Some(idx);
-                if target == 1 {
+                if target == 1 && from == 0 && !self.documents.iter().any(|d| d.group == 1 && d.path != self.documents[idx].path) {
                     self.split_ratio = 0.5;
                 }
+                idx
             }
-        }
+        };
         self.normalize_groups();
         self.refresh_git_line_changes();
+        Some(now)
+    }
+
+    /// Put the tab at `from` in front of the tab at `before` (after the
+    /// group's last tab when `None`); returns its new index.
+    fn reorder_doc(&mut self, from: usize, before: Option<usize>) -> usize {
+        if from >= self.documents.len() {
+            return from;
+        }
+        let group = self.documents[from].group;
+        let doc = self.documents.remove(from);
+        let at = match before {
+            Some(b) => {
+                if b > from {
+                    b - 1
+                } else {
+                    b
+                }
+            }
+            None => self.documents.iter().rposition(|d| d.group == group).map(|i| i + 1).unwrap_or(self.documents.len()),
+        };
+        self.documents.insert(at, doc);
+        let remap = |i: usize| -> usize {
+            if i == from {
+                return at;
+            }
+            let i2 = if i > from { i - 1 } else { i };
+            if i2 >= at {
+                i2 + 1
+            } else {
+                i2
+            }
+        };
+        self.active_doc = self.active_doc.map(remap);
+        for a in self.split_active.iter_mut() {
+            *a = a.map(remap);
+        }
+        at
     }
 
     /// Keep the editors of one file in step: when one of them changed since
@@ -5340,6 +5410,7 @@ impl App {
                     } else {
                         full
                     };
+                    self.group_rects[group as usize] = rect;
                     ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt(("editor-group", group)), |ui| {
                         ui.set_clip_rect(rect.intersect(ui.clip_rect()));
                         ui.vertical(|ui| self.render_group(ui, group, &mut res));

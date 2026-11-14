@@ -146,6 +146,12 @@ pub struct TabsResponse {
     pub close_requested: Option<usize>,
     pub right_clicked: Option<usize>,
     pub double_clicked: Option<usize>,
+    /// A tab was dragged and released: its index and where the pointer was.
+    pub dropped: Option<(usize, egui::Pos2)>,
+    /// The tab being dragged right now.
+    pub dragging: Option<usize>,
+    /// Where each tab was drawn.
+    pub rects: Vec<egui::Rect>,
 }
 
 pub fn tabs(
@@ -207,6 +213,13 @@ pub fn tabs(
                     if tab_resp.double_clicked {
                         out.double_clicked = Some(idx);
                     }
+                    out.rects.push(tab_resp.rect);
+                    if tab_resp.dragging {
+                        out.dragging = Some(idx);
+                    }
+                    if let Some(pos) = tab_resp.dropped_at {
+                        out.dropped = Some((idx, pos));
+                    }
                 }
             });
         });
@@ -230,6 +243,8 @@ struct SingleTabResp {
     close_clicked: bool,
     right_clicked: bool,
     double_clicked: bool,
+    dragging: bool,
+    dropped_at: Option<egui::Pos2>,
     rect: egui::Rect,
 }
 
@@ -422,6 +437,8 @@ fn draw_single_tab(
         close_clicked,
         right_clicked: response.secondary_clicked(),
         double_clicked: response.double_clicked(),
+        dragging: response.dragged(),
+        dropped_at: if response.drag_stopped() { ui.ctx().input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) } else { None },
         rect,
     }
 }
