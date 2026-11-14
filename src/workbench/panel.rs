@@ -817,22 +817,46 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
     // Keyboard: ↑ / ↓ move through the problems, Enter opens the selected one.
     if list_focused {
         ui.memory_mut(|m| m.set_focus_lock_filter(list_id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
-        let (up, down, enter) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter)));
-        let flat: Vec<(&ProblemFile, usize)> = rows.iter().filter_map(|r| if let Row::Item(f, k) = r { Some((*f, *k)) } else { None }).collect();
+        let (up, down, left, right, enter) = ui.input(|i| {
+            (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::Enter))
+        });
+        // Every visible row, files and problems: (file, problem index or FILE_ROW).
+        let flat: Vec<(&ProblemFile, usize)> = rows
+            .iter()
+            .map(|r| match r {
+                Row::File(f, _) => (*f, FILE_ROW),
+                Row::Item(f, k) => (*f, *k),
+            })
+            .collect();
         let at = state.problems_selected.as_ref().and_then(|(p, i)| flat.iter().position(|(f, k)| &f.path == p && k == i));
-        let next = if down {
+        let mut next = if down {
             Some(at.map(|a| (a + 1).min(flat.len().saturating_sub(1))).unwrap_or(0))
         } else if up {
             Some(at.map(|a| a.saturating_sub(1)).unwrap_or(0))
         } else {
             None
         };
+        // ← collapses an open file or goes up to the file; → opens a
+        // collapsed file or goes down to its first problem.
+        if let Some((f, k)) = at.map(|a| flat[a]) {
+            if left {
+                if k == FILE_ROW {
+                    state.problems_collapsed.insert(f.path.clone());
+                } else {
+                    next = flat.iter().position(|(rf, rk)| rf.path == f.path && *rk == FILE_ROW);
+                }
+            } else if right && k == FILE_ROW {
+                if state.problems_collapsed.remove(&f.path) {
+                } else {
+                    next = Some(at.unwrap() + 1).filter(|n| *n < flat.len());
+                }
+            }
+        }
         if let Some(n) = next.filter(|_| !flat.is_empty()) {
             let (f, k) = flat[n];
             state.problems_selected = Some((f.path.clone(), k));
             // Keep the selected row in view.
-            let row_index = rows.iter().position(|r| matches!(r, Row::Item(rf, rk) if rf.path == f.path && *rk == k)).unwrap_or(0);
-            let top = row_index as f32 * 22.0;
+            let top = n as f32 * 22.0;
             if top < state.problems_scroll {
                 state.problems_scroll = top;
             } else if top + 22.0 > state.problems_scroll + viewport {
@@ -841,7 +865,11 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
         }
         if enter {
             if let Some((p, i)) = &state.problems_selected {
-                if let Some(item) = flat.iter().find(|(f, k)| &f.path == p && k == i).map(|(f, k)| &f.items[*k]) {
+                if *i == FILE_ROW {
+                    if !state.problems_collapsed.remove(p) {
+                        state.problems_collapsed.insert(p.clone());
+                    }
+                } else if let Some(item) = flat.iter().find(|(f, k)| &f.path == p && k == i).map(|(f, k)| &f.items[*k]) {
                     out.open_problem = Some((p.clone(), item.line, item.col));
                 }
             }
@@ -870,7 +898,7 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
         }
         let visible = r.intersect(area);
         let (path, selected) = match row {
-            Row::File(f, _) => (f.path.clone(), false),
+            Row::File(f, _) => (f.path.clone(), state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && *i == FILE_ROW)),
             Row::Item(f, k) => (f.path.clone(), state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && i == k)),
         };
         let rid = match row {
@@ -916,6 +944,7 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                 rresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
                 if rresp.clicked() {
                     clicked_file = Some(f.path.clone());
+                    state.problems_selected = Some((f.path.clone(), FILE_ROW));
                 }
             }
             Row::Item(f, k) => {
@@ -986,6 +1015,9 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
 
 /// xterm's 256-colour palette entry `i` (16 theme colours, the 6×6×6 cube,
 /// 24 greys).
+/// The "problem index" of a file row in the Problems selection.
+const FILE_ROW: usize = usize::MAX;
+
 fn ansi(i: u8) -> Color32 {
     let theme = [
         Palette::TERMINAL_ANSI_BLACK, Palette::TERMINAL_ANSI_RED, Palette::TERMINAL_ANSI_GREEN, Palette::TERMINAL_ANSI_YELLOW,
