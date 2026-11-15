@@ -157,6 +157,8 @@ pub struct PanelState {
     /// A terminal tab being renamed: its index and the text so far.
     terminal_rename: Option<(usize, String)>,
     terminal_rename_focus: bool,
+    /// Width of the terminal tabs list (None = 120px).
+    pub terminal_tabs_width: Option<f32>,
     output_seen: (String, usize),
     output_cache: Option<(OutputKey, Vec<OutRow>)>,
     /// Files collapsed in the Problems tree.
@@ -476,8 +478,23 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
         PanelView::Terminal => {
             let mut panes = content;
             if tabs_shown {
-                let list = Rect::from_min_max(Pos2::new(card.right() - 121.0, card.top() + 33.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
+                let tabs_w = state.terminal_tabs_width.unwrap_or(120.0).clamp(46.0, (card.width() * 0.5).max(46.0));
+                let list = Rect::from_min_max(Pos2::new(card.right() - 1.0 - tabs_w, card.top() + 33.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
                 terminal_tabs(ui, &painter, list, state, &mut out, id);
+                // The sash on the list's left edge (46px at least, half the
+                // panel at most); double click restores 120px.
+                let sash = Rect::from_min_max(Pos2::new(list.left() - 2.0, list.top()), Pos2::new(list.left() + 3.0, list.bottom()));
+                let sresp = ui.interact(sash, id.with("tabs-sash"), Sense::click_and_drag());
+                if sresp.hovered() || sresp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if sresp.double_clicked() {
+                    state.terminal_tabs_width = None;
+                } else if sresp.dragged() {
+                    if let Some(p) = sresp.interact_pointer_pos() {
+                        state.terminal_tabs_width = Some((card.right() - 1.0 - p.x).clamp(46.0, (card.width() * 0.5).max(46.0)));
+                    }
+                }
                 panes.max.x = list.left();
             }
             // The active group's terminals side by side.
@@ -500,6 +517,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
 
 /// The terminal tabs list (terminalTabsList.ts).
 fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut PanelState, out: &mut PanelOutput, id: egui::Id) {
+    let painter = &painter.with_clip_rect(list);
     painter.vline(list.left() + 0.5, list.y_range(), Stroke::new(1.0, Palette::TERMINAL_BORDER()));
     let mut y = list.top();
     let groups = state.groups.clone();
