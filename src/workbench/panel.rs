@@ -128,6 +128,8 @@ struct OutputKey {
 struct OutRow {
     text: String,
     spans: Vec<(usize, usize, Color32, bool)>,
+    /// (start, end, url) in characters: ⌘-click opens it.
+    links: Vec<(usize, usize, String)>,
 }
 
 #[derive(Default)]
@@ -613,6 +615,12 @@ fn log_regex() -> &'static regex::Regex {
     })
 }
 
+/// URLs in the output (`https://…`, `file://…`).
+fn url_regex() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"\b(?:https?|file)://[^\s'"<>]+"#).expect("url"))
+}
+
 /// Coloured char ranges of one output line.
 fn log_spans(line: &str, colours: &[(&'static str, Color32)], bold: &[&str]) -> Vec<(usize, usize, Color32, bool)> {
     let colour = |name: &str| colours.iter().find(|(n, _)| *n == name).map(|(_, c)| *c);
@@ -738,7 +746,14 @@ fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, 
                     .filter(|(s, e, _, _)| *s < b && *e > a)
                     .map(|(s, e, c, bd)| (prefix + (*s).max(a) - a, prefix + (*e).min(b) - a, *c, *bd))
                     .collect();
-                rows.push(OutRow { text: row_text, spans: row_spans });
+                let links = url_regex()
+                    .find_iter(&row_text)
+                    .map(|m| {
+                        let a = row_text[..m.start()].chars().count();
+                        (a, a + m.as_str().chars().count(), m.as_str().trim_end_matches([')', ',', '.', ';']).to_string())
+                    })
+                    .collect();
+                rows.push(OutRow { text: row_text, spans: row_spans, links });
             }
         }
         // The text ends with a newline: that final empty line isn't a row.
@@ -784,6 +799,23 @@ fn output_view(ui: &mut Ui, painter: &egui::Painter, content: Rect, text: &str, 
         }
     } else if text_resp.clicked() {
         state.output_sel = None;
+    }
+    // ⌘-click on a link opens it (the pointer shows a hand while ⌘ is down).
+    let link_at = |p: Pos2, scroll: f32| -> Option<String> {
+        let (row, col) = at_pos(p, scroll);
+        rows.get(row)?.links.iter().find(|(a, b, _)| col >= *a && col < *b).map(|(_, _, u)| u.clone())
+    };
+    if ui.input(|i| i.modifiers.command) && text_resp.hovered() {
+        if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+            if link_at(p, state.output_scroll).is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+    }
+    if text_resp.clicked() && ui.input(|i| i.modifiers.command) {
+        if let Some(url) = text_resp.interact_pointer_pos().and_then(|p| link_at(p, state.output_scroll)) {
+            let _ = std::process::Command::new("open").arg(url).spawn();
+        }
     }
     let ordered_sel = state.output_sel.map(|(a, b)| if a <= b { (a, b) } else { (b, a) }).filter(|(a, b)| a != b);
     if let Some((from, to)) = ordered_sel {
@@ -1412,6 +1444,13 @@ mod tests {
         assert!(spans[2].3 && !spans[0].3, "only [error] is bold");
         assert!(spans.iter().any(|s| text(s) == "132" && s.2 == Color32::YELLOW));
         assert!(spans.iter().any(|s| text(s) == "https://example.com/a" && s.2 == Color32::BLUE));
+    }
+
+    #[test]
+    fn output_links_are_found_without_trailing_punctuation() {
+        let line = "GET https://example.com/a?b=1, then (vscode-file://app/x.js:1:2) end";
+        let found: Vec<&str> = url_regex().find_iter(line).map(|m| m.as_str().trim_end_matches([')', ',', '.', ';'])).collect();
+        assert_eq!(found, vec!["https://example.com/a?b=1", "file://app/x.js:1:2"]);
     }
 
     #[test]
