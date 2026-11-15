@@ -152,7 +152,7 @@ pub struct StatusBarOutput {
     pub manage_trust: bool,
     /// The problems item was clicked (View: Focus Problems).
     pub problems_clicked: bool,
-    /// Language mode, end of line, indentation or the cursor position was
+    /// Language mode, end of line, encoding, indentation or the cursor position was
     /// clicked: which one.
     pub editor_item_clicked: Option<EditorItem>,
 }
@@ -162,6 +162,7 @@ pub struct StatusBarOutput {
 pub enum EditorItem {
     Language,
     EndOfLine,
+    Encoding,
     Indentation,
     Position,
 }
@@ -379,7 +380,7 @@ pub fn show_with_extensions(
                     // Right-to-left order: LF, then UTF-8, then Spaces — so the
                     // visual left-to-right order is Spaces, UTF-8, LF (VS Code's).
                     if plain(ui, doc.eol()).clicked() { out.editor_item_clicked = Some(EditorItem::EndOfLine); }
-                    if plain(ui, "UTF-8").clicked() { out.palette_requested = true; }
+                    if plain(ui, crate::editor::encoding::short_label(doc.encoding)).clicked() { out.editor_item_clicked = Some(EditorItem::Encoding); }
                     if plain(ui, &doc.indent_label()).clicked() { out.editor_item_clicked = Some(EditorItem::Indentation); }
                     if plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col))
                         .clicked() { out.editor_item_clicked = Some(EditorItem::Position); }

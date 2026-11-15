@@ -39,6 +39,9 @@ pub struct Document {
     pub welcome: bool,
     /// The editor group (0 = left, 1 = right of a split) the tab lives in.
     pub group: u8,
+    /// The file's encoding (`encoding::ENTRIES` id): `utf8` unless a BOM or
+    /// "Reopen with Encoding" said otherwise; Save writes it.
+    pub encoding: &'static str,
 }
 
 impl Document {
@@ -52,7 +55,8 @@ impl Document {
                 "binary file",
             ));
         }
-        let text = std::fs::read_to_string(&path)?;
+        let bytes = std::fs::read(&path)?;
+        let (text, encoding) = super::encoding::decode(&bytes);
         let language = detect_language(&path);
         Ok(Self {
             saved_text: text.clone(),
@@ -73,6 +77,7 @@ impl Document {
             untitled: false,
             welcome: false,
             group: 0,
+            encoding,
         })
     }
 
@@ -100,6 +105,7 @@ impl Document {
             untitled: false,
             welcome: false,
             group: 0,
+            encoding: super::encoding::UTF8,
         }
     }
 
@@ -132,6 +138,7 @@ impl Document {
             untitled: false,
             welcome: false,
             group: 0,
+            encoding: super::encoding::UTF8,
         }
     }
 
@@ -163,8 +170,19 @@ impl Document {
         if self.untitled {
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "untitled: choose where to save"));
         }
-        std::fs::write(&self.path, &self.text)?;
+        std::fs::write(&self.path, super::encoding::encode(&self.text, self.encoding))?;
         self.saved_text = self.text.clone();
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// "Reopen with Encoding": the file's bytes read again as `encoding`,
+    /// unsaved changes dropped.
+    pub fn reopen_with_encoding(&mut self, encoding: &'static str) -> std::io::Result<()> {
+        let bytes = std::fs::read(&self.path)?;
+        self.text = super::encoding::decode_as(&bytes, encoding);
+        self.saved_text = self.text.clone();
+        self.encoding = encoding;
         self.dirty = false;
         Ok(())
     }
@@ -402,5 +420,22 @@ mod tests {
         d.convert_indentation(false);
         assert_eq!(d.text, "fn a() {\n    b();\n        c();\n}\n");
         assert_eq!(doc("x\n").indent_label(), "Spaces: 4");
+    }
+
+    #[test]
+    fn files_keep_their_encoding_across_open_reopen_and_save() {
+        let path = std::env::temp_dir().join(format!("vscode-rust-enc-{}.txt", std::process::id()));
+        std::fs::write(&path, b"\xEF\xBB\xBFab").unwrap();
+        let mut d = Document::open(path.clone()).unwrap();
+        assert_eq!((d.text.as_str(), d.encoding), ("ab", "utf8bom"));
+        d.text.push('c');
+        d.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"\xEF\xBB\xBFabc");
+        // Reopening drops edits and decodes the bytes again.
+        std::fs::write(&path, [0xCF, 0xF0]).unwrap();
+        d.text.push('x');
+        d.reopen_with_encoding("windows1251").unwrap();
+        assert_eq!((d.text.as_str(), d.dirty, d.encoding), ("Пр", false, "windows1251"));
+        let _ = std::fs::remove_file(&path);
     }
 }

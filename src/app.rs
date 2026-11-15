@@ -295,6 +295,10 @@ const DEBUGGER_PICK_ID: u64 = 1 << 54;
 const STATUS_EOL_PICK_ID: u64 = 1 << 55;
 const STATUS_INDENT_PICK_ID: u64 = 1 << 56;
 const STATUS_LANGUAGE_PICK_ID: u64 = 1 << 57;
+/// "Select Action" (Reopen / Save with Encoding) and the two encoding lists.
+const STATUS_ENCODING_ACTION_PICK_ID: u64 = 1 << 59;
+const STATUS_ENCODING_REOPEN_PICK_ID: u64 = 1 << 60;
+const STATUS_ENCODING_SAVE_PICK_ID: u64 = 1 << 61;
 
 /// What asked for workspace trust (`requestWorkspaceTrust`'s message), and
 /// what runs once it's granted.
@@ -6004,6 +6008,7 @@ impl App {
                 let items = vec![pick("LF", eol == "LF"), pick("CRLF", eol == "CRLF")];
                 self.palette.open_pick_with(STATUS_EOL_PICK_ID, items, Some("Select End of Line Sequence".into()), Default::default());
             }
+            E::Encoding => self.open_encoding_picker(),
             E::Indentation => {
                 let items = vec![pick("Convert Indentation to Spaces", false), pick("Convert Indentation to Tabs", false)];
                 self.palette.open_pick_with(STATUS_INDENT_PICK_ID, items, Some("Select Action".into()), Default::default());
@@ -6022,9 +6027,83 @@ impl App {
         }
     }
 
+    /// `workbench.action.editor.changeEncoding` (editorStatus.ts
+    /// `ChangeEncodingAction`): a new file only offers Save with Encoding, a
+    /// file Select Action first. Versions from git (read-only) have no file
+    /// to reopen, so nothing opens for them.
+    fn open_encoding_picker(&mut self) {
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        if doc.untitled {
+            self.open_encoding_choices(false);
+        } else if !doc.read_only {
+            let items = ["Reopen with Encoding", "Save with Encoding"].iter().map(|l| (l.to_string(), None, None, false)).collect();
+            self.palette.open_pick_with(STATUS_ENCODING_ACTION_PICK_ID, items, Some("Select Action".into()), Default::default());
+        }
+    }
+
+    /// The encodings to reopen the file with or save it with, the current
+    /// one (or its `alias`) focused; the pick's description is the id.
+    fn open_encoding_choices(&mut self, reopen: bool) {
+        use crate::editor::encoding;
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        let choices = encoding::choices(reopen);
+        let active = choices.iter().position(|(id, _)| *id == doc.encoding).or_else(|| choices.iter().position(|(id, _)| Some(*id) == encoding::alias(doc.encoding)));
+        let items = choices.iter().map(|(id, long)| (long.to_string(), Some(id.to_string()), None, false)).collect();
+        let (request, placeholder) = if reopen {
+            (STATUS_ENCODING_REOPEN_PICK_ID, "Select File Encoding to Reopen File")
+        } else {
+            (STATUS_ENCODING_SAVE_PICK_ID, "Select File Encoding to Save with")
+        };
+        self.palette.open_pick_with(request, items, Some(placeholder.into()), crate::workbench::command_palette::PickOptions { active, ..Default::default() });
+    }
+
+    /// An encoding was picked: Reopen decodes the file again (a changed
+    /// file is reverted after asking), Save writes it in that encoding right
+    /// away (a new file only remembers it for its first save).
+    fn encoding_picked(&mut self, reopen: bool, index: usize) {
+        let Some((id, _)) = crate::editor::encoding::choices(reopen).get(index).copied() else { return };
+        let Some(idx) = self.active_doc.filter(|&i| i < self.documents.len()) else { return };
+        if reopen {
+            let doc = &mut self.documents[idx];
+            if doc.dirty
+                && !(cfg!(test)
+                    || Self::confirm(
+                        "Do you want to revert the active text editor and reopen with a different encoding?",
+                        "This will discard any unsaved changes.",
+                        "Discard Changes and Reopen",
+                    ))
+            {
+                return;
+            }
+            if let Err(e) = doc.reopen_with_encoding(id) {
+                self.extensions.notify_error(format!("Couldn't reopen the file: {e}"));
+            }
+        } else {
+            self.documents[idx].encoding = id;
+            if !self.documents[idx].untitled {
+                self.save_active();
+            }
+        }
+    }
+
     /// An answer of one of the status bar pickers; false when `request_id`
     /// isn't one of them.
     fn status_pick_answered(&mut self, request_id: u64, index: Option<usize>) -> bool {
+        match request_id {
+            STATUS_ENCODING_ACTION_PICK_ID => {
+                if let Some(i) = index {
+                    self.open_encoding_choices(i == 0);
+                }
+                return true;
+            }
+            STATUS_ENCODING_REOPEN_PICK_ID | STATUS_ENCODING_SAVE_PICK_ID => {
+                if let Some(i) = index {
+                    self.encoding_picked(request_id == STATUS_ENCODING_REOPEN_PICK_ID, i);
+                }
+                return true;
+            }
+            _ => {}
+        }
         if ![STATUS_EOL_PICK_ID, STATUS_INDENT_PICK_ID, STATUS_LANGUAGE_PICK_ID].contains(&request_id) {
             return false;
         }

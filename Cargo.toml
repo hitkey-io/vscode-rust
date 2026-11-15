@@ -52,6 +52,7 @@ miniz_oxide = "0.8"
 image = { version = "0.25", default-features = false, features = ["png"] }
 portable-pty = "0.9"
 vt100 = "0.15"
+encoding_rs = "0.8.44"
 
 [dev-dependencies]
 egui_kittest = { version = "0.34", features = ["wgpu", "snapshot"] }

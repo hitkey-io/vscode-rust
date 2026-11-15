@@ -1113,6 +1113,53 @@ fn status_bar_end_of_line_and_indentation_pickers_change_the_document() {
 }
 
 #[test]
+fn status_bar_encoding_picker_reopens_and_saves_with_another_encoding() {
+    let dir = std::env::temp_dir().join(format!("vscode-rust-encoding-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // "Привет" in Windows 1251: not UTF-8, so it opens with replacement characters.
+    let file = dir.join("legacy.txt");
+    std::fs::write(&file, [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2]).unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    harness.get_by_label("UTF-8").click();
+    harness.run();
+    harness.run();
+    // Select Action: Reopen with Encoding is the first entry.
+    let _ = harness.get_by_label("Reopen with Encoding");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("Windows 1251".to_string()));
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Windows 1251");
+    // Save with Encoding writes the file at once.
+    harness.get_by_label("Windows 1251").click();
+    harness.run();
+    harness.run();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("UTF-16 LE".to_string()));
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("UTF-16 LE");
+    let bytes = std::fs::read(&file).unwrap();
+    assert_eq!(&bytes[..2], [0xFF, 0xFE]);
+    assert_eq!(String::from_utf16_lossy(&bytes[2..].chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>()), "Привет");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn explorer_creates_renames_and_deletes_files() {
     let dir = std::env::temp_dir().join(format!("vscode-rust-explorer-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

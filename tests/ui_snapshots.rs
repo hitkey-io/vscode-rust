@@ -62,6 +62,7 @@ fn make_doc(name: &str, contents: &str, dirty: bool) -> Document {
         untitled: false,
         welcome: false,
         group: 0,
+        encoding: "utf8",
     };
     if dirty {
         doc.text.push_str("\n// edited");
