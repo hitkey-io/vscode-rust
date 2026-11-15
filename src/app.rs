@@ -5491,6 +5491,9 @@ impl App {
             if let Some(m) = sidebar_output.explorer_menu {
                 self.pending_explorer_menu = Some(m);
             }
+            if let Some(name) = sidebar_output.explorer_renamed {
+                self.explorer_prompt_answered(name);
+            }
             if let Some((src, dir)) = sidebar_output.explorer_drop {
                 self.explorer_move(&src, &dir);
             }
@@ -6197,9 +6200,13 @@ impl App {
                 self.palette.open_input(EXPLORER_PROMPT_ID, Some("Please enter a name for the new folder".into()), Some("Folder Name".into()), String::new(), false);
             }
             ExplorerAction::Rename(path) => {
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                // In the row itself (explorerViewer.ts `FileEditorRenderer`); the
+                // answer comes back as `SidebarOutput::explorer_renamed`.
+                if !self.sidebar_visible || self.active_view != ActivityView::Explorer {
+                    self.show_view(ActivityView::Explorer);
+                }
+                crate::workbench::sidebar::start_rename(ctx, &path);
                 self.explorer_prompt = Some(ExplorerPrompt::Rename(path));
-                self.palette.open_input(EXPLORER_PROMPT_ID, Some("Rename".into()), Some("Name".into()), name, false);
             }
             ExplorerAction::OpenToSide(path) => self.open_file_to_side(path),
             ExplorerAction::Cut(path) => self.explorer_clipboard = Some((path, true)),

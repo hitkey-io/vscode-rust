@@ -1237,3 +1237,61 @@ fn f2_renames_the_selected_explorer_row() {
     assert!(dir.join("b.txt").exists() && !dir.join("a.txt").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn escape_cancels_the_inline_rename_and_blur_accepts_it() {
+    let dir = std::env::temp_dir().join(format!("vscode-rust-inline-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    harness.get_by_label("a.txt").click();
+    harness.run();
+    harness.run();
+    // Escape leaves the name alone.
+    harness.key_press(egui::Key::F2);
+    harness.run();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text("zzz.txt".to_string()));
+    harness.run();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.run();
+    assert!(dir.join("a.txt").exists() && !dir.join("zzz.txt").exists());
+    // Typing over the selected stem keeps the extension; a click elsewhere accepts.
+    harness.key_press(egui::Key::F2);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("b".to_string()));
+    harness.run();
+    harness.event(egui::Event::PointerMoved(egui::pos2(900.0, 500.0)));
+    harness.event(egui::Event::PointerButton { pos: egui::pos2(900.0, 500.0), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.run();
+    harness.event(egui::Event::PointerButton { pos: egui::pos2(900.0, 500.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    harness.run();
+    harness.run();
+    let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert!(dir.join("b.txt").exists() && !dir.join("a.txt").exists(), "{names:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn inline_rename_input_sits_over_the_row_label() {
+    let ws = workspace_path();
+    let mut harness = launch(Some(ws.clone()), vec![], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    harness.get_by_label("tsconfig.json").click();
+    harness.run();
+    harness.run();
+    harness.key_press(egui::Key::F2);
+    harness.run();
+    harness.run();
+    harness.run();
+    harness.snapshot("interaction_explorer_inline_rename");
+}

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use egui::{Align, FontId, Layout, RichText, ScrollArea, Sense, Ui};
+use egui::{Align, FontId, Layout, RichText, ScrollArea, Sense, Stroke, Ui};
 
 use crate::fs::FileNode;
 use crate::icons::{self, codicon_font};
@@ -32,6 +32,8 @@ pub struct SidebarOutput {
     pub explorer_selected: Option<PathBuf>,
     /// A row was dropped on a folder: (what, into which folder).
     pub explorer_drop: Option<(PathBuf, PathBuf)>,
+    /// The inline rename ended: the new name (`None` = cancelled).
+    pub explorer_renamed: Option<Option<String>>,
 }
 
 pub fn show(
@@ -62,6 +64,7 @@ pub fn show(
         explorer_new: None,
         explorer_selected: None,
         explorer_drop: None,
+        explorer_renamed: None,
     };
 
     let rect = ui.max_rect();
@@ -411,6 +414,66 @@ fn node_decoration(
     }
 }
 
+/// The row being renamed in place (`FileEditorRenderer` in explorerViewer.ts:
+/// an input box over the label).
+#[derive(Clone)]
+struct RenameEdit {
+    path: PathBuf,
+    text: String,
+    /// Not focused yet: the first frame selects the name without extension.
+    fresh: bool,
+}
+
+const RENAME_KEY: &str = "explorer-rename";
+
+/// Starts renaming `path` in its row.
+pub fn start_rename(ctx: &egui::Context, path: &std::path::Path) {
+    let text = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(RENAME_KEY), Some(RenameEdit { path: path.to_path_buf(), text, fresh: true })));
+    ctx.request_repaint();
+}
+
+fn rename_edit(ctx: &egui::Context, path: &std::path::Path) -> Option<RenameEdit> {
+    ctx.data(|d| d.get_temp::<Option<RenameEdit>>(egui::Id::new(RENAME_KEY))).flatten().filter(|e| e.path == path)
+}
+
+/// The inline input over a row's label: `input.background` box with a 1px
+/// `focusBorder`, 13px text 5px in (1px border + 4px padding). Enter or a
+/// click elsewhere accepts, Escape cancels; the stem is selected at first.
+fn rename_input(ui: &mut Ui, mut edit: RenameEdit, label_x: f32, rect: egui::Rect, out: &mut SidebarOutput) {
+    let ctx = ui.ctx().clone();
+    let boxr = egui::Rect::from_min_max(egui::pos2(label_x - 1.0, rect.top() + 1.0), egui::pos2(rect.right() - 4.0, rect.bottom() - 1.0));
+    ui.painter().rect(boxr, 2.0, Palette::INPUT_BG(), Stroke::new(1.0, Palette::FOCUS_BORDER()), egui::StrokeKind::Inside);
+    let id = egui::Id::new("explorer-rename-input");
+    let resp = ui.put(
+        boxr.shrink2(egui::vec2(5.0, 1.0)),
+        egui::TextEdit::singleline(&mut edit.text)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .font(FontId::proportional(13.0))
+            .text_color(Palette::INPUT_FG())
+            .desired_width(f32::INFINITY),
+    );
+    if edit.fresh {
+        resp.request_focus();
+        let stem = std::path::Path::new(&edit.text).file_stem().map(|s| s.to_string_lossy().chars().count()).unwrap_or(0);
+        let mut state = egui::text_edit::TextEditState::load(&ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(stem))));
+        state.store(&ctx, id);
+        edit.fresh = false;
+    }
+    let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    // A press anywhere else is a blur: the name is accepted.
+    let pressed_elsewhere = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !boxr.contains(p)));
+    if resp.lost_focus() || escape || pressed_elsewhere {
+        let name = edit.text.trim().to_string();
+        out.explorer_renamed = Some(if escape || name.is_empty() { None } else { Some(name) });
+        ctx.data_mut(|d| d.insert_temp::<Option<RenameEdit>>(egui::Id::new(RENAME_KEY), None));
+    } else {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(RENAME_KEY), Some(edit)));
+    }
+}
+
 /// egui memory keys of an Explorer drag (explorerViewer.ts `FileDragAndDrop`):
 /// the row being dragged, and the folder under the pointer this pass.
 const DRAG_SOURCE: &str = "explorer-drag-source";
@@ -535,13 +598,22 @@ fn render_node(
     // Git decoration: tint the name + paint a status letter on the right.
     let deco = node_decoration(node, decorations);
     let name_color = deco.map(|k| k.decoration_color()).unwrap_or(Palette::FG());
-    painter.text(
-        cursor + egui::vec2(0.0, mid_y),
-        egui::Align2::LEFT_CENTER,
-        &node.name,
-        FontId::proportional(13.0),
-        name_color,
-    );
+    let editing = rename_edit(ui.ctx(), &node.path);
+    if editing.is_none() {
+        painter.text(
+            cursor + egui::vec2(0.0, mid_y),
+            egui::Align2::LEFT_CENTER,
+            &node.name,
+            FontId::proportional(13.0),
+            name_color,
+        );
+    }
+    if let Some(edit) = editing {
+        rename_input(ui, edit, cursor.x, rect, out);
+        return_children(ui, node, depth, out, decorations, active_file);
+        return;
+    }
+    let painter = ui.painter();
     if let Some(kind) = deco {
         painter.text(
             egui::pos2(rect.right() - 16.0, rect.center().y),
@@ -570,6 +642,25 @@ fn render_node(
         }
     }
 
+    if node.is_dir && node.expanded {
+        if let Some(children) = node.children.as_mut() {
+            for child in children {
+                render_node(ui, child, depth + 1, out, decorations, active_file);
+            }
+        }
+    }
+}
+
+/// The children of an expanded folder (shared by the normal and the
+/// renaming row).
+fn return_children(
+    ui: &mut Ui,
+    node: &mut FileNode,
+    depth: usize,
+    out: &mut SidebarOutput,
+    decorations: &Decorations,
+    active_file: Option<&std::path::Path>,
+) {
     if node.is_dir && node.expanded {
         if let Some(children) = node.children.as_mut() {
             for child in children {
