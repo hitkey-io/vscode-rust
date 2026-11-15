@@ -188,6 +188,8 @@ enum ExplorerAction {
     NewFolder(PathBuf),
     OpenToSide(PathBuf),
     RevealInFinder(PathBuf),
+    /// Open in Integrated Terminal (the folder, or the file's folder).
+    OpenInTerminal(PathBuf),
     Cut(PathBuf),
     Copy(PathBuf),
     /// Paste into this folder.
@@ -5689,12 +5691,17 @@ impl App {
     }
 
     fn spawn_terminal(&mut self, ctx: &Context, split: bool) {
+        self.spawn_terminal_in(ctx, split, None);
+    }
+
+    /// A terminal in `cwd` (the workspace folder when `None`).
+    fn spawn_terminal_in(&mut self, ctx: &Context, split: bool, cwd: Option<PathBuf>) {
         if !self.workspace_trusted() {
             self.trust_request = Some(TrustRequest::Terminal);
             return;
         }
         let wake = ctx.clone();
-        match crate::terminal::Terminal::spawn(self.workspace_root.as_deref(), 24, 80, move || wake.request_repaint()) {
+        match crate::terminal::Terminal::spawn(cwd.as_deref().or(self.workspace_root.as_deref()), 24, 80, move || wake.request_repaint()) {
             Ok(t) => {
                 self.panel.add_terminal(t, split);
                 self.panel.view = crate::workbench::panel::PanelView::Terminal;
@@ -6049,6 +6056,7 @@ impl App {
             entries.push(Some(("Open to the Side", ExplorerAction::OpenToSide(path.clone()))));
         }
         entries.push(Some(("Reveal in Finder", ExplorerAction::RevealInFinder(path.clone()))));
+        entries.push(Some(("Open in Integrated Terminal", ExplorerAction::OpenInTerminal(path.clone()))));
         entries.push(None);
         if !is_root {
             entries.push(Some(("Cut", ExplorerAction::Cut(path.clone()))));
@@ -6112,6 +6120,10 @@ impl App {
             ExplorerAction::Cut(path) => self.explorer_clipboard = Some((path, true)),
             ExplorerAction::Copy(path) => self.explorer_clipboard = Some((path, false)),
             ExplorerAction::Paste(dir) => self.explorer_paste(&dir),
+            ExplorerAction::OpenInTerminal(path) => {
+                let dir = if path.is_dir() { path } else { path.parent().map(Path::to_path_buf).unwrap_or(path) };
+                self.spawn_terminal_in(ctx, false, Some(dir));
+            }
             ExplorerAction::RevealInFinder(path) => {
                 let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
             }
