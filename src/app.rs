@@ -169,6 +169,8 @@ pub struct App {
     explorer_prompt: Option<ExplorerPrompt>,
     /// The Explorer's selected row (click / right-click); F2 and Delete act on it.
     explorer_selected: Option<PathBuf>,
+    /// Cut / Copy in the Explorer: the path and whether it moves on paste.
+    explorer_clipboard: Option<(PathBuf, bool)>,
     pending_editor_menu: Option<egui::Pos2>,
     editor_menu_actions: Vec<(muda::MenuId, EditorMenuAction)>,
     /// A Quick Access pick or input the Source Control view opened.
@@ -186,6 +188,10 @@ enum ExplorerAction {
     NewFolder(PathBuf),
     OpenToSide(PathBuf),
     RevealInFinder(PathBuf),
+    Cut(PathBuf),
+    Copy(PathBuf),
+    /// Paste into this folder.
+    Paste(PathBuf),
     CopyPath(PathBuf),
     CopyRelativePath(PathBuf),
     Rename(PathBuf),
@@ -497,6 +503,7 @@ impl App {
             explorer_menu_actions: Vec::new(),
             explorer_prompt: None,
             explorer_selected: None,
+            explorer_clipboard: None,
             pending_editor_menu: None,
             editor_menu_actions: Vec::new(),
             settings_editor: None,
@@ -4951,6 +4958,22 @@ impl App {
             && self.workspace_root.is_some()
         {
             if let Some(sel) = self.explorer_selected.clone().filter(|p| self.workspace_root.as_deref() != Some(p.as_path())) {
+                let (copy, cut, paste) = ctx.input(|i| {
+                    (
+                        i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
+                        i.events.iter().any(|e| matches!(e, egui::Event::Cut)),
+                        i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+                    )
+                });
+                if copy || cut {
+                    self.run_explorer_action(ctx, if cut { ExplorerAction::Cut(sel) } else { ExplorerAction::Copy(sel) });
+                    return;
+                }
+                if paste && self.explorer_clipboard.is_some() {
+                    let dir = if sel.is_dir() { sel.clone() } else { sel.parent().map(Path::to_path_buf).unwrap_or(sel.clone()) };
+                    self.run_explorer_action(ctx, ExplorerAction::Paste(dir));
+                    return;
+                }
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)) {
                     self.run_explorer_action(ctx, ExplorerAction::Rename(sel));
                     return;
@@ -6027,6 +6050,14 @@ impl App {
         }
         entries.push(Some(("Reveal in Finder", ExplorerAction::RevealInFinder(path.clone()))));
         entries.push(None);
+        if !is_root {
+            entries.push(Some(("Cut", ExplorerAction::Cut(path.clone()))));
+        }
+        entries.push(Some(("Copy", ExplorerAction::Copy(path.clone()))));
+        if self.explorer_clipboard.is_some() {
+            entries.push(Some(("Paste", ExplorerAction::Paste(if is_dir { path.clone() } else { path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone()) }))));
+        }
+        entries.push(None);
         entries.push(Some(("Copy Path", ExplorerAction::CopyPath(path.clone()))));
         entries.push(Some(("Copy Relative Path", ExplorerAction::CopyRelativePath(path.clone()))));
         if !is_root {
@@ -6078,6 +6109,9 @@ impl App {
                 self.palette.open_input(EXPLORER_PROMPT_ID, Some("Rename".into()), Some("Name".into()), name, false);
             }
             ExplorerAction::OpenToSide(path) => self.open_file_to_side(path),
+            ExplorerAction::Cut(path) => self.explorer_clipboard = Some((path, true)),
+            ExplorerAction::Copy(path) => self.explorer_clipboard = Some((path, false)),
+            ExplorerAction::Paste(dir) => self.explorer_paste(&dir),
             ExplorerAction::RevealInFinder(path) => {
                 let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
             }
@@ -6113,6 +6147,40 @@ impl App {
             self.close_doc(i);
         }
         self.refresh_explorer();
+    }
+
+    /// Paste the Explorer clipboard into `dir`: a cut moves, a copy gets
+    /// "name copy.ext" / "name copy 2.ext" when the name is taken.
+    fn explorer_paste(&mut self, dir: &Path) {
+        let Some((src, cut)) = self.explorer_clipboard.clone() else { return };
+        if !src.exists() {
+            self.explorer_clipboard = None;
+            return;
+        }
+        if dir.starts_with(&src) {
+            self.set_status("Cannot paste a folder into itself");
+            return;
+        }
+        let target = free_copy_name(dir, &src, cut);
+        let done = if cut { std::fs::rename(&src, &target) } else { copy_path(&src, &target) };
+        if let Err(e) = done {
+            self.set_status(format!("Failed to paste {}: {e}", src.display()));
+            return;
+        }
+        if cut {
+            for d in &mut self.documents {
+                if let Ok(rest) = d.path.strip_prefix(&src) {
+                    d.path = if rest.as_os_str().is_empty() { target.clone() } else { target.join(rest) };
+                }
+            }
+            self.explorer_clipboard = None;
+        }
+        if let Some(tree) = self.file_tree.as_mut() {
+            tree.refresh();
+            tree.reveal(&target);
+        }
+        self.explorer_selected = Some(target);
+        self.refresh_git();
     }
 
     fn refresh_explorer(&mut self) {
@@ -6867,6 +6935,42 @@ fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
     key(a).cmp(&key(b)).then_with(|| a.cmp(b))
 }
 
+/// Copy a file or a folder with everything in it.
+fn copy_path(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_path(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dst).map(|_| ())
+    }
+}
+
+/// Where a paste of `src` into `dir` lands: its own name when free (or a
+/// move), else "name copy.ext", "name copy 2.ext"…
+fn free_copy_name(dir: &Path, src: &Path, cut: bool) -> PathBuf {
+    let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let direct = dir.join(&name);
+    if !direct.exists() || (cut && direct == src) {
+        return direct;
+    }
+    let (stem, ext) = match name.rfind('.').filter(|&i| i > 0) {
+        Some(i) => (name[..i].to_string(), name[i..].to_string()),
+        None => (name.clone(), String::new()),
+    };
+    let mut n = 1;
+    loop {
+        let candidate = if n == 1 { format!("{stem} copy{ext}") } else { format!("{stem} copy {n}{ext}") };
+        if !dir.join(&candidate).exists() {
+            return dir.join(candidate);
+        }
+        n += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{locale_compare, App, Document, ExplorerPrompt};
@@ -6895,6 +6999,36 @@ mod tests {
         app.explorer_prompt = Some(ExplorerPrompt::Rename(dir.join("b.txt")));
         app.explorer_prompt_answered(Some("c.txt".into()));
         assert!(dir.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pasting_copies_with_free_names_and_cuts_move() {
+        let dir = temp_workspace("paste");
+        std::fs::create_dir_all(dir.join("sub/inner")).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("sub/inner/x.txt"), "x").unwrap();
+        let mut app = App::fresh();
+        app.file_tree = Some(crate::fs::FileNode::root(dir.clone()));
+        // Copy in the same folder: "a copy.txt", then "a copy 2.txt".
+        app.explorer_clipboard = Some((dir.join("a.txt"), false));
+        app.explorer_paste(&dir);
+        app.explorer_paste(&dir);
+        assert!(dir.join("a copy.txt").is_file() && dir.join("a copy 2.txt").is_file());
+        // A folder is copied with its contents into another folder.
+        app.explorer_clipboard = Some((dir.join("sub"), false));
+        std::fs::create_dir_all(dir.join("dest")).unwrap();
+        app.explorer_paste(&dir.join("dest"));
+        assert!(dir.join("dest/sub/inner/x.txt").is_file());
+        // A folder can't go into itself.
+        app.explorer_clipboard = Some((dir.join("sub"), true));
+        app.explorer_paste(&dir.join("sub/inner"));
+        assert!(dir.join("sub/inner/x.txt").is_file());
+        // Cut moves the file and forgets the clipboard.
+        app.explorer_clipboard = Some((dir.join("a.txt"), true));
+        app.explorer_paste(&dir.join("dest"));
+        assert!(!dir.join("a.txt").exists() && dir.join("dest/a.txt").is_file());
+        assert!(app.explorer_clipboard.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
