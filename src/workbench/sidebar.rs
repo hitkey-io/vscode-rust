@@ -23,6 +23,11 @@ pub struct SidebarOutput {
     pub search: crate::search::ui::SearchOutput,
     /// A link or button of the Run and Debug view.
     pub run_debug: Option<super::run_debug::RunDebugAction>,
+    /// An Explorer row was right-clicked: its path, whether it is a folder,
+    /// and where (the context menu opens there).
+    pub explorer_menu: Option<(PathBuf, bool, egui::Pos2)>,
+    /// New File / New Folder in the folder (the header buttons).
+    pub explorer_new: Option<(PathBuf, bool)>,
 }
 
 pub fn show(
@@ -49,6 +54,8 @@ pub fn show(
         scm: super::source_control::ScmOutput::default(),
         search: Default::default(),
         run_debug: None,
+        explorer_menu: None,
+        explorer_new: None,
     };
 
     let rect = ui.max_rect();
@@ -226,7 +233,7 @@ fn explorer_panel(
         + if *timeline_expanded { body_h } else { 0.0 };
     // The workspace folder's pane header stays put above its tree.
     if let Some(root) = tree.as_mut() {
-        root_row(ui, root);
+        root_row(ui, root, out);
     }
     let tree_h = (ui.available_height() - bottom_h).max(0.0);
     ScrollArea::both()
@@ -318,7 +325,7 @@ fn explorer_section(ui: &mut Ui, title: &str, expanded: &mut bool, empty_msg: &s
 
 /// The workspace root as a bold, collapsible row (VS Code renders the open
 /// folder this way, with its action icons appearing on hover).
-fn root_row(ui: &mut Ui, root: &mut FileNode) {
+fn root_row(ui: &mut Ui, root: &mut FileNode, out: &mut SidebarOutput) {
     let row_h = PANE_HEADER_HEIGHT;
     // The open folder's name keeps its case (fontRamp.css
     // `preserve-workspace-name-case`).
@@ -343,6 +350,8 @@ fn root_row(ui: &mut Ui, root: &mut FileNode) {
         {
             let hit = egui::Rect::from_center_size(egui::pos2(x, mid), egui::vec2(20.0, row_h));
             let r = ui.interact(hit, response.id.with(("rootact", i)), Sense::click());
+            let tip = ["Collapse Folders in Explorer", "Refresh Explorer", "New Folder...", "New File..."][i];
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
             let col = if r.hovered() { Palette::FG() } else { Palette::FG_DESCRIPTION() };
             ui.painter().text(
                 egui::pos2(x, mid),
@@ -355,13 +364,17 @@ fn root_row(ui: &mut Ui, root: &mut FileNode) {
                 match i {
                     0 => collapse_clicked = true,
                     1 => refresh_clicked = true,
-                    _ => {}
+                    2 => out.explorer_new = Some((root.path.clone(), true)),
+                    _ => out.explorer_new = Some((root.path.clone(), false)),
                 }
             }
             x -= 22.0;
         }
     }
 
+    if response.secondary_clicked() {
+        out.explorer_menu = ui.ctx().pointer_interact_pos().map(|p| (root.path.clone(), true, p));
+    }
     if collapse_clicked {
         collapse_all(root);
         root.expanded = true;
@@ -468,6 +481,9 @@ fn render_node(
         );
     }
 
+    if response.secondary_clicked() {
+        out.explorer_menu = ui.ctx().pointer_interact_pos().map(|p| (node.path.clone(), node.is_dir, p));
+    }
     if response.double_clicked() && !node.is_dir {
         out.file_to_open = Some(node.path.clone());
         out.keep_open = true;

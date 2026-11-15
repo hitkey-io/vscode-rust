@@ -163,6 +163,10 @@ pub struct App {
     /// What the items of the open Source Control menu do.
     scm_menu_actions: Vec<(muda::MenuId, ScmAction)>,
     /// The editor title "…" menu asked for this frame, and its items.
+    /// An Explorer context menu asked for this frame: path, is a folder, where.
+    pending_explorer_menu: Option<(PathBuf, bool, egui::Pos2)>,
+    explorer_menu_actions: Vec<(muda::MenuId, ExplorerAction)>,
+    explorer_prompt: Option<ExplorerPrompt>,
     pending_editor_menu: Option<egui::Pos2>,
     editor_menu_actions: Vec<(muda::MenuId, EditorMenuAction)>,
     /// A Quick Access pick or input the Source Control view opened.
@@ -172,6 +176,29 @@ pub struct App {
 }
 
 use crate::workbench::source_control::ScmAction;
+
+/// An Explorer context menu item.
+#[derive(Clone, Debug)]
+enum ExplorerAction {
+    NewFile(PathBuf),
+    NewFolder(PathBuf),
+    OpenToSide(PathBuf),
+    RevealInFinder(PathBuf),
+    CopyPath(PathBuf),
+    CopyRelativePath(PathBuf),
+    Rename(PathBuf),
+    Delete(PathBuf),
+}
+
+/// What an Explorer name prompt (Quick Access input) is for.
+#[derive(Clone, Debug)]
+enum ExplorerPrompt {
+    NewFile(PathBuf),
+    NewFolder(PathBuf),
+    Rename(PathBuf),
+}
+
+const EXPLORER_PROMPT_ID: u64 = 1 << 58;
 
 /// A Settings editor menu waiting for the window (native menus need it).
 enum SettingsMenu {
@@ -464,6 +491,9 @@ impl App {
             pending_ext_menu: None,
             pending_scm_menu: None,
             scm_menu_actions: Vec::new(),
+            pending_explorer_menu: None,
+            explorer_menu_actions: Vec::new(),
+            explorer_prompt: None,
             pending_editor_menu: None,
             editor_menu_actions: Vec::new(),
             settings_editor: None,
@@ -4232,6 +4262,7 @@ impl App {
             PaletteAction::Picked { request_id, index } if self.status_pick_answered(request_id, index) => {}
             PaletteAction::Picked { request_id, index } if self.extension_version_picked(request_id, index) => {}
             PaletteAction::Picked { request_id, index } if self.git_prompt_answered(request_id, index, None) => {}
+            PaletteAction::Input { request_id, value } if request_id == EXPLORER_PROMPT_ID => self.explorer_prompt_answered(value),
             PaletteAction::Input { request_id, value } if self.git_prompt_answered(request_id, None, value.clone()) => {}
             PaletteAction::Picked { request_id, index } => {
                 let value = index.map(|i| serde_json::json!(i)).unwrap_or(serde_json::Value::Null);
@@ -5101,6 +5132,10 @@ impl App {
                 self.editor_menu_action(action);
                 continue;
             }
+            if let Some((_, action)) = self.explorer_menu_actions.iter().find(|(m, _)| m == &ev.id).cloned() {
+                self.run_explorer_action(ctx, action);
+                continue;
+            }
             if let Some((_, action)) = self.scm_menu_actions.iter().find(|(m, _)| m == &ev.id).cloned() {
                 self.run_scm_action(action);
                 continue;
@@ -5387,6 +5422,12 @@ impl App {
             }
             if let Some(action) = sidebar_output.run_debug {
                 self.run_debug_action(action);
+            }
+            if let Some(m) = sidebar_output.explorer_menu {
+                self.pending_explorer_menu = Some(m);
+            }
+            if let Some((dir, folder)) = sidebar_output.explorer_new {
+                self.run_explorer_action(ctx, if folder { ExplorerAction::NewFolder(dir) } else { ExplorerAction::NewFile(dir) });
             }
             self.dispatch_scm(sidebar_output.scm);
             self.dispatch_search(sidebar_output.search);
@@ -5935,6 +5976,173 @@ impl App {
             }
         }
         true
+    }
+
+
+    /// The Explorer's context menu (native), for a row or the folder header.
+    fn show_pending_explorer_menu(&mut self, frame: &eframe::Frame) {
+        use muda::ContextMenu;
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Some((path, is_dir, pos)) = self.pending_explorer_menu.take() else { return };
+        let dir = if is_dir { path.clone() } else { path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.clone()) };
+        let is_root = self.workspace_root.as_deref() == Some(path.as_path());
+        let mut entries: Vec<Option<(&str, ExplorerAction)>> = Vec::new();
+        entries.push(Some(("New File...", ExplorerAction::NewFile(dir.clone()))));
+        entries.push(Some(("New Folder...", ExplorerAction::NewFolder(dir))));
+        if !is_dir {
+            entries.push(Some(("Open to the Side", ExplorerAction::OpenToSide(path.clone()))));
+        }
+        entries.push(Some(("Reveal in Finder", ExplorerAction::RevealInFinder(path.clone()))));
+        entries.push(None);
+        entries.push(Some(("Copy Path", ExplorerAction::CopyPath(path.clone()))));
+        entries.push(Some(("Copy Relative Path", ExplorerAction::CopyRelativePath(path.clone()))));
+        if !is_root {
+            entries.push(None);
+            entries.push(Some(("Rename...", ExplorerAction::Rename(path.clone()))));
+            entries.push(Some(("Delete", ExplorerAction::Delete(path))));
+        }
+        let root = muda::Menu::new();
+        let mut actions = Vec::new();
+        for e in entries {
+            match e {
+                Some((label, action)) => {
+                    let item = muda::MenuItem::new(label, true, None);
+                    actions.push((item.id().clone(), action));
+                    let _ = root.append(&item);
+                }
+                None => {
+                    let _ = root.append(&muda::PredefinedMenuItem::separator());
+                }
+            }
+        }
+        self.explorer_menu_actions = actions;
+        let Ok(handle) = frame.window_handle() else { return };
+        if let RawWindowHandle::AppKit(appkit) = handle.as_raw() {
+            let y = self.viewport_height - pos.y;
+            // SAFETY: the view belongs to the live editor window.
+            unsafe {
+                root.show_context_menu_for_nsview(
+                    appkit.ns_view.as_ptr() as *const std::ffi::c_void,
+                    Some(muda::dpi::Position::Logical(muda::dpi::LogicalPosition::new(pos.x as f64, y as f64))),
+                );
+            }
+        }
+    }
+
+    fn run_explorer_action(&mut self, ctx: &Context, action: ExplorerAction) {
+        match action {
+            ExplorerAction::NewFile(dir) => {
+                self.explorer_prompt = Some(ExplorerPrompt::NewFile(dir));
+                self.palette.open_input(EXPLORER_PROMPT_ID, Some("Please enter a name for the new file".into()), Some("File Name".into()), String::new(), false);
+            }
+            ExplorerAction::NewFolder(dir) => {
+                self.explorer_prompt = Some(ExplorerPrompt::NewFolder(dir));
+                self.palette.open_input(EXPLORER_PROMPT_ID, Some("Please enter a name for the new folder".into()), Some("Folder Name".into()), String::new(), false);
+            }
+            ExplorerAction::Rename(path) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.explorer_prompt = Some(ExplorerPrompt::Rename(path));
+                self.palette.open_input(EXPLORER_PROMPT_ID, Some("Rename".into()), Some("Name".into()), name, false);
+            }
+            ExplorerAction::OpenToSide(path) => self.open_file_to_side(path),
+            ExplorerAction::RevealInFinder(path) => {
+                let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+            }
+            ExplorerAction::CopyPath(path) => ctx.copy_text(path.display().to_string()),
+            ExplorerAction::CopyRelativePath(path) => {
+                let rel = self.workspace_root.as_deref().and_then(|r| path.strip_prefix(r).ok()).unwrap_or(&path);
+                ctx.copy_text(rel.display().to_string());
+            }
+            ExplorerAction::Delete(path) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let kind = if path.is_dir() { "folder and its contents" } else { "file" };
+                if Self::confirm(&format!("Are you sure you want to delete '{name}'?"), &format!("You can restore this {kind} from the Trash."), "Move to Trash") {
+                    self.delete_path(&path);
+                }
+            }
+        }
+    }
+
+    /// Move to the Trash (as the Explorer's Delete does) and close its editors.
+    fn delete_path(&mut self, path: &Path) {
+        let script = format!("tell application \"Finder\" to delete POSIX file \"{}\"", path.display().to_string().replace('\\', "\\\\").replace('"', "\\\""));
+        // (Unit tests never talk to Finder.)
+        let moved = !cfg!(test) && std::process::Command::new("osascript").arg("-e").arg(&script).output().map(|o| o.status.success()).unwrap_or(false);
+        if !moved {
+            // No Finder (tests, headless): remove it outright.
+            let removed = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+            if let Err(e) = removed {
+                self.set_status(format!("Failed to delete {}: {e}", path.display()));
+                return;
+            }
+        }
+        while let Some(i) = self.documents.iter().position(|d| d.path.starts_with(path) && !d.untitled && !d.welcome) {
+            self.close_doc(i);
+        }
+        self.refresh_explorer();
+    }
+
+    fn refresh_explorer(&mut self) {
+        if let Some(tree) = self.file_tree.as_mut() {
+            tree.refresh();
+        }
+        self.refresh_git();
+    }
+
+    /// The name typed into an Explorer prompt (`None` = dismissed).
+    fn explorer_prompt_answered(&mut self, value: Option<String>) {
+        let Some(prompt) = self.explorer_prompt.take() else { return };
+        let Some(name) = value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) else { return };
+        let folder = matches!(prompt, ExplorerPrompt::NewFolder(_));
+        match prompt {
+            ExplorerPrompt::NewFile(dir) | ExplorerPrompt::NewFolder(dir) => {
+                let target = dir.join(&name);
+                if target.exists() {
+                    self.set_status(format!("A file or folder {name} already exists at this location. Please choose a different name."));
+                    return;
+                }
+                let made = if folder {
+                    std::fs::create_dir_all(&target)
+                } else {
+                    target.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&target, ""))
+                };
+                if let Err(e) = made {
+                    self.set_status(format!("Failed to create {}: {e}", target.display()));
+                    return;
+                }
+                if let Some(tree) = self.file_tree.as_mut() {
+                    tree.refresh();
+                    tree.reveal(&target);
+                }
+                if !folder {
+                    self.open_file(target);
+                }
+                self.refresh_git();
+            }
+            ExplorerPrompt::Rename(path) => {
+                let Some(parent) = path.parent() else { return };
+                let target = parent.join(&name);
+                if target == path {
+                    return;
+                }
+                if target.exists() {
+                    self.set_status(format!("A file or folder {name} already exists at this location. Please choose a different name."));
+                    return;
+                }
+                if let Err(e) = std::fs::rename(&path, &target) {
+                    self.set_status(format!("Failed to rename {}: {e}", path.display()));
+                    return;
+                }
+                // Open editors follow the file.
+                for d in &mut self.documents {
+                    if let Ok(rest) = d.path.strip_prefix(&path) {
+                        d.path = if rest.as_os_str().is_empty() { target.clone() } else { target.join(rest) };
+                        d.language = crate::editor::buffer::detect_language(&d.path);
+                    }
+                }
+                self.refresh_explorer();
+            }
+        }
     }
 
     fn open_trust_editor(&mut self) {
@@ -6503,6 +6711,7 @@ impl eframe::App for App {
         }
         self.show_pending_extension_menu(frame);
         self.show_pending_scm_menu(frame);
+        self.show_pending_explorer_menu(frame);
         self.show_pending_editor_menu(frame);
         self.show_pending_settings_menu(frame);
         self.webview_host.sync(frame, &mut self.extensions);
@@ -6627,7 +6836,64 @@ fn locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::locale_compare;
+    use super::{locale_compare, App, Document, ExplorerPrompt};
+
+    fn temp_workspace(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vscode-rust-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn renaming_moves_the_file_and_its_open_editor() {
+        let dir = temp_workspace("rename");
+        std::fs::write(dir.join("a.rs"), "fn main() {}").unwrap();
+        let mut app = App::fresh();
+        app.file_tree = Some(crate::fs::FileNode::root(dir.clone()));
+        app.documents.push(Document::open(dir.join("a.rs")).unwrap());
+        app.explorer_prompt = Some(ExplorerPrompt::Rename(dir.join("a.rs")));
+        app.explorer_prompt_answered(Some("b.txt".into()));
+        assert!(!dir.join("a.rs").exists() && dir.join("b.txt").exists());
+        assert_eq!(app.documents[0].path, dir.join("b.txt"));
+        assert_eq!(app.documents[0].language, "");
+        // A name that is taken is refused.
+        std::fs::write(dir.join("c.txt"), "").unwrap();
+        app.explorer_prompt = Some(ExplorerPrompt::Rename(dir.join("b.txt")));
+        app.explorer_prompt_answered(Some("c.txt".into()));
+        assert!(dir.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_removes_the_path_and_closes_its_editors() {
+        let dir = temp_workspace("delete");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/x.txt"), "x").unwrap();
+        let mut app = App::fresh();
+        app.file_tree = Some(crate::fs::FileNode::root(dir.clone()));
+        app.documents.push(Document::open(dir.join("sub/x.txt")).unwrap());
+        app.active_doc = Some(0);
+        app.delete_path(&dir.join("sub"));
+        assert!(!dir.join("sub").exists());
+        assert!(app.documents.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_folders_and_nested_files_are_created() {
+        let dir = temp_workspace("create");
+        let mut app = App::fresh();
+        app.file_tree = Some(crate::fs::FileNode::root(dir.clone()));
+        app.explorer_prompt = Some(ExplorerPrompt::NewFolder(dir.clone()));
+        app.explorer_prompt_answered(Some("a/b".into()));
+        assert!(dir.join("a/b").is_dir());
+        app.explorer_prompt = Some(ExplorerPrompt::NewFile(dir.clone()));
+        app.explorer_prompt_answered(Some("a/b/c.txt".into()));
+        assert!(dir.join("a/b/c.txt").is_file());
+        assert_eq!(app.documents.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn theme_labels_sort_like_vs_code() {

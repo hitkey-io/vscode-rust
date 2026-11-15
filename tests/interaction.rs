@@ -1111,3 +1111,32 @@ fn status_bar_end_of_line_and_indentation_pickers_change_the_document() {
     harness.run();
     let _ = harness.get_by_label("Tab Size: 4");
 }
+
+#[test]
+fn explorer_creates_renames_and_deletes_files() {
+    let dir = std::env::temp_dir().join(format!("vscode-rust-explorer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("keep.txt"), "x").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    // The folder header's New File button asks for a name in Quick Access.
+    harness.event(egui::Event::PointerMoved(egui::pos2(200.0, 107.0)));
+    harness.step();
+    harness.step();
+    // (The Welcome page has a New File... button too; the sidebar comes first.)
+    harness.get_all_by_label("New File...").next().unwrap().click();
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("made.txt".to_string()));
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    assert!(dir.join("made.txt").exists());
+    let _ = harness.get_by_label("tab:made.txt");
+    let _ = harness.get_by_label("made.txt");
+    let _ = std::fs::remove_dir_all(&dir);
+}
