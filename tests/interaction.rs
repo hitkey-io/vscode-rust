@@ -1140,3 +1140,30 @@ fn explorer_creates_renames_and_deletes_files() {
     let _ = harness.get_by_label("made.txt");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn f2_renames_the_selected_explorer_row() {
+    let dir = std::env::temp_dir().join(format!("vscode-rust-f2-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    harness.get_by_label("a.txt").click();
+    harness.run();
+    harness.run();
+    // The pointer stays over the side bar after the click.
+    harness.key_press(egui::Key::F2);
+    harness.run();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text("b.txt".to_string()));
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    assert!(dir.join("b.txt").exists() && !dir.join("a.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

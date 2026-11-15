@@ -167,6 +167,8 @@ pub struct App {
     pending_explorer_menu: Option<(PathBuf, bool, egui::Pos2)>,
     explorer_menu_actions: Vec<(muda::MenuId, ExplorerAction)>,
     explorer_prompt: Option<ExplorerPrompt>,
+    /// The Explorer's selected row (click / right-click); F2 and Delete act on it.
+    explorer_selected: Option<PathBuf>,
     pending_editor_menu: Option<egui::Pos2>,
     editor_menu_actions: Vec<(muda::MenuId, EditorMenuAction)>,
     /// A Quick Access pick or input the Source Control view opened.
@@ -494,6 +496,7 @@ impl App {
             pending_explorer_menu: None,
             explorer_menu_actions: Vec::new(),
             explorer_prompt: None,
+            explorer_selected: None,
             pending_editor_menu: None,
             editor_menu_actions: Vec::new(),
             settings_editor: None,
@@ -4931,6 +4934,33 @@ impl App {
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // The Explorer's selection, for its rows (drawn before the keys are read).
+        match &self.explorer_selected {
+            Some(p) => ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new("explorer-selected"), p.clone());
+            }),
+            None => ctx.data_mut(|d| d.remove::<PathBuf>(egui::Id::new("explorer-selected"))),
+        }
+        // F2 renames and Delete / ⌘⌫ deletes the selected Explorer row while
+        // the pointer is over the side bar and no input has the keyboard.
+        if self.active_view == ActivityView::Explorer
+            && self.sidebar_visible
+            && !self.palette.visible
+            && !ctx.wants_keyboard_input()
+            && ctx.pointer_latest_pos().is_some_and(|p| p.x < 48.0 + self.sidebar_width)
+            && self.workspace_root.is_some()
+        {
+            if let Some(sel) = self.explorer_selected.clone().filter(|p| self.workspace_root.as_deref() != Some(p.as_path())) {
+                if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2)) {
+                    self.run_explorer_action(ctx, ExplorerAction::Rename(sel));
+                    return;
+                }
+                if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::COMMAND, Key::Backspace)) {
+                    self.run_explorer_action(ctx, ExplorerAction::Delete(sel));
+                    return;
+                }
+            }
+        }
         // Keys being recorded in the Keyboard Shortcuts editor aren't commands.
         if self.keybindings_editor.as_ref().is_some_and(|(st, _)| st.captures_keys()) {
             return;
@@ -5422,6 +5452,9 @@ impl App {
             }
             if let Some(action) = sidebar_output.run_debug {
                 self.run_debug_action(action);
+            }
+            if let Some(sel) = sidebar_output.explorer_selected {
+                self.explorer_selected = Some(sel);
             }
             if let Some(m) = sidebar_output.explorer_menu {
                 self.pending_explorer_menu = Some(m);

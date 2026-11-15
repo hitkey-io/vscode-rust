@@ -28,6 +28,8 @@ pub struct SidebarOutput {
     pub explorer_menu: Option<(PathBuf, bool, egui::Pos2)>,
     /// New File / New Folder in the folder (the header buttons).
     pub explorer_new: Option<(PathBuf, bool)>,
+    /// A row was clicked (or right-clicked): the Explorer's selection.
+    pub explorer_selected: Option<PathBuf>,
 }
 
 pub fn show(
@@ -56,6 +58,7 @@ pub fn show(
         run_debug: None,
         explorer_menu: None,
         explorer_new: None,
+        explorer_selected: None,
     };
 
     let rect = ui.max_rect();
@@ -427,7 +430,8 @@ fn render_node(
 
     // Selected (active editor file) row gets the inactive-selection wash;
     // hover gets the lighter list-hover wash.
-    let is_selected = !node.is_dir && active_file == Some(node.path.as_path());
+    let chosen: Option<PathBuf> = ui.ctx().data(|d| d.get_temp(egui::Id::new("explorer-selected")));
+    let is_selected = chosen.as_deref() == Some(node.path.as_path()) || (chosen.is_none() && !node.is_dir && active_file == Some(node.path.as_path()));
     if is_selected {
         ui.painter()
             .rect_filled(rect, super::cards::RADIUS_SMALL, Palette::LIST_INACTIVE_SELECTION_BG());
@@ -483,6 +487,10 @@ fn render_node(
 
     if response.secondary_clicked() {
         out.explorer_menu = ui.ctx().pointer_interact_pos().map(|p| (node.path.clone(), node.is_dir, p));
+        out.explorer_selected = Some(node.path.clone());
+    }
+    if response.clicked() || response.double_clicked() {
+        out.explorer_selected = Some(node.path.clone());
     }
     if response.double_clicked() && !node.is_dir {
         out.file_to_open = Some(node.path.clone());
