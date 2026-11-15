@@ -34,6 +34,8 @@ fn plain(ui: &mut Ui, text: &str) -> egui::Response {
         FontId::proportional(11.5),
         Palette::FG(),
     );
+    let label = text.to_string();
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
     resp
 }
 
@@ -150,6 +152,18 @@ pub struct StatusBarOutput {
     pub manage_trust: bool,
     /// The problems item was clicked (View: Focus Problems).
     pub problems_clicked: bool,
+    /// Language mode, end of line, indentation or the cursor position was
+    /// clicked: which one.
+    pub editor_item_clicked: Option<EditorItem>,
+}
+
+/// The editor-state items on the right of the status bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EditorItem {
+    Language,
+    EndOfLine,
+    Indentation,
+    Position,
 }
 
 /// A `kind: 'prominent'` item (Restricted Mode): `$(icon) text` on
@@ -359,15 +373,15 @@ pub fn show_with_extensions(
                     )
                     .clicked()
                     {
-                        out.palette_requested = true;
+                        out.editor_item_clicked = Some(EditorItem::Language);
                     }
                     // Right-to-left order: LF, then UTF-8, then Spaces — so the
                     // visual left-to-right order is Spaces, UTF-8, LF (VS Code's).
-                    if plain(ui, "LF").clicked() { out.palette_requested = true; }
+                    if plain(ui, doc.eol()).clicked() { out.editor_item_clicked = Some(EditorItem::EndOfLine); }
                     if plain(ui, "UTF-8").clicked() { out.palette_requested = true; }
-                    if plain(ui, "Spaces: 2").clicked() { out.palette_requested = true; }
+                    if plain(ui, &doc.indent_label()).clicked() { out.editor_item_clicked = Some(EditorItem::Indentation); }
                     if plain(ui, &format!("Ln {}, Col {}", doc.cursor_line, doc.cursor_col))
-                        .clicked() { out.palette_requested = true; }
+                        .clicked() { out.editor_item_clicked = Some(EditorItem::Position); }
                 }
               }
               // Right-to-left: lowest priority first, so the highest ends

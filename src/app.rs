@@ -255,6 +255,9 @@ const GIT_PROMPT_BASE: u64 = 1 << 52;
 const THEME_PICK_ID: u64 = 1 << 53;
 /// Request id of Run and Debug's "Select debugger" pick.
 const DEBUGGER_PICK_ID: u64 = 1 << 54;
+const STATUS_EOL_PICK_ID: u64 = 1 << 55;
+const STATUS_INDENT_PICK_ID: u64 = 1 << 56;
+const STATUS_LANGUAGE_PICK_ID: u64 = 1 << 57;
 
 /// What asked for workspace trust (`requestWorkspaceTrust`'s message), and
 /// what runs once it's granted.
@@ -4226,6 +4229,7 @@ impl App {
                     self.extensions.marketplace.set_query("@category:debuggers".into());
                 }
             }
+            PaletteAction::Picked { request_id, index } if self.status_pick_answered(request_id, index) => {}
             PaletteAction::Picked { request_id, index } if self.extension_version_picked(request_id, index) => {}
             PaletteAction::Picked { request_id, index } if self.git_prompt_answered(request_id, index, None) => {}
             PaletteAction::Input { request_id, value } if self.git_prompt_answered(request_id, None, value.clone()) => {}
@@ -5232,6 +5236,9 @@ impl App {
                 if sb.palette_requested {
                     self.palette.open();
                 }
+                if let Some(item) = sb.editor_item_clicked {
+                    self.open_editor_item_picker(item);
+                }
             });
 
 
@@ -5878,6 +5885,58 @@ impl App {
     }
 
     /// Workspaces: Manage Workspace Trust.
+    /// The status bar's language / end of line / indentation / position items.
+    fn open_editor_item_picker(&mut self, item: crate::workbench::status_bar::EditorItem) {
+        use crate::workbench::status_bar::EditorItem as E;
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        let pick = |label: &str, current: bool| (label.to_string(), current.then(|| "Current".to_string()), None, false);
+        match item {
+            E::Position => {
+                self.palette.open_quick_open(self.workspace_root.as_deref(), &[]);
+                self.palette.query = ":".to_string();
+            }
+            E::EndOfLine => {
+                let eol = doc.eol();
+                let items = vec![pick("LF", eol == "LF"), pick("CRLF", eol == "CRLF")];
+                self.palette.open_pick_with(STATUS_EOL_PICK_ID, items, Some("Select End of Line Sequence".into()), Default::default());
+            }
+            E::Indentation => {
+                let items = vec![pick("Convert Indentation to Spaces", false), pick("Convert Indentation to Tabs", false)];
+                self.palette.open_pick_with(STATUS_INDENT_PICK_ID, items, Some("Select Action".into()), Default::default());
+            }
+            E::Language => {
+                let current = doc.language;
+                let items: Vec<_> = crate::editor::buffer::LANGUAGES.iter().map(|(label, id)| pick(label, *id == current)).collect();
+                let active = crate::editor::buffer::LANGUAGES.iter().position(|(_, id)| *id == current);
+                self.palette.open_pick_with(
+                    STATUS_LANGUAGE_PICK_ID,
+                    items,
+                    Some("Select Language Mode".into()),
+                    crate::workbench::command_palette::PickOptions { active, ..Default::default() },
+                );
+            }
+        }
+    }
+
+    /// An answer of one of the status bar pickers; false when `request_id`
+    /// isn't one of them.
+    fn status_pick_answered(&mut self, request_id: u64, index: Option<usize>) -> bool {
+        if ![STATUS_EOL_PICK_ID, STATUS_INDENT_PICK_ID, STATUS_LANGUAGE_PICK_ID].contains(&request_id) {
+            return false;
+        }
+        let (Some(index), Some(doc)) = (index, self.active_doc.and_then(|i| self.documents.get_mut(i))) else { return true };
+        match request_id {
+            STATUS_EOL_PICK_ID => doc.set_eol(if index == 0 { "LF" } else { "CRLF" }),
+            STATUS_INDENT_PICK_ID => doc.convert_indentation(index == 1),
+            _ => {
+                if let Some((_, id)) = crate::editor::buffer::LANGUAGES.get(index) {
+                    doc.language = id;
+                }
+            }
+        }
+        true
+    }
+
     fn open_trust_editor(&mut self) {
         if self.trust_editor.is_none() {
             self.trust_editor = Some((Default::default(), Default::default()));

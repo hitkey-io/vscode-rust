@@ -1081,3 +1081,33 @@ fn a_dragged_tab_highlights_the_drop_zone_on_the_right() {
     harness.step();
     harness.snapshot("interaction_tab_drag_zone");
 }
+
+#[test]
+fn status_bar_end_of_line_and_indentation_pickers_change_the_document() {
+    let ws = workspace_path();
+    let mut harness = launch(Some(ws.clone()), vec![ws.join("tsconfig.json")], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    // tsconfig.json is indented with spaces; the item shows what it found.
+    let _ = harness.get_by_label("Spaces: 2");
+    harness.get_by_label("LF").click();
+    harness.run();
+    harness.run();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("CRLF");
+    // The file is modified now: a dirty tab.
+    harness.get_by_label("Spaces: 2").click();
+    harness.run();
+    harness.run();
+    harness.key_press(egui::Key::ArrowDown);
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Tab Size: 4");
+}

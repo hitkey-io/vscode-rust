@@ -204,6 +204,75 @@ impl Document {
         }
     }
 
+    /// The line ending the text uses: "CRLF" when it has any `\r\n`, else "LF".
+    pub fn eol(&self) -> &'static str {
+        if self.text.contains("\r\n") {
+            "CRLF"
+        } else {
+            "LF"
+        }
+    }
+
+    /// Select End of Line Sequence: converts every line ending.
+    pub fn set_eol(&mut self, eol: &str) {
+        let lf = self.text.replace("\r\n", "\n");
+        self.text = if eol == "CRLF" { lf.replace('\n', "\r\n") } else { lf };
+        self.check_dirty();
+    }
+
+    /// The indentation of the text (`editor.detectIndentation`, simplified):
+    /// (uses tabs, unit in columns) — tabs when they lead more lines than
+    /// spaces do; the unit is the smallest space indentation (4 when none).
+    pub fn indentation(&self) -> (bool, usize) {
+        let (mut tabs, mut spaces, mut unit) = (0usize, 0usize, usize::MAX);
+        for l in self.text.lines() {
+            if l.starts_with('\t') {
+                tabs += 1;
+            } else if l.starts_with(' ') && !l.trim().is_empty() {
+                spaces += 1;
+                unit = unit.min(l.len() - l.trim_start_matches(' ').len());
+            }
+        }
+        (tabs > spaces, if unit == usize::MAX { 4 } else { unit.min(8) })
+    }
+
+    /// The status bar's indentation: "Spaces: 2" or "Tab Size: 4".
+    pub fn indent_label(&self) -> String {
+        match self.indentation() {
+            (true, _) => "Tab Size: 4".to_string(),
+            (false, n) => format!("Spaces: {n}"),
+        }
+    }
+
+    /// Convert Indentation to Spaces / Tabs (leading whitespace only).
+    pub fn convert_indentation(&mut self, to_tabs: bool) {
+        let unit = self.indentation().1.max(1);
+        let tab = 4;
+        let convert = |line: &str| -> String {
+            let rest = line.trim_start_matches([' ', '\t']);
+            let lead = &line[..line.len() - rest.len()];
+            let cols: usize = lead.chars().map(|c| if c == '\t' { tab } else { 1 }).sum();
+            if to_tabs {
+                format!("{}{}{rest}", "\t".repeat(cols / unit), " ".repeat(cols % unit))
+            } else {
+                format!("{}{rest}", " ".repeat(cols))
+            }
+        };
+        let ends_with_newline = self.text.ends_with('\n');
+        let mut out: Vec<String> = self.text.split('\n').map(|l| {
+            let cr = l.ends_with('\r');
+            let body = convert(l.trim_end_matches('\r'));
+            if cr { format!("{body}\r") } else { body }
+        }).collect();
+        if ends_with_newline && out.last().is_some_and(|l| l.is_empty()) {
+            out.pop();
+            self.text = out.join("\n") + "\n";
+        } else {
+            self.text = out.join("\n");
+        }
+        self.check_dirty();
+    }
+
     pub fn language_label(&self) -> &'static str {
         match self.language {
             "rs" => "Rust",
@@ -227,6 +296,28 @@ impl Document {
         }
     }
 }
+
+/// The languages Select Language Mode offers: (label, language id).
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("Plain Text", ""),
+    ("C", "c"),
+    ("C Header", "h"),
+    ("C++", "cpp"),
+    ("CSS", "css"),
+    ("Go", "go"),
+    ("HTML", "html"),
+    ("JavaScript", "js"),
+    ("JavaScript React", "jsx"),
+    ("JSON", "json"),
+    ("Markdown", "md"),
+    ("Python", "py"),
+    ("Rust", "rs"),
+    ("Shell", "sh"),
+    ("TOML", "toml"),
+    ("TypeScript", "ts"),
+    ("TypeScript React", "tsx"),
+    ("YAML", "yaml"),
+];
 
 fn is_known_binary(path: &Path) -> bool {
     let ext = path
@@ -274,5 +365,42 @@ pub fn detect_language(path: &Path) -> &'static str {
         "yaml" | "yml" => "yaml",
         "sh" | "bash" | "zsh" => "sh",
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(text: &str) -> Document {
+        let mut d = Document::untitled(1);
+        d.text = text.to_string();
+        d.saved_text = text.to_string();
+        d
+    }
+
+    #[test]
+    fn line_endings_convert_both_ways() {
+        let mut d = doc("a\nb\n");
+        assert_eq!(d.eol(), "LF");
+        d.set_eol("CRLF");
+        assert_eq!(d.text, "a\r\nb\r\n");
+        assert_eq!(d.eol(), "CRLF");
+        assert!(d.dirty);
+        d.set_eol("LF");
+        assert_eq!(d.text, "a\nb\n");
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn indentation_is_detected_and_converted() {
+        let mut d = doc("fn a() {\n  b();\n    c();\n}\n");
+        assert_eq!(d.indent_label(), "Spaces: 2");
+        d.convert_indentation(true);
+        assert_eq!(d.text, "fn a() {\n\tb();\n\t\tc();\n}\n");
+        assert_eq!(d.indent_label(), "Tab Size: 4");
+        d.convert_indentation(false);
+        assert_eq!(d.text, "fn a() {\n    b();\n        c();\n}\n");
+        assert_eq!(doc("x\n").indent_label(), "Spaces: 4");
     }
 }
