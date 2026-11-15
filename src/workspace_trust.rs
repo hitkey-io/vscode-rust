@@ -92,6 +92,20 @@ impl TrustStore {
         self.save();
     }
 
+    /// Edit Path / Open File Picker: `old` becomes `new` (kept in place;
+    /// dropped when `new` is already listed).
+    pub fn replace(&mut self, old: &Path, new: &Path) {
+        if old == new {
+            return;
+        }
+        if self.stored.trusted.iter().any(|t| t == new) {
+            self.stored.trusted.retain(|t| t != old);
+        } else if let Some(entry) = self.stored.trusted.iter_mut().find(|t| *t == old) {
+            *entry = new.to_path_buf();
+        }
+        self.save();
+    }
+
     pub fn banner_dismissed(&self, folder: &Path) -> bool {
         self.stored.banner_dismissed.iter().any(|f| f == folder)
     }

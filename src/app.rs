@@ -5934,6 +5934,14 @@ impl App {
         if let Some(entry) = out.remove {
             self.trust.remove(&entry);
         }
+        if let Some((old, new)) = out.replace {
+            self.trust.replace(&old, &new);
+        }
+        if let Some(old) = out.pick {
+            if let Some(path) = rfd::FileDialog::new().set_title("Select Folder To Trust").set_directory(&old).pick_folder() {
+                self.trust.replace(&old, &path);
+            }
+        }
         if out.add_folder {
             if let Some(path) = rfd::FileDialog::new().set_title("Select Folder To Trust").pick_folder() {
                 self.trust.trust(&path);

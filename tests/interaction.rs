@@ -530,6 +530,28 @@ fn restricted_mode_until_the_folder_is_trusted() {
     assert!(harness.query_by_label("Restricted Mode").is_none());
     assert!(harness.query_by_label("Learn More").is_none());
     let _ = harness.get_by_label("Don't Trust");
+    // The folder is listed; Edit Path swaps it for another path in place.
+    let row = format!("trusted:{}", workspace_path().display());
+    harness.event(egui::Event::PointerMoved(egui::pos2(650.0, 400.0)));
+    harness.step();
+    harness.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -600.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE });
+    harness.step();
+    harness.step();
+    let _ = harness.get_by_label(&row);
+    harness.event(egui::Event::PointerMoved(egui::pos2(700.0, 674.0)));
+    harness.step();
+    harness.step();
+    harness.get_by_label("Edit Path").click();
+    harness.run();
+    harness.run();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text("/tmp/elsewhere".to_string()));
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("trusted:/tmp/elsewhere");
+    assert!(harness.query_by_label(&row).is_none());
 }
 
 #[test]

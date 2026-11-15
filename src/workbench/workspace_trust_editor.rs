@@ -26,6 +26,8 @@ use crate::theme::Palette;
 #[derive(Default)]
 pub struct TrustEditorState {
     scroll: f32,
+    /// A path being edited: the entry, the text so far, focus pending.
+    editing: Option<(PathBuf, String, bool)>,
 }
 
 #[derive(Default, Debug)]
@@ -39,6 +41,10 @@ pub struct TrustEditorOutput {
     pub show_unsupported_extensions: bool,
     pub add_folder: bool,
     pub remove: Option<PathBuf>,
+    /// Edit Path confirmed: the entry and its new path.
+    pub replace: Option<(PathBuf, PathBuf)>,
+    /// Open File Picker on an entry.
+    pub pick: Option<PathBuf>,
 }
 
 /// What the editor shows.
@@ -279,20 +285,53 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut TrustEditorState, view: &TrustV
             let parent = view.folder.is_some_and(|f| f.starts_with(folder));
             let font = if parent { crate::ui_font::bold(13.0) } else { FontId::proportional(13.0) };
             painter.text(Pos2::new(left + 5.0, row.center().y), Align2::LEFT_CENTER, "Local", font.clone(), Palette::FG());
-            painter.text(Pos2::new(left + host_w + 5.0, row.center().y), Align2::LEFT_CENTER, folder.display().to_string(), font, Palette::FG());
-            let label = format!("trusted:{}", folder.display());
-            let resp = ui.interact(row, id.with(("row", i)), Sense::hover());
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label.clone()));
-            if hovered {
-                let r = Rect::from_center_size(Pos2::new(row.right() - 14.0, row.center().y), Vec2::splat(20.0));
-                let del = ui.interact(r, id.with(("delete", i)), Sense::click());
-                if del.hovered() {
-                    painter.rect_filled(r, 4.0, Palette::VSCE_TOOLBAR_HOVER_BG());
+            let editing_this = state.editing.as_ref().is_some_and(|(p, _, _)| p == folder);
+            if editing_this {
+                // Edit Path: an input in the path cell; Enter confirms, Escape cancels.
+                let input = Rect::from_min_max(Pos2::new(left + host_w, row.top() + 1.0), Pos2::new(row.right() - 70.0, row.bottom() - 1.0));
+                painter.rect(input, 2.0, Palette::INPUT_BG(), Stroke::new(1.0, Palette::FOCUS_BORDER()), egui::StrokeKind::Inside);
+                let (_, mut text, focus) = state.editing.clone().unwrap();
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(input.shrink2(Vec2::new(4.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+                let edit = child.add(egui::TextEdit::singleline(&mut text).id(id.with(("edit-path", i))).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).font(FontId::proportional(13.0)).text_color(Palette::INPUT_FG()).desired_width(input.width() - 8.0));
+                if focus {
+                    edit.request_focus();
                 }
-                painter.text(r.center(), Align2::CENTER_CENTER, icons::codicon_by_name("close").unwrap_or('x').to_string(), icons::codicon_font(16.0), Palette::FG());
-                del.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Delete Path"));
-                if del.on_hover_text("Delete Path").clicked() {
-                    out.remove = Some(folder.clone());
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if enter && !text.trim().is_empty() {
+                    out.replace = Some((folder.clone(), PathBuf::from(text.trim())));
+                    state.editing = None;
+                } else if escape || edit.lost_focus() {
+                    state.editing = None;
+                } else {
+                    state.editing = Some((folder.clone(), text, false));
+                }
+            } else {
+                painter.text(Pos2::new(left + host_w + 5.0, row.center().y), Align2::LEFT_CENTER, folder.display().to_string(), font, Palette::FG());
+            }
+            let label = format!("trusted:{}", folder.display());
+            let resp = ui.interact(row, id.with(("row", i)), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, label.clone()));
+            if resp.double_clicked() && !editing_this {
+                state.editing = Some((folder.clone(), folder.display().to_string(), true));
+            }
+            if hovered && !editing_this {
+                // Open File Picker, Edit Path, Delete Path (20px, 22px apart).
+                for (k, (glyph, tip)) in [("folder", "Open File Picker"), ("edit", "Edit Path"), ("close", "Delete Path")].into_iter().enumerate() {
+                    let r = Rect::from_center_size(Pos2::new(row.right() - 14.0 - 22.0 * (2 - k) as f32, row.center().y), Vec2::splat(20.0));
+                    let b = ui.interact(r, id.with(("action", i, glyph)), Sense::click());
+                    if b.hovered() {
+                        painter.rect_filled(r, 4.0, Palette::VSCE_TOOLBAR_HOVER_BG());
+                    }
+                    painter.text(r.center(), Align2::CENTER_CENTER, icons::codicon_by_name(glyph).unwrap_or('?').to_string(), icons::codicon_font(16.0), Palette::FG());
+                    b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+                    if b.on_hover_text(tip).clicked() {
+                        match glyph {
+                            "folder" => out.pick = Some(folder.clone()),
+                            "edit" => state.editing = Some((folder.clone(), folder.display().to_string(), true)),
+                            _ => out.remove = Some(folder.clone()),
+                        }
+                    }
                 }
             }
             y += 22.0;
