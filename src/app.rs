@@ -2487,6 +2487,20 @@ impl App {
             }
             if tabs_action.dragging {
                 ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+                // Drop zone (`editorGroup.dropBackground`): the other group, or
+                // the right half of a single editor.
+                if let Some(p) = ctx.input(|i| i.pointer.latest_pos()) {
+                    let zone = if self.is_split() {
+                        Some(self.group_rects[1 - group as usize]).filter(|r| r.contains(p))
+                    } else if members.len() > 1 && group_rect.contains(p) && p.y > group_rect.top() + 32.0 && p.x > group_rect.left() + group_rect.width() * 0.66 {
+                        Some(egui::Rect::from_min_max(egui::pos2(group_rect.center().x, group_rect.top() + 32.0), group_rect.max))
+                    } else {
+                        None
+                    };
+                    if let Some(z) = zone {
+                        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("editor-drop-zone"))).rect_filled(z, 0.0, Palette::EDITOR_GROUP_DROP_BG());
+                    }
+                }
             }
             if let Some((i, pos)) = tabs_action.dropped {
                 if let Some(&doc_idx) = members.get(i) {

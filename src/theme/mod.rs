@@ -94,6 +94,7 @@ palette! {
     MODERN_ACTIVITY_ITEM_HOVER_FG = OneOf(&["modernActivityBarItem.hoverForeground", "activityBar.foreground"]);
     /// The tab strip behind connected editor tabs.
     EDITOR_GROUP_BORDER = Id("editorGroup.border");
+    EDITOR_GROUP_DROP_BG = Id("editorGroup.dropBackground");
     CONNECTED_TABS_BG = OneOf(&["editorGroupHeader.connectedTabsBackground", "editorGroupHeader.tabsBackground"]);
 
     // ── Welcome page ──────────────────────────────────────────────────────

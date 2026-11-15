@@ -1065,3 +1065,19 @@ fn a_dragged_tab_shows_where_it_will_land() {
     harness.step();
     harness.snapshot("interaction_tab_drag_marker");
 }
+
+#[test]
+fn a_dragged_tab_highlights_the_drop_zone_on_the_right() {
+    let mut harness = launch_two_tabs();
+    let from = egui::pos2(420.0, 77.0);
+    harness.event(egui::Event::PointerMoved(from));
+    harness.step();
+    harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.step();
+    harness.event(egui::Event::PointerMoved(egui::pos2(700.0, 250.0)));
+    harness.step();
+    harness.event(egui::Event::PointerMoved(egui::pos2(1100.0, 400.0)));
+    harness.step();
+    harness.step();
+    harness.snapshot("interaction_tab_drag_zone");
+}
