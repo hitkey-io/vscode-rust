@@ -363,7 +363,8 @@ pub fn show_with_extensions(
               if icon_segment(ui, icons::BELL, "No Notifications").clicked() {
                   out.palette_requested = true;
               }
-              if let Some(doc) = active {
+              // Only a text editor has these (editorStatus.ts reads the code editor).
+              if let Some(doc) = active.filter(|d| !d.welcome && d.webview.is_none()) {
                 {
                     if status_segment(
                         ui,
