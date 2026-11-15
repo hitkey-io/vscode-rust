@@ -124,6 +124,7 @@ palette! {
     // ── Lists ─────────────────────────────────────────────────────────────
     LIST_HOVER_BG = Id("list.hoverBackground");
     LIST_ACTIVE_SELECTION_BG = Id("list.activeSelectionBackground");
+    LIST_DROP_BG = Id("list.dropBackground");
     LIST_INACTIVE_SELECTION_BG = Id("list.inactiveSelectionBackground");
 
     // ── Inputs ────────────────────────────────────────────────────────────

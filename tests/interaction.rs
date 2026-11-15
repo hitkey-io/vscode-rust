@@ -1189,6 +1189,29 @@ fn explorer_creates_renames_and_deletes_files() {
 }
 
 #[test]
+fn dragging_an_explorer_row_onto_a_folder_moves_it() {
+    let dir = std::env::temp_dir().join(format!("vscode-rust-drag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![dir.join("a.txt")], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    let from = harness.get_by_label("a.txt").rect().center();
+    let to = harness.get_by_label("sub").rect().center();
+    drag(&mut harness, from, to);
+    assert!(dir.join("sub/a.txt").exists() && !dir.join("a.txt").exists());
+    // Dropping a folder on its own parent changes nothing.
+    let from = harness.get_by_label("sub").rect().center();
+    let root_name = format!("vscode-rust-drag-{}", std::process::id());
+    let root = harness.get_by_label(&root_name).rect().center();
+    drag(&mut harness, from, root);
+    assert!(dir.join("sub/a.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn f2_renames_the_selected_explorer_row() {
     let dir = std::env::temp_dir().join(format!("vscode-rust-f2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

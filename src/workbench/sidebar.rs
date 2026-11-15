@@ -30,6 +30,8 @@ pub struct SidebarOutput {
     pub explorer_new: Option<(PathBuf, bool)>,
     /// A row was clicked (or right-clicked): the Explorer's selection.
     pub explorer_selected: Option<PathBuf>,
+    /// A row was dropped on a folder: (what, into which folder).
+    pub explorer_drop: Option<(PathBuf, PathBuf)>,
 }
 
 pub fn show(
@@ -59,6 +61,7 @@ pub fn show(
         explorer_menu: None,
         explorer_new: None,
         explorer_selected: None,
+        explorer_drop: None,
     };
 
     let rect = ui.max_rect();
@@ -255,6 +258,8 @@ fn explorer_panel(
             }
         });
 
+    finish_drag(ui, out);
+
     explorer_section(ui, "Outline", outline_expanded, "The active editor cannot provide outline information.");
     explorer_section(ui, "Timeline", timeline_expanded, "No timeline providers available.");
     ui.add_space(PANES_BOTTOM);
@@ -334,6 +339,7 @@ fn root_row(ui: &mut Ui, root: &mut FileNode, out: &mut SidebarOutput) {
     // `preserve-workspace-name-case`).
     let (rect, response) = pane_header(ui, &root.name, root.expanded, false);
     let mid = rect.center().y;
+    drop_target_row(ui, rect, Some(&root.path));
 
     // Hover action cluster (new file / new folder / refresh / collapse all).
     // Collapse-all and refresh are wired; new file/folder are visual for now.
@@ -405,6 +411,60 @@ fn node_decoration(
     }
 }
 
+/// egui memory keys of an Explorer drag (explorerViewer.ts `FileDragAndDrop`):
+/// the row being dragged, and the folder under the pointer this pass.
+const DRAG_SOURCE: &str = "explorer-drag-source";
+const DROP_TARGET: &str = "explorer-drop-target";
+
+fn drag_source(ctx: &egui::Context) -> Option<PathBuf> {
+    ctx.data(|d| d.get_temp::<Option<PathBuf>>(egui::Id::new(DRAG_SOURCE))).flatten()
+}
+
+/// A drop is only meaningful on a folder that isn't the source itself, inside
+/// it, or already its parent (`onDragOver`: "not allowed" there).
+fn can_drop(source: &std::path::Path, folder: &std::path::Path) -> bool {
+    !folder.starts_with(source) && source.parent() != Some(folder)
+}
+
+/// While a row is dragged, the folder `node` (or a file's parent folder)
+/// under the pointer is the drop target: wash it in `list.dropBackground`
+/// and remember it for `finish_drag`.
+fn drop_target_row(ui: &mut Ui, rect: egui::Rect, folder: Option<&std::path::Path>) {
+    let (Some(source), Some(folder)) = (drag_source(ui.ctx()), folder) else { return };
+    if ui.rect_contains_pointer(rect) && can_drop(&source, folder) {
+        ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::LIST_DROP_BG());
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(DROP_TARGET), (pass, folder.to_path_buf())));
+    }
+}
+
+/// After the rows: the drag image next to the pointer while dragging, and the
+/// drop itself when the button is released.
+fn finish_drag(ui: &mut Ui, out: &mut SidebarOutput) {
+    let ctx = ui.ctx().clone();
+    let Some(source) = drag_source(&ctx) else { return };
+    if ctx.input(|i| i.pointer.primary_down()) {
+        if let Some(pos) = ctx.pointer_latest_pos() {
+            // `.monaco-drag-image`: list.activeSelection colours, 12px text, pill.
+            let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("explorer-drag-image")));
+            let galley = painter.layout_no_wrap(name, FontId::proportional(12.0), Palette::LIST_ACTIVE_SELECTION_FG());
+            let rect = egui::Rect::from_min_size(pos + egui::vec2(12.0, 12.0), galley.size() + egui::vec2(14.0, 2.0));
+            painter.rect_filled(rect, 10.0, Palette::LIST_ACTIVE_SELECTION_BG());
+            painter.galley(rect.min + egui::vec2(7.0, 1.0), galley, Palette::LIST_ACTIVE_SELECTION_FG());
+        }
+        ctx.request_repaint();
+        return;
+    }
+    ctx.data_mut(|d| d.insert_temp::<Option<PathBuf>>(egui::Id::new(DRAG_SOURCE), None));
+    let target = ctx.data(|d| d.get_temp::<(u64, PathBuf)>(egui::Id::new(DROP_TARGET)));
+    if let Some((pass, folder)) = target {
+        if ctx.cumulative_pass_nr().saturating_sub(pass) <= 2 && can_drop(&source, &folder) {
+            out.explorer_drop = Some((source, folder));
+        }
+    }
+}
+
 fn render_node(
     ui: &mut Ui,
     node: &mut FileNode,
@@ -419,8 +479,15 @@ fn render_node(
     let row_height = 22.0;
 
     let (slot, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_height), Sense::click_and_drag());
     let rect = slot.shrink2(egui::vec2(ROW_INSET, 0.0));
+    if response.drag_started() {
+        ui.ctx().data_mut(|d| d.insert_temp::<Option<PathBuf>>(egui::Id::new(DRAG_SOURCE), Some(node.path.clone())));
+        out.explorer_selected = Some(node.path.clone());
+    }
+    // A folder takes a drop itself; a file hands it to its folder (the
+    // wash then covers just this row, as the pointer sits on it).
+    drop_target_row(ui, rect, if node.is_dir { Some(node.path.as_path()) } else { node.path.parent() });
 
     // Make the row findable by name (e.g. "tsconfig.json") for kittest.
     let label = node.name.clone();

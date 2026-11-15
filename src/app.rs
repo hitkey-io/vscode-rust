@@ -444,7 +444,10 @@ impl App {
     pub fn for_testing(ctx: &egui::Context) -> Self {
         crate::icons::register_fonts(ctx);
         theme::apply(ctx);
-        Self::fresh()
+        let mut app = Self::fresh();
+        // Native dialogs can't be answered in a test run.
+        let _ = app.settings.update("explorer.confirmDragAndDrop", Some(serde_json::json!(false)));
+        app
     }
 
     fn fresh() -> Self {
@@ -5488,6 +5491,9 @@ impl App {
             if let Some(m) = sidebar_output.explorer_menu {
                 self.pending_explorer_menu = Some(m);
             }
+            if let Some((src, dir)) = sidebar_output.explorer_drop {
+                self.explorer_move(&src, &dir);
+            }
             if let Some((dir, folder)) = sidebar_output.explorer_new {
                 self.run_explorer_action(ctx, if folder { ExplorerAction::NewFolder(dir) } else { ExplorerAction::NewFile(dir) });
             }
@@ -6242,6 +6248,43 @@ impl App {
 
     /// Paste the Explorer clipboard into `dir`: a cut moves, a copy gets
     /// "name copy.ext" / "name copy 2.ext" when the name is taken.
+    /// The editors of `src` (or of files inside it) follow it to `target`.
+    fn retarget_documents(&mut self, src: &Path, target: &Path) {
+        for d in &mut self.documents {
+            if let Ok(rest) = d.path.strip_prefix(src) {
+                d.path = if rest.as_os_str().is_empty() { target.to_path_buf() } else { target.join(rest) };
+            }
+        }
+    }
+
+    /// A row dropped on a folder (explorerViewer.ts `handleDrop`, move case):
+    /// asks first (`explorer.confirmDragAndDrop`, on by default), refuses a
+    /// name already taken there, then moves it and its open editors.
+    fn explorer_move(&mut self, src: &Path, dir: &Path) {
+        let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) else { return };
+        let target = dir.join(&name);
+        if target.exists() {
+            self.set_status(format!("A file or folder {name} already exists at the destination."));
+            return;
+        }
+        let into = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
+        let confirm = self.settings.get_bool("explorer.confirmDragAndDrop").unwrap_or(true);
+        if confirm && !Self::confirm(&format!("Are you sure you want to move '{name}' into '{into}'?"), "", "Move") {
+            return;
+        }
+        if let Err(e) = std::fs::rename(src, &target) {
+            self.set_status(format!("Failed to move {name}: {e}"));
+            return;
+        }
+        self.retarget_documents(src, &target);
+        if let Some(tree) = self.file_tree.as_mut() {
+            tree.refresh();
+            tree.reveal(&target);
+        }
+        self.explorer_selected = Some(target);
+        self.refresh_git();
+    }
+
     fn explorer_paste(&mut self, dir: &Path) {
         let Some((src, cut)) = self.explorer_clipboard.clone() else { return };
         if !src.exists() {
@@ -6259,11 +6302,7 @@ impl App {
             return;
         }
         if cut {
-            for d in &mut self.documents {
-                if let Ok(rest) = d.path.strip_prefix(&src) {
-                    d.path = if rest.as_os_str().is_empty() { target.clone() } else { target.join(rest) };
-                }
-            }
+            self.retarget_documents(&src, &target);
             self.explorer_clipboard = None;
         }
         if let Some(tree) = self.file_tree.as_mut() {
