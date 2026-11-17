@@ -769,6 +769,53 @@ fn problems_view_lists_diagnostics_and_opens_them() {
 }
 
 #[test]
+fn problems_view_can_be_shown_as_a_table() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_problems(
+                workspace_path().join("tsconfig.json"),
+                vec![(1, "Unused variable", Some("ts"), Some("6133"), 4, 2), (0, "Value expected", Some("json"), Some("516"), 2, 7)],
+            );
+            a.bootstrap_panel(ctx, "problems");
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    harness.get_by_label("View as Table").click();
+    harness.run();
+    harness.run();
+    // No file row any more; Collapse All is gone, View as Tree took its place.
+    assert!(harness.query_by_label("tsconfig.json, 2 problems").is_none());
+    assert!(harness.query_by_label("Collapse All").is_none());
+    let _ = harness.get_by_label("View as Tree");
+    harness.snapshot("interaction_problems_table");
+    use egui_kittest::kittest::NodeT;
+    harness.get_by_label("warning Unused variable, ts").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("tab:tsconfig.json");
+    // ↑ moves to the error above (errors sort first).
+    harness.key_press(egui::Key::ArrowUp);
+    harness.run();
+    harness.run();
+    assert_eq!(harness.get_by_label("error Value expected, json").accesskit_node().toggled().map(|t| format!("{t:?}") == "True"), Some(true));
+    harness.get_by_label("View as Tree").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("tsconfig.json, 2 problems");
+}
+
+#[test]
 fn output_view_shows_the_selected_channel() {
     let mut app: Option<App> = None;
     let runner = move |ctx: &egui::Context| {

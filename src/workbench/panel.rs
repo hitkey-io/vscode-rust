@@ -147,6 +147,8 @@ pub struct PanelState {
     /// The active terminal should take the keyboard on the next frame.
     pub focus_pending: bool,
     pub problems_filter: String,
+    /// The Problems view shows a table (`MarkersViewMode.Table`) instead of the tree.
+    pub problems_table: bool,
     /// The Output view's channel (the dropdown's selection).
     pub output_channel: String,
     /// Auto scrolling follows new output (the lock button).
@@ -387,6 +389,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
     let tabs_shown = state.view == PanelView::Terminal && state.terminals.len() > 1;
     let view_actions: &[(&str, &str)] = match state.view {
         PanelView::Terminal if tabs_shown => &[("ellipsis", "Views and More Actions...")],
+        PanelView::Problems if state.problems_table => &[("list-tree", "View as Tree")],
         PanelView::Problems => &[("list-flat", "View as Table"), ("collapse-all", "Collapse All")],
         PanelView::Output if state.output_follow => &[("ellipsis", "Views and More Actions..."), ("lock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
         PanelView::Output => &[("ellipsis", "Views and More Actions..."), ("unlock", "Turn Auto Scrolling On"), ("clear-all", "Clear Output")],
@@ -402,6 +405,8 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
         if icon_button(ui, &painter, at(from), name, tip, id) {
             match *name {
                 "collapse-all" => state.problems_collapsed = problems.iter().map(|f| f.path.clone()).collect(),
+                "list-flat" => state.problems_table = true,
+                "list-tree" => state.problems_table = false,
                 "lock" | "unlock" => state.output_follow = !state.output_follow,
                 "clear-all" if state.view == PanelView::Output => out.output_clear = true,
                 "trash" => out.kill_terminal = true,
@@ -450,6 +455,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
     // Content.
     let content = Rect::from_min_max(Pos2::new(card.left() + 1.0, card.top() + 35.0), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
     match state.view {
+        PanelView::Problems if state.problems_table => problems_table(ui, &painter, card, problems, state, &mut out, id),
         PanelView::Problems => problems_view(ui, &painter, card, problems, state, &mut out, id),
         PanelView::Output => output_view(ui, &painter, content, output.text, state, id),
         PanelView::DebugConsole => {
@@ -1164,6 +1170,153 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
     // Overlay scrollbar (10px).
     if max_scroll > 0.0 && ui.rect_contains_pointer(area) {
         let track = Rect::from_min_max(Pos2::new(area.right() - 10.0, area.top()), area.right_bottom());
+        let thumb_h = (viewport / total_h * viewport).max(20.0);
+        let thumb_top = track.top() + (state.problems_scroll / max_scroll) * (viewport - thumb_h);
+        painter.rect_filled(Rect::from_min_size(Pos2::new(track.left(), thumb_top), Vec2::new(10.0, thumb_h)), 0.0, Palette::VSCE_SCROLLBAR_SLIDER_BG());
+    }
+}
+
+/// The Problems view as a table (markersTable.ts, markers.css): a 24px
+/// header (semibold, 10px padded cells) over 24px rows; columns Code (weight
+/// 1, min 100), Message (4), File (2), Source (1, min 100) after a 36px
+/// severity column, as `(code)`, the message, the relative path with a 70%
+/// `[Ln, Col]`, and the source. Rows by severity, then path, then position.
+/// Row insets and the selection shape follow the tree (by analogy).
+fn problems_table(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[ProblemFile], state: &mut PanelState, out: &mut PanelOutput, id: egui::Id) {
+    const ROW_H: f32 = 24.0;
+    let top = card.top() + 33.0;
+    let area = Rect::from_min_max(Pos2::new(card.left() + 1.0, top), Pos2::new(card.right() - 1.0, card.bottom() - 1.0));
+    let filter = state.problems_filter.trim().to_string();
+    let mut items: Vec<(&ProblemFile, usize)> = problems
+        .iter()
+        .flat_map(|f| (0..f.items.len()).filter(|&k| filter.is_empty() || problem_matches(f, &f.items[k], &filter)).map(move |k| (f, k)))
+        .collect();
+    if items.is_empty() {
+        let text = if problems.is_empty() { "No problems have been detected in the workspace." } else { "No results found with provided filter criteria." };
+        painter.text(Pos2::new(card.left() + 22.0, card.top() + 45.0), Align2::LEFT_CENTER, text, FontId::proportional(13.0), Palette::FG());
+        return;
+    }
+    items.sort_by(|(fa, ia), (fb, ib)| {
+        let (a, b) = (&fa.items[*ia], &fb.items[*ib]);
+        a.severity.cmp(&b.severity).then_with(|| fa.path.cmp(&fb.path)).then_with(|| (a.line, a.col).cmp(&(b.line, b.col)))
+    });
+    // Column widths: weights 1 / 4 / 2 / 1 of what the 36px severity column leaves.
+    let inner = Rect::from_min_max(Pos2::new(area.left() + 4.0, area.top()), Pos2::new(area.right() - 4.0, area.bottom()));
+    let avail = (inner.width() - 36.0).max(0.0);
+    let code_w = (avail / 8.0).max(100.0);
+    let source_w = (avail / 8.0).max(100.0);
+    let rest = (avail - code_w - source_w).max(0.0);
+    let message_w = rest * 4.0 / 6.0;
+    let file_w = rest * 2.0 / 6.0;
+    let xs = [inner.left(), inner.left() + 36.0, inner.left() + 36.0 + code_w, inner.left() + 36.0 + code_w + message_w, inner.left() + 36.0 + code_w + message_w + file_w, inner.right()];
+    let clip = painter.with_clip_rect(area);
+    // Header.
+    let header = Rect::from_min_size(area.min, Vec2::new(area.width(), ROW_H));
+    for (i, label) in [(1, "Code"), (2, "Message"), (3, "File"), (4, "Source")] {
+        let g = clip.layout_no_wrap(label.to_string(), crate::ui_font::semibold(13.0), Palette::FG());
+        let cell = Rect::from_min_max(Pos2::new(xs[i] + 10.0, header.top()), Pos2::new(xs[i + 1], header.bottom()));
+        clip.with_clip_rect(cell).galley(Pos2::new(cell.left(), header.center().y - g.size().y / 2.0 - 0.5), g, Palette::FG());
+    }
+    let list = Rect::from_min_max(Pos2::new(area.left(), area.top() + ROW_H), area.right_bottom());
+    let total_h = items.len() as f32 * ROW_H;
+    let viewport = list.height();
+    let max_scroll = (total_h - viewport).max(0.0);
+    let list_id = id.with("problems-table");
+    ui.interact(list, list_id, Sense::click());
+    if ui.rect_contains_pointer(list) {
+        state.problems_scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    state.problems_scroll = state.problems_scroll.clamp(0.0, max_scroll);
+    if state.problems_refocus > 0 {
+        state.problems_refocus -= 1;
+        ui.memory_mut(|m| m.request_focus(list_id));
+    }
+    let list_focused = ui.memory(|m| m.has_focus(list_id));
+    // ↑ / ↓ move the selection, Enter opens it.
+    if list_focused {
+        ui.memory_mut(|m| m.set_focus_lock_filter(list_id, egui::EventFilter { vertical_arrows: true, ..Default::default() }));
+        let (up, down, enter) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter)));
+        let at = state.problems_selected.as_ref().and_then(|(p, k)| items.iter().position(|(f, i)| &f.path == p && i == k));
+        let next = if down {
+            Some(at.map(|a| (a + 1).min(items.len() - 1)).unwrap_or(0))
+        } else if up {
+            Some(at.map(|a| a.saturating_sub(1)).unwrap_or(0))
+        } else {
+            None
+        };
+        if let Some(n) = next {
+            let (f, k) = items[n];
+            state.problems_selected = Some((f.path.clone(), k));
+            let row_top = n as f32 * ROW_H;
+            if row_top < state.problems_scroll {
+                state.problems_scroll = row_top;
+            } else if row_top + ROW_H > state.problems_scroll + viewport {
+                state.problems_scroll = row_top + ROW_H - viewport;
+            }
+        }
+        if enter {
+            if let Some(&(f, k)) = at.map(|a| &items[a]) {
+                out.open_problem = Some((f.path.clone(), f.items[k].line, f.items[k].col));
+            }
+        }
+    }
+    let clip = painter.with_clip_rect(list);
+    let mut y = list.top() - state.problems_scroll;
+    for (f, k) in &items {
+        let r = Rect::from_min_max(Pos2::new(xs[0], y), Pos2::new(xs[5], y + ROW_H));
+        y += ROW_H;
+        if r.bottom() < list.top() || r.top() > list.bottom() {
+            continue;
+        }
+        let item = &f.items[*k];
+        let selected = state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && i == k);
+        let rresp = ui.interact(r.intersect(list), id.with(("problems-table-row", &f.path, *k)), Sense::click());
+        if selected {
+            let bg = if list_focused { Palette::LIST_ACTIVE_SELECTION_BG() } else { Palette::LIST_INACTIVE_SELECTION_BG() };
+            clip.rect_filled(r, 4.0, bg);
+            if list_focused {
+                clip.rect_stroke(r, 4.0, Stroke::new(1.0, Palette::VSCE_LIST_FOCUS_OUTLINE_2026()), egui::StrokeKind::Inside);
+            }
+        } else if rresp.hovered() {
+            clip.rect_filled(r, 4.0, Palette::LIST_HOVER_BG());
+        }
+        let fg = if selected && list_focused { Palette::LIST_ACTIVE_SELECTION_FG() } else { Palette::FG() };
+        let cy = r.center().y;
+        let (icon, colour) = severity_icon(item.severity);
+        let icon_colour = if selected && list_focused { Palette::LIST_ACTIVE_SELECTION_FG() } else { colour };
+        clip.text(Pos2::new(xs[0] + 18.0, cy), Align2::CENTER_CENTER, icons::codicon_by_name(icon).unwrap_or('!').to_string(), icons::codicon_font(16.0), icon_colour);
+        // Cells, clipped to their column (`text-overflow: ellipsis` is a clip here).
+        let cell_text = |col: usize, text: String, colour: Color32| -> f32 {
+            let cell = Rect::from_min_max(Pos2::new(xs[col] + 10.0, r.top()), Pos2::new(xs[col + 1], r.bottom()));
+            let g = clip.layout_no_wrap(text, FontId::proportional(13.0), colour);
+            let w = g.size().x;
+            clip.with_clip_rect(cell).galley(Pos2::new(cell.left(), cy - g.size().y / 2.0 - 0.5), g, colour);
+            w
+        };
+        if let Some(code) = &item.code {
+            cell_text(1, format!("({code})"), fg);
+        }
+        cell_text(2, item.message.lines().next().unwrap_or("").to_string(), fg);
+        let rel = if f.dir.is_empty() { f.name.clone() } else { format!("{}/{}", f.dir, f.name) };
+        let w = cell_text(3, rel, fg);
+        let pos = format!("[Ln {}, Col {}]", item.line + 1, item.col + 1);
+        let pos_cell = Rect::from_min_max(Pos2::new(xs[3] + 10.0 + w + 6.0, r.top()), Pos2::new(xs[4], r.bottom()));
+        let g = clip.layout_no_wrap(pos, FontId::proportional(13.0), fg.gamma_multiply(0.7));
+        clip.with_clip_rect(pos_cell).galley(Pos2::new(pos_cell.left(), cy - g.size().y / 2.0 - 0.5), g, fg.gamma_multiply(0.7));
+        if let Some(src) = &item.source {
+            cell_text(4, src.clone(), fg);
+        }
+        let label = format!("{} {}, {}", icon, item.message, item.source.as_deref().unwrap_or(""));
+        rresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
+        if rresp.clicked() || rresp.double_clicked() {
+            state.problems_selected = Some((f.path.clone(), *k));
+            ui.memory_mut(|m| m.request_focus(list_id));
+            out.open_problem = Some((f.path.clone(), item.line, item.col));
+            state.problems_refocus = 3;
+        }
+    }
+    if max_scroll > 0.0 && ui.rect_contains_pointer(list) {
+        let track = Rect::from_min_max(Pos2::new(list.right() - 10.0, list.top()), list.right_bottom());
         let thumb_h = (viewport / total_h * viewport).max(20.0);
         let thumb_top = track.top() + (state.problems_scroll / max_scroll) * (viewport - thumb_h);
         painter.rect_filled(Rect::from_min_size(Pos2::new(track.left(), thumb_top), Vec2::new(10.0, thumb_h)), 0.0, Palette::VSCE_SCROLLBAR_SLIDER_BG());
