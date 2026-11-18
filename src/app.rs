@@ -901,6 +901,7 @@ impl App {
             self.extensions.fire_event(&format!("onLanguage:{lang}"));
         }
         self.sync_extension_documents();
+        self.update_outline(ctx);
         for id in self.palette.take_abandoned() {
             if !self.extension_version_picked(id, None) && !self.git_prompt_answered(id, None, None) {
                 self.extensions.answer(id, serde_json::Value::Null);
@@ -2638,6 +2639,7 @@ impl App {
                     ui,
                     &doc.path,
                     self.workspace_root.as_deref(),
+                    &self.symbol_chain(doc),
                 );
             }
             // Find matches for the active document (Cmd+F widget).
@@ -5469,7 +5471,6 @@ impl App {
                             }
                             return SidebarOutput::default();
                         }
-                        self.update_outline(ctx);
                         let graph_root = self.active_repo_root();
                         let search_scope = crate::search::ui::SearchScope {
                             open_editors: self.documents.iter().filter(|d| !d.read_only && !d.untitled && d.webview.is_none()).map(|d| d.path.clone()).collect(),
@@ -5911,10 +5912,6 @@ impl App {
             return;
         };
         let (path, name) = (doc.path.clone(), doc.display_name());
-        if !self.outline_expanded {
-            set_outline(ctx, Some(OutlineView { path, name, symbols: None, loading: false }));
-            return;
-        }
         if let Some(forced) = self.outline.forced.clone() {
             set_outline(ctx, Some(OutlineView { path, name, symbols: Some(forced), loading: false }));
             return;
@@ -5959,10 +5956,26 @@ impl App {
         set_outline(ctx, Some(OutlineView { path, name, symbols: self.outline.symbols.clone(), loading }));
     }
 
+    /// The symbols around the cursor of `doc`, outermost first: the
+    /// breadcrumbs' symbol path.
+    fn symbol_chain(&self, doc: &Document) -> Vec<(String, u8)> {
+        let symbols = if self.outline.path.as_ref() == Some(&doc.path) { self.outline.forced.as_ref().or(self.outline.symbols.as_ref()) } else { None };
+        let (line, col) = (doc.cursor_line.saturating_sub(1), doc.cursor_col.saturating_sub(1));
+        let inside = |r: &[usize; 4]| (line, col) >= (r[0], r[1]) && (line, col) <= (r[2], r[3]);
+        let mut chain = Vec::new();
+        let mut level = symbols;
+        while let Some(found) = level.and_then(|l| l.iter().find(|s| inside(&s.range))) {
+            chain.push((found.name.clone(), found.kind));
+            level = Some(&found.children);
+        }
+        chain
+    }
+
     /// Shows `symbols` in the (expanded) Outline pane without asking an
     /// extension (tests).
     pub fn bootstrap_outline(&mut self, symbols: Vec<crate::extensions::DocumentSymbol>) {
         self.outline_expanded = true;
+        self.outline.path = self.active_doc.and_then(|i| self.documents.get(i)).map(|d| d.path.clone());
         self.outline.forced = Some(symbols);
     }
 

@@ -102,19 +102,26 @@ function activate(context) {
 	// heading is a child of the closest shallower one before it).
 	context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider({ language: 'markdown' }, {
 		provideDocumentSymbols(document) {
-			const roots = [];
-			const stack = [];
+			// Each heading owns its section: up to the line before the next
+			// heading of the same or a higher level (what breadcrumbs follow).
+			const headings = [];
 			for (let i = 0; i < document.lineCount; i++) {
 				const m = /^(#{1,6})\s+(.*)$/.exec(document.lineAt(i).text);
-				if (!m) { continue; }
-				const level = m[1].length;
-				const line = document.lineAt(i);
-				const symbol = new vscode.DocumentSymbol(m[2], '', vscode.SymbolKind.String, line.range, line.range);
-				symbol.level = level;
-				while (stack.length && stack[stack.length - 1].level >= level) { stack.pop(); }
+				if (m) { headings.push({ line: i, level: m[1].length, name: m[2] }); }
+			}
+			const roots = [];
+			const stack = [];
+			headings.forEach((h, n) => {
+				const next = headings.slice(n + 1).find(o => o.level <= h.level);
+				const endLine = next ? next.line - 1 : document.lineCount - 1;
+				const title = document.lineAt(h.line);
+				const section = new vscode.Range(h.line, 0, endLine, document.lineAt(endLine).text.length);
+				const symbol = new vscode.DocumentSymbol(h.name, '', vscode.SymbolKind.String, section, title.range);
+				symbol.level = h.level;
+				while (stack.length && stack[stack.length - 1].level >= h.level) { stack.pop(); }
 				(stack.length ? stack[stack.length - 1].children : roots).push(symbol);
 				stack.push(symbol);
-			}
+			});
 			return roots;
 		},
 	}));

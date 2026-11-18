@@ -257,7 +257,9 @@ fn document_symbols_come_back_as_a_tree() {
     let ProviderResult::Symbols(tree) = ask(&mut svc, LanguageFeature::Symbols, &path, 0, 0) else { panic!("symbols") };
     assert_eq!(tree.len(), 1);
     assert_eq!(tree[0].name, "Title");
-    assert_eq!(tree[0].range, [0, 0, 0, 7]);
+    // The section runs to the end of the document; the selection is the heading line.
+    assert_eq!(tree[0].range, [0, 0, 5, 0]);
+    assert_eq!(tree[0].selection, [0, 0, 0, 7]);
     let names: Vec<&str> = tree[0].children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["One", "Two"]);
     assert_eq!(tree[0].children[0].children[0].name, "Deep");

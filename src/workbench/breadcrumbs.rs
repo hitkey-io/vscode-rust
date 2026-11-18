@@ -14,7 +14,9 @@ use crate::theme::Palette;
 /// Height of the breadcrumbs strip (matches VS Code's BreadcrumbsControl).
 pub const HEIGHT: f32 = 22.0;
 
-pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
+/// `symbols`: the document symbols around the cursor, outermost first
+/// (name, `SymbolKind`); without them a trailing "…" stands in.
+pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>, symbols: &[(String, u8)]) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), HEIGHT), Sense::hover());
     let p = ui.painter();
@@ -69,20 +71,34 @@ pub fn show(ui: &mut Ui, path: &Path, workspace_root: Option<&Path>) {
         x += g.size().x + 6.0;
     }
 
-    // Trailing "› …" symbol-path placeholder, like VS Code's breadcrumbs when
-    // no document symbol is selected.
-    p.text(
-        egui::pos2(x, cy),
-        Align2::LEFT_CENTER,
-        icons::CHEVRON_RIGHT.to_string(),
-        codicon_font(11.0),
-        Palette::FG_DESCRIPTION(),
-    );
-    p.text(
-        egui::pos2(x + 13.0, cy),
-        Align2::LEFT_CENTER,
-        "…",
-        label_font,
-        Palette::FG_DESCRIPTION(),
-    );
+    if symbols.is_empty() {
+        // Trailing "› …" symbol-path placeholder, like VS Code's breadcrumbs
+        // when no document symbol is selected.
+        p.text(
+            egui::pos2(x, cy),
+            Align2::LEFT_CENTER,
+            icons::CHEVRON_RIGHT.to_string(),
+            codicon_font(11.0),
+            Palette::FG_DESCRIPTION(),
+        );
+        p.text(
+            egui::pos2(x + 13.0, cy),
+            Align2::LEFT_CENTER,
+            "…",
+            label_font,
+            Palette::FG_DESCRIPTION(),
+        );
+        return;
+    }
+    // The symbol path: each symbol with its icon after a chevron.
+    for (name, kind) in symbols {
+        p.text(egui::pos2(x, cy), Align2::LEFT_CENTER, icons::CHEVRON_RIGHT.to_string(), codicon_font(11.0), Palette::FG_DESCRIPTION());
+        x += 13.0;
+        let (icon, colour) = super::sidebar::symbol_icon(*kind);
+        p.text(egui::pos2(x, cy), Align2::LEFT_CENTER, icons::codicon_by_name(icon).unwrap_or('?').to_string(), codicon_font(14.0), colour);
+        x += 18.0;
+        let g = p.layout_no_wrap(name.clone(), label_font.clone(), Palette::BREADCRUMB_FG());
+        p.galley(egui::pos2(x, cy - g.size().y * 0.5), g.clone(), Palette::BREADCRUMB_FG());
+        x += g.size().x + 6.0;
+    }
 }

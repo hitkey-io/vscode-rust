@@ -392,7 +392,7 @@ fn outline_body_height(ctx: &egui::Context) -> f32 {
 }
 
 /// Codicon and `symbolIcon.*Foreground` colour of a `SymbolKind`.
-fn symbol_icon(kind: u8) -> (&'static str, Color32) {
+pub fn symbol_icon(kind: u8) -> (&'static str, Color32) {
     const KINDS: [(&str, &str); 26] = [
         ("symbol-file", "file"), ("symbol-module", "module"), ("symbol-namespace", "namespace"), ("symbol-package", "package"),
         ("symbol-class", "class"), ("symbol-method", "method"), ("symbol-property", "property"), ("symbol-field", "field"),

@@ -750,11 +750,11 @@ fn keybindings_json_rebinds_app_shortcuts() {
 #[test]
 fn outline_pane_lists_symbols_and_goes_to_them() {
     use vscode_rust::extensions::DocumentSymbol;
-    let sym = |name: &str, kind: u8, line: usize, children: Vec<DocumentSymbol>| DocumentSymbol {
+    let sym = |name: &str, kind: u8, line: usize, end: usize, children: Vec<DocumentSymbol>| DocumentSymbol {
         name: name.to_string(),
         detail: String::new(),
         kind,
-        range: [line, 0, line, 5],
+        range: [line, 0, end, 5],
         selection: [line, 0, line, 5],
         children,
     };
@@ -768,7 +768,7 @@ fn outline_pane_lists_symbols_and_goes_to_them() {
         if !a.has_workspace() {
             a.bootstrap_workspace(workspace_path());
             a.bootstrap_open_file(workspace_path().join("tsconfig.json"));
-            a.bootstrap_outline(vec![sym("Title", 14, 0, vec![sym("greet", 11, 4, vec![]), sym("Point", 4, 6, vec![sym("x", 7, 7, vec![])])])]);
+            a.bootstrap_outline(vec![sym("Title", 14, 0, 9, vec![sym("greet", 11, 4, 5, vec![]), sym("Point", 4, 6, 8, vec![sym("x", 7, 7, 7, vec![])])])]);
         }
         a.render(ctx);
     };
@@ -785,6 +785,8 @@ fn outline_pane_lists_symbols_and_goes_to_them() {
     harness.run();
     harness.run();
     let _ = harness.get_by_label("Ln 7, Col 1");
+    // The breadcrumbs follow: tsconfig.json > Title > Point.
+    harness.snapshot("interaction_outline_breadcrumbs");
 }
 
 #[test]
