@@ -148,6 +148,8 @@ pub enum ProviderResult {
     Definition(Vec<SourceLocation>),
     /// A document's symbols as a tree (`DocumentSymbol`).
     Symbols(Vec<DocumentSymbol>),
+    /// A formatter's edits (`provideDocumentFormattingEdits`).
+    Edits(Vec<WireEdit>),
 }
 
 /// A `DocumentSymbol`: the Outline view's rows.
@@ -846,6 +848,19 @@ impl ExtensionService {
         Some(id)
     }
 
+    /// Ask the document's formatter for edits (`Format Document`). `None`
+    /// when no extension formats documents; the answer is a
+    /// `ProviderResult::Edits`.
+    pub fn request_formatting(&mut self, path: &Path, tab_size: usize, insert_spaces: bool) -> Option<u64> {
+        if !self.ready || !self.provider_kinds.contains("documentFormatting") {
+            return None;
+        }
+        let id = self.request_id();
+        let host = self.host.as_mut()?;
+        host.send(&json!({ "type": "provideFormatting", "requestId": id, "path": path, "tabSize": tab_size, "insertSpaces": insert_spaces }));
+        Some(id)
+    }
+
     /// The answer to a language feature request, once it has arrived.
     pub fn take_result(&mut self, request_id: u64) -> Option<ProviderResult> {
         self.provider_results.remove(&request_id)
@@ -1375,6 +1390,16 @@ impl ExtensionService {
                                 .unwrap_or_default(),
                             range: result.get("range").and_then(wire_range),
                         },
+                        "provideFormatting" => ProviderResult::Edits(
+                            result
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|e| Some(WireEdit { range: e.get("range").and_then(wire_range)?, text: e.get("text").and_then(Value::as_str).unwrap_or_default().to_string() }))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
                         "provideDocumentSymbols" => ProviderResult::Symbols(
                             result.as_array().map(|a| a.iter().filter_map(symbol_entry).collect()).unwrap_or_default(),
                         ),

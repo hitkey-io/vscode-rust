@@ -125,6 +125,18 @@ function activate(context) {
 			return roots;
 		},
 	}));
+	// Format Document: trailing blanks go (markdown only).
+	context.subscriptions.push(vscode.languages.registerDocumentFormattingEditProvider({ language: 'markdown' }, {
+		provideDocumentFormattingEdits(document, options) {
+			const edits = [];
+			for (let i = 0; i < document.lineCount; i++) {
+				const line = document.lineAt(i);
+				const trimmed = line.text.replace(/[ \t]+$/, '');
+				if (trimmed !== line.text) { edits.push(vscode.TextEdit.replace(line.range, trimmed)); }
+			}
+			return edits;
+		},
+	}));
 	const problems = vscode.languages.createDiagnosticCollection('hello');
 	context.subscriptions.push(problems);
 	const lint = document => {

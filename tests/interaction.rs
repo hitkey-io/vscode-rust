@@ -299,6 +299,40 @@ fn run_until_label(harness: &mut Harness<'static>, label: &str) {
 }
 
 #[test]
+fn format_document_applies_the_extensions_formatter() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return;
+    }
+    let dir = std::env::temp_dir().join("vscode-rust-format-doc");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.md");
+    std::fs::write(&file, "keep\ntrim me   \nend\t\n").unwrap();
+    let mut harness = launch_with_extensions(Some(dir.clone()), vec![file.clone()], None, Some(sample_extensions_dir()));
+    harness.step();
+    harness.step();
+    run_until_label(&mut harness, "$(smiley) Hello");
+    use egui::{Key, Modifiers};
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::P);
+    harness.step();
+    harness.step();
+    harness.event(egui::Event::Text("format document".to_string()));
+    harness.step();
+    let _ = harness.get_by_label("Format Document");
+    harness.key_press(Key::Enter);
+    // The answer comes from the extension host; once its edits are in, Save writes them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::fs::read_to_string(&file).unwrap() != "keep\ntrim me\nend\n" {
+        assert!(std::time::Instant::now() < deadline, "the formatted text was never saved");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        harness.step();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        harness.step();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn extension_runs_from_view_status_bar_and_palette() {
     if vscode_rust::extensions::host::find_node().is_none() {
         return; // Needs Node.js to run extension code.

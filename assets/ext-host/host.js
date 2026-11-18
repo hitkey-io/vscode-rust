@@ -1371,6 +1371,21 @@ async function provideDocumentSymbols(msg) {
 	return [];
 }
 
+/** `TextEdit[]` of the first formatter that answers, as wire edits. */
+async function provideFormatting(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return []; }
+	const token = new CancellationTokenSource().token;
+	const options = { tabSize: msg.tabSize || 4, insertSpaces: msg.insertSpaces !== false };
+	for (const p of providersFor('documentFormatting', document)) {
+		try {
+			const r = await p.provider.provideDocumentFormattingEdits(document, options, token);
+			if (Array.isArray(r)) { return r.map(e => ({ range: toWire(e.range), text: e.newText })); }
+		} catch (err) { console.error(err); }
+	}
+	return [];
+}
+
 const languages = new Proxy({
 	createLanguageStatusItem(id, selector) {
 		return { id, selector, name: undefined, text: '', detail: undefined, severity: 0, busy: false, command: undefined, accessibilityInformation: undefined, dispose() { } };
@@ -1385,6 +1400,7 @@ const languages = new Proxy({
 	registerHoverProvider: registerProvider('hover'),
 	registerDefinitionProvider: registerProvider('definition'),
 	registerDocumentSymbolProvider: registerProvider('documentSymbol'),
+	registerDocumentFormattingEditProvider: registerProvider('documentFormatting'),
 	registerDeclarationProvider: registerProvider('declaration'),
 	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
 	registerImplementationProvider: registerProvider('implementation'),
@@ -1822,12 +1838,14 @@ async function handle(msg) {
 		case 'provideCompletion':
 		case 'provideHover':
 		case 'provideDocumentSymbols':
+		case 'provideFormatting':
 		case 'provideDefinition': {
 			let result;
 			try {
 				result = msg.type === 'provideCompletion' ? await provideCompletion(msg)
 					: msg.type === 'provideHover' ? await provideHover(msg)
 						: msg.type === 'provideDocumentSymbols' ? await provideDocumentSymbols(msg)
+						: msg.type === 'provideFormatting' ? await provideFormatting(msg)
 						: [
 							...await provideLocations('definition', 'provideDefinition', msg),
 							...await provideLocations('declaration', 'provideDeclaration', msg),

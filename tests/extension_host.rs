@@ -248,6 +248,25 @@ fn ask(svc: &mut ExtensionService, kind: LanguageFeature, path: &std::path::Path
 }
 
 #[test]
+fn formatting_edits_come_back_from_the_formatter() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    svc.sync_documents(&[(path.clone(), "markdown", "keep\ntrim me   \nend\t\n", false)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(svc.wait_until(WAIT, |s| s.provider_kinds.contains("documentFormatting")), "log: {:#?}", svc.log);
+    let id = svc.request_formatting(&path, 4, true).expect("a formatter");
+    let mut edits = None;
+    for _ in 0..200 {
+        if let Some(r) = svc.take_result(id) {
+            edits = Some(r);
+            break;
+        }
+        svc.wait_until(Duration::from_millis(30), |_| false);
+    }
+    let Some(ProviderResult::Edits(edits)) = edits else { panic!("edits") };
+    assert_eq!(edits.iter().map(|e| (e.range, e.text.as_str())).collect::<Vec<_>>(), vec![([1, 0, 1, 10], "trim me"), ([2, 0, 2, 4], "end")]);
+}
+
+#[test]
 fn document_symbols_come_back_as_a_tree() {
     let Some(mut svc) = started() else { return };
     let path = fixtures().join("workspace/README.md");

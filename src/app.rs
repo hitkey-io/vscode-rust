@@ -117,6 +117,10 @@ pub struct App {
     /// Explorer OUTLINE / TIMELINE section expanded state.
     outline_expanded: bool,
     outline: OutlineState,
+    /// A formatter's answer is awaited: (request, file, save afterwards).
+    pending_format: Option<(u64, PathBuf, bool)>,
+    /// The next save doesn't format first (it just did).
+    skip_format_once: bool,
     timeline_expanded: bool,
     /// In-editor find widget (Cmd+F) state.
     find: crate::editor::find::FindState,
@@ -512,6 +516,8 @@ impl App {
             git_diff_snapshot: String::new(),
             outline_expanded: false,
             outline: OutlineState::default(),
+            pending_format: None,
+            skip_format_once: false,
             timeline_expanded: false,
             find: crate::editor::find::FindState::default(),
             status_message_at: None,
@@ -602,6 +608,7 @@ impl App {
             "workbench.action.closeActiveEditor" => CommandId::CloseFile,
             "workbench.action.closeAllEditors" => CommandId::CloseAllFiles,
             "workbench.action.splitEditor" | "workbench.action.splitEditorRight" => CommandId::SplitEditor,
+            "editor.action.formatDocument" => CommandId::FormatDocument,
             "workbench.action.moveEditorToNextGroup" | "workbench.action.moveEditorToRightGroup" => {
                 self.move_editor_to_group(1);
                 return true;
@@ -902,6 +909,7 @@ impl App {
         }
         self.sync_extension_documents();
         self.update_outline(ctx);
+        self.poll_format();
         for id in self.palette.take_abandoned() {
             if !self.extension_version_picked(id, None) && !self.git_prompt_answered(id, None, None) {
                 self.extensions.answer(id, serde_json::Value::Null);
@@ -4125,7 +4133,57 @@ impl App {
         }
     }
 
+    /// `editor.action.formatDocument`: the extension's formatter edits the
+    /// active editor (`then_save`: and the file is saved after, for
+    /// `editor.formatOnSave`). Without a formatter VS Code says so.
+    fn format_document(&mut self, then_save: bool) {
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| !d.read_only && d.webview.is_none() && !d.welcome) else { return };
+        let (path, language) = (doc.path.clone(), doc.language_id());
+        let (tabs, unit) = doc.indentation();
+        self.sync_extension_documents();
+        match self.extensions.request_formatting(&path, unit, !tabs) {
+            Some(id) => self.pending_format = Some((id, path, then_save)),
+            // No formatter: a save just goes on without formatting.
+            None if then_save => {}
+            None => self.extensions.notify_info(format!("There is no formatter for '{language}' files installed.")),
+        }
+    }
+
+    /// The formatter answered: its edits go in, and the file is saved when
+    /// that is what asked.
+    fn poll_format(&mut self) {
+        let Some((id, path, then_save)) = self.pending_format.clone() else { return };
+        match self.extensions.take_result(id) {
+            Some(result) => {
+                self.pending_format = None;
+                if let crate::extensions::ProviderResult::Edits(edits) = result {
+                    if !edits.is_empty() {
+                        self.apply_extension_edits(&path, &edits);
+                    }
+                }
+                if then_save {
+                    self.skip_format_once = true;
+                    self.save_active();
+                }
+            }
+            // The host wakes the UI when the answer arrives.
+            None => {}
+        }
+    }
+
     fn save_active(&mut self) {
+        // `editor.formatOnSave`: format first, the answer saves.
+        if !self.skip_format_once
+            && self.settings.get_bool("editor.formatOnSave") == Some(true)
+            && self.pending_format.is_none()
+            && self.active_doc.and_then(|i| self.documents.get(i)).is_some_and(|d| !d.untitled && !d.read_only)
+        {
+            self.format_document(true);
+            if self.pending_format.is_some() {
+                return;
+            }
+        }
+        self.skip_format_once = false;
         let mut msg: Option<String> = None;
         let mut saved_path: Option<PathBuf> = None;
         if let Some(idx) = self.active_doc.filter(|&i| self.documents.get(i).is_some_and(|d| d.untitled)) {
@@ -4719,6 +4777,7 @@ impl App {
             CommandId::SaveAll => self.save_all(),
             CommandId::CloseFile => self.close_active(),
             CommandId::SplitEditor => self.split_editor(),
+            CommandId::FormatDocument => self.format_document(false),
             CommandId::CloseAllFiles => self.close_all(),
             CommandId::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             CommandId::ShowExplorer => self.show_view(ActivityView::Explorer),
@@ -5932,7 +5991,8 @@ impl App {
                     }
                     self.outline.request = None;
                 }
-                None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+                // The host wakes the UI when the answer arrives.
+                None => {}
             }
         }
         if hash != self.outline.asked && self.outline.request.is_none() {
