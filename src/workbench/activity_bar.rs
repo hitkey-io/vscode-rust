@@ -17,6 +17,10 @@ const PITCH: f32 = 44.0;
 const INDICATOR: f32 = 32.0;
 /// From the card's top edge to the first indicator.
 const TOP: f32 = 6.0;
+/// egui memory key: the Accounts / Manage button clicked this frame
+/// (`true` for Manage) and where its menu opens.
+pub const GLOBAL_MENU: &str = "activity-global-menu";
+
 /// From the card's left edge to the indicators.
 const LEFT: f32 = 6.0;
 /// From the card's bottom edge to the last indicator's bottom.
@@ -152,7 +156,9 @@ pub fn show_with_containers(
     let mut y = card.bottom() - BOTTOM - INDICATOR - PITCH;
     for (glyph, label) in [(icons::ACCOUNT, "Accounts"), (icons::SETTINGS_GEAR, "Manage")] {
         if entry(ui, egui::pos2(x, y), Glyph::Codicon(glyph), false, label).clicked() {
-            palette_requested = true;
+            // The caller opens the native menu at the card's right edge.
+            let at = egui::pos2(card.right() - 4.0, y);
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(GLOBAL_MENU), (label == "Manage", at)));
         }
         y += PITCH;
     }

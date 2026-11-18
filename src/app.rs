@@ -221,6 +221,18 @@ struct OutlineState {
     forced: Option<Vec<crate::extensions::DocumentSymbol>>,
 }
 
+/// What an entry of the activity bar's Manage / Accounts menus does.
+#[derive(Clone, Copy, Debug)]
+enum GlobalAction {
+    CommandPalette,
+    Settings,
+    Extensions,
+    KeyboardShortcuts,
+    ColorTheme,
+    /// Not in this build: the menu entry says so.
+    Unavailable(&'static str),
+}
+
 #[derive(Clone, Debug)]
 enum ExplorerPrompt {
     NewFile(PathBuf),
@@ -242,6 +254,8 @@ enum SettingsMenu {
     Output { pos: egui::Pos2 },
     /// The Output view's Set Log Level gear.
     LogLevel { pos: egui::Pos2 },
+    /// The activity bar's Manage gear or Accounts menu.
+    Global { manage: bool, pos: egui::Pos2 },
 }
 
 #[derive(Clone, Debug)]
@@ -252,6 +266,8 @@ enum SettingsMenuAction {
     Filter(&'static str),
     Keybinding(usize, crate::workbench::keybindings_editor::MenuItem),
     OutputChannel(String),
+    /// An entry of the Manage / Accounts menus.
+    Global(GlobalAction),
     /// A `LogLevel` for the selected log channel.
     LogLevel(u8),
     /// Set As Default for the selected log channel.
@@ -5473,6 +5489,16 @@ impl App {
                 ) {
                     self.palette.open();
                 }
+                if let Some((manage, mut pos)) = ctx.data_mut(|d| d.remove_temp::<(bool, egui::Pos2)>(egui::Id::new(activity_bar::GLOBAL_MENU))) {
+                    // The menu opens at the button, moved up to fit the screen as
+                    // Electron's does (heights measured in 1.145.2: 307 / 198).
+                    let menu_h = if manage { 307.0 } else { 198.0 };
+                    let (monitor, top) = ctx.input(|i| (i.viewport().monitor_size, i.viewport().outer_rect.map(|r| r.top())));
+                    if let (Some(monitor), Some(top)) = (monitor, top) {
+                        pos.y = pos.y.min(monitor.y - 4.0 - menu_h - top);
+                    }
+                    self.pending_settings_menu = Some(SettingsMenu::Global { manage, pos });
+                }
                 // Refresh Git when the user just switched to Source Control.
                 if self.active_view == ActivityView::SourceControl
                     && prev_view != ActivityView::SourceControl
@@ -6953,6 +6979,59 @@ impl App {
                 let _ = root.append(&item);
                 pos
             }
+            SettingsMenu::Global { manage, pos } => {
+                // Menus.ts GlobalActivity as macOS draws them in 1.145.2
+                // (AI features off). Shortcuts are the key equivalents; chords
+                // stay in the label like VS Code's "[⌘K ⌘S]".
+                let key = |k: &str| crate::menubar::keybinding_to_accelerator(k);
+                let add = |label: &str, accel: Option<&str>, action: GlobalAction, actions: &mut Vec<(muda::MenuId, SettingsMenuAction)>| -> muda::MenuItem {
+                    let item = muda::MenuItem::new(label, true, accel.and_then(&key));
+                    actions.push((item.id().clone(), SettingsMenuAction::Global(action)));
+                    item
+                };
+                if manage {
+                    let _ = root.append(&add("Command Palette...", Some("shift+cmd+p"), GlobalAction::CommandPalette, &mut actions));
+                    let _ = root.append(&muda::PredefinedMenuItem::separator());
+                    let _ = root.append(&add("Profiles", None, GlobalAction::Unavailable("Profiles"), &mut actions));
+                    let _ = root.append(&add("Settings", Some("cmd+,"), GlobalAction::Settings, &mut actions));
+                    let _ = root.append(&add("Extensions", Some("shift+cmd+x"), GlobalAction::Extensions, &mut actions));
+                    let _ = root.append(&add("Keyboard Shortcuts [\u{2318}K \u{2318}S]", None, GlobalAction::KeyboardShortcuts, &mut actions));
+                    let _ = root.append(&add("Snippets", None, GlobalAction::Unavailable("Snippets"), &mut actions));
+                    let _ = root.append(&add("Tasks", None, GlobalAction::Unavailable("Tasks"), &mut actions));
+                    let themes = muda::Submenu::new("Themes", true);
+                    let _ = themes.append(&add("Color Theme [\u{2318}K \u{2318}T]", None, GlobalAction::ColorTheme, &mut actions));
+                    let _ = themes.append(&add("File Icon Theme", None, GlobalAction::Unavailable("File icon theme"), &mut actions));
+                    let _ = themes.append(&add("Product Icon Theme", None, GlobalAction::Unavailable("Product icon theme"), &mut actions));
+                    let _ = root.append(&themes);
+                    let density = muda::Submenu::new("Layout Density", true);
+                    let default = muda::CheckMenuItem::new("Default", true, true, None);
+                    actions.push((default.id().clone(), SettingsMenuAction::Global(GlobalAction::Unavailable("Layout density"))));
+                    let compact = muda::CheckMenuItem::new("Compact", true, false, None);
+                    actions.push((compact.id().clone(), SettingsMenuAction::Global(GlobalAction::Unavailable("Layout density"))));
+                    let _ = density.append_items(&[&default, &compact]);
+                    let _ = root.append(&density);
+                    let _ = root.append(&muda::PredefinedMenuItem::separator());
+                    let _ = root.append(&add("Backup and Sync Settings...", None, GlobalAction::Unavailable("Settings Sync"), &mut actions));
+                    let _ = root.append(&muda::PredefinedMenuItem::separator());
+                    let _ = root.append(&add("Check for Updates...", None, GlobalAction::Unavailable("Check for updates"), &mut actions));
+                } else {
+                    for (i, (label, what)) in [
+                        ("Backup and Sync Settings...", "Settings Sync"),
+                        ("Turn on Cloud Changes...", "Cloud Changes"),
+                        ("Turn on Remote Tunnel Access...", "Remote tunnels"),
+                        ("Manage Extension Account Preferences...", "Account preferences"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if i > 0 {
+                            let _ = root.append(&muda::PredefinedMenuItem::separator());
+                        }
+                        let _ = root.append(&add(label, None, GlobalAction::Unavailable(what), &mut actions));
+                    }
+                }
+                pos
+            }
             SettingsMenu::Filter { pos } => {
                 for f in crate::workbench::settings_editor::FILTERS {
                     let item = muda::MenuItem::new(*f, true, None);
@@ -7002,6 +7081,14 @@ impl App {
                 }
             }
             SettingsMenuAction::Keybinding(item, what) => self.keybinding_menu_action(ctx, item, what),
+            SettingsMenuAction::Global(action) => match action {
+                GlobalAction::CommandPalette => self.palette.open(),
+                GlobalAction::Settings => self.open_settings_editor(None),
+                GlobalAction::Extensions => self.show_view(ActivityView::Extensions),
+                GlobalAction::KeyboardShortcuts => self.open_keybindings_editor(None),
+                GlobalAction::ColorTheme => self.open_color_theme_picker(),
+                GlobalAction::Unavailable(what) => self.extensions.notify_info(format!("{what}: not available in this build.")),
+            },
             SettingsMenuAction::LogLevel(level) => {
                 let channel = self.panel.output_channel.clone();
                 self.extensions.set_log_level(&channel, level);
