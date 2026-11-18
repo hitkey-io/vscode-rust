@@ -769,6 +769,42 @@ fn problems_view_lists_diagnostics_and_opens_them() {
 }
 
 #[test]
+fn multi_line_problems_take_a_row_per_line_and_fold_to_one() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_problems(
+                workspace_path().join("tsconfig.json"),
+                vec![
+                    (0, "Type 'string' is not assignable to type 'number'.\n  Types of property 'id' are incompatible.\n    Type 'string' is not assignable to type 'number'.", Some("ts"), Some("2322"), 4, 2),
+                    (1, "Unused variable", Some("ts"), Some("6133"), 6, 2),
+                ],
+            );
+            a.bootstrap_panel(ctx, "problems");
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    // Three lines show, with the chevron that folds them.
+    let _ = harness.get_by_label("Show message in single line");
+    harness.snapshot("interaction_problems_multiline");
+    harness.get_by_label("Show message in single line").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Show message in multiple lines");
+    harness.snapshot("interaction_problems_multiline_folded");
+}
+
+#[test]
 fn problems_view_can_be_shown_as_a_table() {
     let mut app: Option<App> = None;
     let runner = move |ctx: &egui::Context| {

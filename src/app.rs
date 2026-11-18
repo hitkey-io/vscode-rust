@@ -4321,6 +4321,7 @@ impl App {
             .collect();
         self.user_data_dir = Some(dir);
         self.apply_theme_settings();
+        self.apply_startup_settings();
         self.load_user_keybindings();
         // `workbench.startupEditor`: "none" skips the Welcome page.
         if self.settings.get_str("workbench.startupEditor") == Some("none") {
@@ -4397,6 +4398,13 @@ impl App {
     }
 
     /// `workbench.colorTheme` + `workbench.colorCustomizations`.
+    /// Settings that only choose where a view starts (they don't track later
+    /// changes, as VS Code keeps the view's own state once it was used):
+    /// `problems.defaultViewMode`.
+    fn apply_startup_settings(&mut self) {
+        self.panel.problems_table = self.settings.get_str("problems.defaultViewMode") == Some("table");
+    }
+
     fn apply_theme_settings(&mut self) {
         let id = self.settings.get_str("workbench.colorTheme").unwrap_or(theme::themes::DEFAULT_THEME).to_string();
         self.set_color_theme(&id);
@@ -7178,6 +7186,18 @@ mod tests {
         app.explorer_prompt_answered(Some("c.txt".into()));
         assert!(dir.join("b.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn problems_default_view_mode_chooses_the_starting_view() {
+        let mut app = App::fresh();
+        assert!(!app.panel.problems_table);
+        app.settings.update("problems.defaultViewMode", Some(serde_json::json!("table"))).unwrap();
+        app.apply_startup_settings();
+        assert!(app.panel.problems_table);
+        app.settings.update("problems.defaultViewMode", Some(serde_json::json!("tree"))).unwrap();
+        app.apply_startup_settings();
+        assert!(!app.panel.problems_table);
     }
 
     #[test]

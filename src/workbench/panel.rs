@@ -168,6 +168,9 @@ pub struct PanelState {
     output_cache: Option<(OutputKey, Vec<OutRow>)>,
     /// Files collapsed in the Problems tree.
     pub problems_collapsed: HashSet<PathBuf>,
+    /// Problems whose multi-line message was folded to one line (the chevron
+    /// after the position); by file and index.
+    pub problems_single: HashSet<(PathBuf, usize)>,
     /// The selected problem: file and index in its (sorted) problems.
     pub problems_selected: Option<(PathBuf, usize)>,
     pub problems_scroll: f32,
@@ -931,6 +934,16 @@ fn severity_icon(severity: u8) -> (&'static str, Color32) {
 
 /// Whether `file` or one of its problems matches the filter box text (words
 /// of the text, each in the message, source, code or file name).
+/// The lines of a problem's message (`splitLines`), each cut at 1000
+/// characters like the tree does.
+fn message_lines(message: &str) -> Vec<String> {
+    message
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r'))
+        .map(|l| if l.chars().count() > 1000 { format!("{}...", l.chars().take(1000).collect::<String>()) } else { l.to_string() })
+        .collect()
+}
+
 fn problem_matches(f: &ProblemFile, i: &ProblemItem, filter: &str) -> bool {
     let hay = format!("{} {} {} {}", i.message, i.source.as_deref().unwrap_or(""), i.code.as_deref().unwrap_or(""), f.name).to_lowercase();
     filter.split_whitespace().all(|w| match w.strip_prefix('!') {
@@ -973,7 +986,19 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
             rows.extend(idx.iter().map(|&k| Row::Item(f, k)));
         }
     }
-    let total_h = rows.len() as f32 * 22.0;
+    // A problem is as tall as its message has lines (22px each), unless it was
+    // folded to a single line.
+    let lines_of = |f: &ProblemFile, k: usize, single: &HashSet<(PathBuf, usize)>| -> usize {
+        if single.contains(&(f.path.clone(), k)) { 1 } else { message_lines(&f.items[k].message).len().max(1) }
+    };
+    let heights: Vec<f32> = rows
+        .iter()
+        .map(|r| match r {
+            Row::File(..) => 22.0,
+            Row::Item(f, k) => 22.0 * lines_of(f, *k, &state.problems_single) as f32,
+        })
+        .collect();
+    let total_h: f32 = heights.iter().sum();
     let viewport = area.height();
     let max_scroll = (total_h - viewport).max(0.0);
     let resp = ui.interact(area, id.with("problems-list"), Sense::click());
@@ -1029,11 +1054,12 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
             let (f, k) = flat[n];
             state.problems_selected = Some((f.path.clone(), k));
             // Keep the selected row in view.
-            let top = n as f32 * 22.0;
+            let top: f32 = heights[..n].iter().sum();
+            let bottom = top + heights[n];
             if top < state.problems_scroll {
                 state.problems_scroll = top;
-            } else if top + 22.0 > state.problems_scroll + viewport {
-                state.problems_scroll = top + 22.0 - viewport;
+            } else if bottom > state.problems_scroll + viewport {
+                state.problems_scroll = bottom - viewport;
             }
         }
         if enter {
@@ -1056,9 +1082,9 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
     let mut guide_runs: Vec<(f32, f32, bool)> = Vec::new();
     let mut y = area.top() - state.problems_scroll;
     let mut clicked_file: Option<PathBuf> = None;
-    for row in &rows {
-        let r = Rect::from_min_max(Pos2::new(row_left, y), Pos2::new(row_right, y + 22.0));
-        y += 22.0;
+    for (row_index, row) in rows.iter().enumerate() {
+        let r = Rect::from_min_max(Pos2::new(row_left, y), Pos2::new(row_right, y + heights[row_index]));
+        y += heights[row_index];
         if r.bottom() < area.top() || r.top() > area.bottom() {
             if let Row::Item(f, _) = row {
                 let sel = state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path);
@@ -1124,11 +1150,22 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                 let item = &f.items[*k];
                 let (icon, colour) = severity_icon(item.severity);
                 let icon_colour = if selected && list_focused { Palette::LIST_ACTIVE_SELECTION_FG() } else { colour };
+                // The first line carries the icon and the details; further
+                // lines of a multi-line message follow at 22px each.
+                let cy = r.top() + 11.0;
                 clip.text(Pos2::new(r.left() + 52.0, cy), Align2::CENTER_CENTER, icons::codicon_by_name(icon).unwrap_or('!').to_string(), icons::codicon_font(16.0), icon_colour);
-                let first_line = item.message.lines().next().unwrap_or("");
-                let g = clip.layout_no_wrap(first_line.to_string(), FontId::proportional(13.0), fg);
-                let mut x = r.left() + 66.0 + g.size().x;
-                clip.galley(Pos2::new(r.left() + 66.0, cy - g.size().y / 2.0 - 0.5), g, fg);
+                let all_lines = message_lines(&item.message);
+                let single = state.problems_single.contains(&(f.path.clone(), *k));
+                let shown = if single { 1 } else { all_lines.len() };
+                let mut x = r.left() + 66.0;
+                for (n, line) in all_lines.iter().take(shown).enumerate() {
+                    let ly = r.top() + 22.0 * n as f32 + 11.0;
+                    let g = clip.layout_no_wrap(line.clone(), FontId::proportional(13.0), fg);
+                    if n == 0 {
+                        x += g.size().x;
+                    }
+                    clip.galley(Pos2::new(r.left() + 66.0, ly - g.size().y / 2.0 - 0.5), g, fg);
+                }
                 let dim = fg.gamma_multiply(0.7);
                 if let Some(src) = &item.source {
                     let g = clip.layout_no_wrap(src.clone(), FontId::proportional(13.0), dim);
@@ -1147,7 +1184,28 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                 }
                 let pos = format!("[Ln {}, Col {}]", item.line + 1, item.col + 1);
                 let g = clip.layout_no_wrap(pos, FontId::proportional(13.0), dim);
+                let pos_w = g.size().x;
                 clip.galley(Pos2::new(x + 6.0, cy - g.size().y / 2.0 - 0.5), g, dim);
+                x += 6.0 + pos_w;
+                // The chevron that folds / unfolds a multi-line message
+                // (`toggleMultilineAction`): up while all lines show.
+                if all_lines.len() > 1 {
+                    let bx = Rect::from_center_size(Pos2::new(x + 6.0 + 10.0, cy), Vec2::splat(20.0));
+                    let tip = if single { "Show message in multiple lines" } else { "Show message in single line" };
+                    let toggle = ui.interact(bx.intersect(visible), id.with(("multiline", &f.path, *k)), Sense::click());
+                    toggle.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+                    if toggle.hovered() {
+                        clip.rect_filled(bx, 5.0, Palette::VSCE_TOOLBAR_HOVER_BG());
+                    }
+                    let name = if single { "chevron-down" } else { "chevron-up" };
+                    clip.text(bx.center(), Align2::CENTER_CENTER, icons::codicon_by_name(name).unwrap_or('v').to_string(), icons::codicon_font(16.0), fg);
+                    if toggle.clicked() {
+                        let key = (f.path.clone(), *k);
+                        if !state.problems_single.remove(&key) {
+                            state.problems_single.insert(key);
+                        }
+                    }
+                }
                 let label = format!("{} {}, {}", icon, item.message, item.source.as_deref().unwrap_or(""));
                 rresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
                 if rresp.clicked() || rresp.double_clicked() {
