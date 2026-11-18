@@ -184,6 +184,11 @@ const IMPLEMENTED: &[&str] = &[
     "workbench.action.terminal.new",
     "workbench.action.terminal.split",
     "workbench.action.splitEditor",
+    "workbench.action.nextEditor",
+    "workbench.action.previousEditor",
+    "workbench.action.toggleFullScreen",
+    "workbench.action.zoomIn",
+    "workbench.action.zoomOut",
     // The clipboard and undo items hand egui the events its text widgets
     // react to (the editor can't be reached through the responder chain).
     "undo",

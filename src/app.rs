@@ -625,6 +625,48 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return true;
             }
+            "actions.find" => {
+                if self.active_doc.is_some() {
+                    self.find.open();
+                }
+                return true;
+            }
+            "workbench.action.findInFiles" => {
+                self.show_view(ActivityView::Search);
+                return true;
+            }
+            "workbench.action.toggleFullScreen" => {
+                let on = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
+                return true;
+            }
+            // Zoom: egui's zoom factor in 10% steps (VS Code's window zoom levels).
+            "workbench.action.zoomIn" | "workbench.action.zoomOut" | "workbench.action.zoomReset" => {
+                let z = ctx.zoom_factor();
+                ctx.set_zoom_factor(match id {
+                    "workbench.action.zoomIn" => (z + 0.1).min(3.0),
+                    "workbench.action.zoomOut" => (z - 0.1).max(0.5),
+                    _ => 1.0,
+                });
+                return true;
+            }
+            "editor.action.revealDefinition" => {
+                if let Some(ch) = self.lang.caret_char {
+                    self.request_definition(ch);
+                }
+                return true;
+            }
+            // Next / Previous Editor: the tabs of the focused group, wrapping.
+            "workbench.action.nextEditor" | "workbench.action.previousEditor" => {
+                let members = self.group_members(self.focused_group);
+                if let Some(at) = self.active_doc.and_then(|a| members.iter().position(|&m| m == a)) {
+                    let n = members.len();
+                    let next = if id == "workbench.action.nextEditor" { (at + 1) % n } else { (at + n - 1) % n };
+                    self.active_doc = Some(members[next]);
+                    self.refresh_git_line_changes();
+                }
+                return true;
+            }
             "workbench.action.gotoLine" => {
                 self.palette.open_quick_open(self.workspace_root.as_deref(), &[]);
                 self.palette.query = ":".to_string();
