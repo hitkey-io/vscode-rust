@@ -1543,3 +1543,49 @@ fn alt_dragging_an_explorer_row_copies_it() {
     assert!(dir.join("a.txt").exists() && dir.join("sub/a.txt").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_editor_closes_pairs_indents_on_enter_and_comments_lines() {
+    use egui::{Key, Modifiers};
+    use egui_kittest::kittest::NodeT;
+    let dir = std::env::temp_dir().join("vscode-rust-smart-editing");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.ts");
+    std::fs::write(&file, "").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    let value = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.run();
+    // A bracket closes itself, the closer is typed over, quotes pair up.
+    harness.event(egui::Event::Text("f".to_string()));
+    harness.event(egui::Event::Text("(".to_string()));
+    harness.run();
+    assert_eq!(value(&harness), "f()");
+    harness.event(egui::Event::Text(")".to_string()));
+    harness.event(egui::Event::Text(" ".to_string()));
+    harness.event(egui::Event::Text("{".to_string()));
+    harness.run();
+    assert_eq!(value(&harness), "f() {}");
+    // Enter between the braces opens an indented line and puts } below.
+    harness.key_press(Key::Enter);
+    harness.run();
+    assert_eq!(value(&harness), "f() {\n    \n}");
+    harness.event(egui::Event::Text("x".to_string()));
+    harness.run();
+    // ⌘/ comments the line, ⌘/ again takes it off.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Slash);
+    harness.run();
+    assert_eq!(value(&harness), "f() {\n    // x\n}");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Slash);
+    harness.run();
+    assert_eq!(value(&harness), "f() {\n    x\n}");
+    // ⌥↑ moves the line up.
+    harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
+    harness.run();
+    assert_eq!(value(&harness), "    x\nf() {\n}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

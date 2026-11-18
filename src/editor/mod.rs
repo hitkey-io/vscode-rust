@@ -5,6 +5,7 @@ pub mod find;
 pub mod fold;
 pub mod highlight;
 pub mod minimap;
+pub mod smart;
 pub mod view;
 
 pub use buffer::Document;

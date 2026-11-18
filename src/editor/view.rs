@@ -284,6 +284,102 @@ fn paint_gutter(
     toggled
 }
 
+/// The editing a plain text box lacks (`smart.rs`): auto-closing pairs, auto
+/// indent, Backspace over a pair, Tab, line comments and the line commands.
+/// Reads this frame's keys and typed characters while the editor has the
+/// keyboard, consumes the ones it handles and applies the edit to the text and
+/// the selection. `true` when the text changed.
+fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
+    use super::smart;
+    use egui::{Event, Key, Modifiers};
+    if !ctx.memory(|m| m.has_focus(id)) {
+        return false;
+    }
+    let Some(state) = TextEdit::load_state(ctx, id) else { return false };
+    let Some(range) = state.cursor.char_range() else { return false };
+    let (a, h) = (range.secondary.index, range.primary.index);
+    let (tabs, size) = doc.indentation();
+    let unit = if tabs { "\t".to_string() } else { " ".repeat(size) };
+    let language = doc.language;
+    let text = doc.text.clone();
+    let alt = Modifiers::ALT;
+    let edit: Option<smart::Edit> = ctx.input_mut(|i| {
+        // Keys that don't produce text: exact modifiers, consumed when handled.
+        if i.consume_key(Modifiers::NONE, Key::Enter) {
+            return Some(smart::enter(&text, a, h, &unit, language));
+        }
+        if i.consume_key(Modifiers::COMMAND, Key::Enter) {
+            return Some(smart::insert_line(&text, a, h, true, &unit));
+        }
+        if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter) {
+            return Some(smart::insert_line(&text, a, h, false, &unit));
+        }
+        if i.consume_key(Modifiers::NONE, Key::Tab) {
+            return Some(smart::tab(&text, a, h, &unit, size));
+        }
+        if i.consume_key(Modifiers::SHIFT, Key::Tab) {
+            return smart::outdent_lines(&text, a, h, size);
+        }
+        if i.consume_key(Modifiers::COMMAND, Key::OpenBracket) {
+            return smart::outdent_lines(&text, a, h, size);
+        }
+        if i.consume_key(Modifiers::COMMAND, Key::CloseBracket) {
+            return Some(smart::indent_lines(&text, a, h, &unit));
+        }
+        if i.consume_key(Modifiers::COMMAND, Key::Slash) {
+            return smart::toggle_line_comment(&text, a, h, language);
+        }
+        let mut alt_combo = None;
+        if i.consume_key(alt | Modifiers::SHIFT, Key::A) {
+            alt_combo = Some(smart::toggle_block_comment(&text, a, h, language));
+        } else if i.consume_key(alt, Key::ArrowUp) {
+            alt_combo = Some(smart::move_lines(&text, a, h, true));
+        } else if i.consume_key(alt, Key::ArrowDown) {
+            alt_combo = Some(smart::move_lines(&text, a, h, false));
+        } else if i.consume_key(alt | Modifiers::SHIFT, Key::ArrowUp) {
+            alt_combo = Some(Some(smart::copy_lines(&text, a, h, true)));
+        } else if i.consume_key(alt | Modifiers::SHIFT, Key::ArrowDown) {
+            alt_combo = Some(Some(smart::copy_lines(&text, a, h, false)));
+        }
+        if let Some(result) = alt_combo {
+            // Option makes macOS type a character too (Å, ˚): not for the text.
+            i.events.retain(|e| !matches!(e, Event::Text(t) if t.chars().any(|c| !c.is_ascii())));
+            return result;
+        }
+        if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::K) {
+            return Some(smart::delete_lines(&text, a, h));
+        }
+        // Backspace over an empty pair or in the indentation.
+        if i.key_pressed(Key::Backspace) && i.modifiers.is_none() {
+            if let Some(e) = smart::backspace(&text, a, h, size) {
+                i.consume_key(Modifiers::NONE, Key::Backspace);
+                return Some(e);
+            }
+        }
+        // Typed characters that open, close or surround.
+        let quotes = smart::closes_quotes(language);
+        let hit = i.events.iter().enumerate().find_map(|(n, e)| match e {
+            Event::Text(t) if t.chars().count() == 1 => smart::type_char(&text, a, h, t.chars().next()?, quotes).map(|e| (n, e)),
+            _ => None,
+        });
+        if let Some((n, e)) = hit {
+            i.events.remove(n);
+            return Some(e);
+        }
+        None
+    });
+    let Some(e) = edit else { return false };
+    let changed = e.text != doc.text;
+    doc.text = e.text;
+    let mut state = state;
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(e.anchor), CCursor::new(e.head))));
+    state.store(ctx, id);
+    if changed {
+        doc.check_dirty();
+    }
+    changed
+}
+
 /// Editable path — no folds active. Standard `TextEdit` over the full text
 /// with the fold gutter painted alongside.
 fn show_editable(
@@ -320,6 +416,7 @@ fn show_editable(
     let cursor_line = doc.cursor_line;
     let rows: Vec<usize> = (1..=line_count).collect();
     let mut toggled = None;
+    let mut smart_changed = false;
 
     // `editor.scrollBeyondLastLine`: the last line can scroll to the top.
     let viewport_h = ui.available_height();
@@ -372,6 +469,9 @@ fn show_editable(
                 paint_indent_guides(ui, &doc.text, gutter_rect.right() + TEXT_PAD, gutter_rect.top(), cursor_line);
 
                 let text_id = ui.make_persistent_id(("editor_text", &doc.path));
+                if !doc.read_only && smart_keys(ui.ctx(), text_id, doc) {
+                    smart_changed = true;
+                }
                 TextEdit::multiline(&mut doc.text)
                         .id(text_id)
                         .font(FontId::monospace(EDITOR_FONT_SIZE))
@@ -419,7 +519,7 @@ fn show_editable(
             out.command_clicked = Some(c.index);
         }
     }
-    out.changed = response.changed() && !doc.read_only;
+    out.changed = (response.changed() || smart_changed) && !doc.read_only;
 
     if let Some(h) = toggled {
         doc.folded.insert(h);

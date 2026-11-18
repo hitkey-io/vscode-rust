@@ -688,6 +688,21 @@ impl App {
                 }
                 return true;
             }
+            // The line commands are key shortcuts of the editor (`view::smart_keys`).
+            "editor.action.moveLinesUpAction" | "editor.action.moveLinesDownAction" | "editor.action.copyLinesUpAction" | "editor.action.copyLinesDownAction" | "editor.action.commentLine" | "editor.action.blockComment" => {
+                let (key, modifiers) = match id {
+                    "editor.action.moveLinesUpAction" => (Key::ArrowUp, Modifiers::ALT),
+                    "editor.action.moveLinesDownAction" => (Key::ArrowDown, Modifiers::ALT),
+                    "editor.action.copyLinesUpAction" => (Key::ArrowUp, Modifiers::ALT | Modifiers::SHIFT),
+                    "editor.action.copyLinesDownAction" => (Key::ArrowDown, Modifiers::ALT | Modifiers::SHIFT),
+                    "editor.action.commentLine" => (Key::Slash, Modifiers::COMMAND),
+                    _ => (Key::A, Modifiers::ALT | Modifiers::SHIFT),
+                };
+                ctx.input_mut(|i| {
+                    i.events.push(egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers });
+                });
+                return true;
+            }
             "undo" | "redo" | "editor.action.selectAll" => {
                 let (key, modifiers) = match id {
                     "undo" => (Key::Z, Modifiers::COMMAND),

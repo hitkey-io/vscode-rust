@@ -197,6 +197,12 @@ const IMPLEMENTED: &[&str] = &[
     "editor.action.clipboardCopyAction",
     "editor.action.clipboardPasteAction",
     "editor.action.selectAll",
+    "editor.action.moveLinesUpAction",
+    "editor.action.moveLinesDownAction",
+    "editor.action.copyLinesUpAction",
+    "editor.action.copyLinesDownAction",
+    "editor.action.commentLine",
+    "editor.action.blockComment",
 ];
 
 const PREFERENCES: &[E] = &[
