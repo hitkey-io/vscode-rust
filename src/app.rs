@@ -220,6 +220,8 @@ enum SettingsMenu {
     Keybinding(crate::workbench::keybindings_editor::RowMenu),
     /// The Output view's channel dropdown.
     Output { pos: egui::Pos2 },
+    /// The Output view's Set Log Level gear.
+    LogLevel { pos: egui::Pos2 },
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +232,10 @@ enum SettingsMenuAction {
     Filter(&'static str),
     Keybinding(usize, crate::workbench::keybindings_editor::MenuItem),
     OutputChannel(String),
+    /// A `LogLevel` for the selected log channel.
+    LogLevel(u8),
+    /// Set As Default for the selected log channel.
+    LogLevelDefault,
 }
 
 /// An entry of a native menu built for the Source Control view.
@@ -804,6 +810,13 @@ impl App {
         self.extensions.channels.insert(channel.to_string(), text.to_string());
         self.panel.output_channel = channel.to_string();
         self.panel.output_follow = true;
+    }
+
+    /// A log output channel (`createOutputChannel(name, { log: true })`) at
+    /// `level` (`LogLevel`: Off 0, Trace 1 … Error 5), selected.
+    pub fn bootstrap_log_channel(&mut self, channel: &str, text: &str, level: u8) {
+        self.bootstrap_output(channel, text);
+        self.extensions.log_levels.insert(channel.to_string(), level);
     }
 
     /// A folder is open.
@@ -5783,6 +5796,7 @@ impl App {
         }
         let problems = self.problem_files();
         let channel = if self.panel.output_channel.is_empty() { "Tasks" } else { self.panel.output_channel.as_str() };
+        let log_level = self.extensions.log_levels.get(channel).copied();
         let output_text = if channel == "Extension Host" { self.extensions.log.join("\n") } else { self.extensions.channels.get(channel).cloned().unwrap_or_default() };
         let mut out = TopBottomPanel::bottom("panel")
             .exact_height(card_h + cards::MARGIN)
@@ -5794,7 +5808,7 @@ impl App {
                     egui::pos2(r.left() + cards::MARGIN, r.top()),
                     egui::pos2(r.right() - cards::MARGIN, r.bottom() - cards::MARGIN),
                 );
-                panel::show(ui, card, &mut self.panel, &problems, &panel::OutputText { text: &output_text }, "")
+                panel::show(ui, card, &mut self.panel, &problems, &panel::OutputText { text: &output_text, log_level }, "")
             })
             .inner;
         if out.close {
@@ -5802,6 +5816,9 @@ impl App {
         }
         if let Some(pos) = out.output_menu.take() {
             self.pending_settings_menu = Some(SettingsMenu::Output { pos });
+        }
+        if let Some(pos) = out.output_log_menu.take() {
+            self.pending_settings_menu = Some(SettingsMenu::LogLevel { pos });
         }
         if out.output_clear {
             let name = self.panel.output_channel.clone();
@@ -6725,6 +6742,22 @@ impl App {
                 }
                 pos
             }
+            SettingsMenu::LogLevel { pos } => {
+                // `workbench.output.menu.logLevel`: Trace … Off with the
+                // current one checked, then Set As Default (unless it already is).
+                let channel = self.panel.output_channel.clone();
+                let current = self.extensions.log_levels.get(&channel).copied().unwrap_or(3);
+                for (level, label) in [(1u8, "Trace"), (2, "Debug"), (3, "Info"), (4, "Warning"), (5, "Error"), (0, "Off")] {
+                    let item = muda::CheckMenuItem::new(label, true, level == current, None);
+                    actions.push((item.id().clone(), SettingsMenuAction::LogLevel(level)));
+                    let _ = root.append(&item);
+                }
+                let _ = root.append(&muda::PredefinedMenuItem::separator());
+                let item = muda::MenuItem::new("Set As Default", current != self.extensions.default_log_level(&channel), None);
+                actions.push((item.id().clone(), SettingsMenuAction::LogLevelDefault));
+                let _ = root.append(&item);
+                pos
+            }
             SettingsMenu::Filter { pos } => {
                 for f in crate::workbench::settings_editor::FILTERS {
                     let item = muda::MenuItem::new(*f, true, None);
@@ -6774,6 +6807,14 @@ impl App {
                 }
             }
             SettingsMenuAction::Keybinding(item, what) => self.keybinding_menu_action(ctx, item, what),
+            SettingsMenuAction::LogLevel(level) => {
+                let channel = self.panel.output_channel.clone();
+                self.extensions.set_log_level(&channel, level);
+            }
+            SettingsMenuAction::LogLevelDefault => {
+                let channel = self.panel.output_channel.clone();
+                self.extensions.set_default_log_level(&channel);
+            }
             SettingsMenuAction::OutputChannel(name) => {
                 self.panel.output_channel = name;
                 self.panel.output_scroll = f32::MAX;

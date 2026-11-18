@@ -18,6 +18,7 @@
       { "command": "helloWorld.openPanel", "title": "Open Panel", "category": "Hello" },
       { "command": "helloWorld.showDiff", "title": "Show Diff", "category": "Hello" },
       { "command": "helloWorld.listTabs", "title": "List Tabs", "category": "Hello" },
+      { "command": "helloWorld.logLines", "title": "Log Lines", "category": "Hello" },
       { "command": "helloWorld.internal", "title": "Internal" }
     ],
     "viewsContainers": {

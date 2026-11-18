@@ -67,6 +67,33 @@ fn command_reads_configuration_and_workspace_and_notifies() {
 }
 
 #[test]
+fn log_channels_keep_a_level_and_write_only_what_it_allows() {
+    let Some(mut svc) = started() else { return };
+    assert!(svc.wait_until(WAIT, |s| s.log_levels.get("Hello Log") == Some(&3)), "log: {:#?}", svc.log);
+    let logged = |svc: &mut ExtensionService, n: usize| {
+        svc.execute("helloWorld.logLines", serde_json::json!([]));
+        assert!(svc.wait_until(WAIT, |s| s.notifications.len() > n), "log: {:#?}", svc.log);
+    };
+    // Info: info, warning and error are written, with a timestamp and the level.
+    logged(&mut svc, 0);
+    let text = svc.channels["Hello Log"].clone();
+    assert!(text.contains("[info] info line") && text.contains("[warning] warn line") && text.contains("[error] error line"), "{text}");
+    assert!(!text.contains("trace line") && !text.contains("debug line"), "{text}");
+    let first = text.lines().next().unwrap();
+    assert!(first.len() > 24 && first.as_bytes()[4] == b'-' && first.as_bytes()[13] == b':', "{first}");
+    // Trace: everything.
+    svc.set_log_level("Hello Log", 1);
+    assert!(svc.wait_until(WAIT, |s| s.log_levels.get("Hello Log") == Some(&1)));
+    logged(&mut svc, 1);
+    assert!(svc.channels["Hello Log"].contains("[trace] trace line"));
+    // Off: nothing more.
+    let before = svc.channels["Hello Log"].len();
+    svc.set_log_level("Hello Log", 0);
+    logged(&mut svc, 2);
+    assert_eq!(svc.channels["Hello Log"].len(), before);
+}
+
+#[test]
 fn message_buttons_answer_the_extension() {
     let Some(mut svc) = started() else { return };
     svc.execute("helloWorld.askChoice", serde_json::json!([]));

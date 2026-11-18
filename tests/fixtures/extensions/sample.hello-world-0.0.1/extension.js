@@ -14,6 +14,19 @@ function activate(context) {
 		vscode.window.showInformationMessage(`${greeting} from ${folder}!`);
 	}));
 
+	// A log output channel (LogOutputChannel): lines carry a timestamp and a
+	// level, and the Output view's gear changes which ones are written.
+	const logChannel = vscode.window.createOutputChannel('Hello Log', { log: true });
+	context.subscriptions.push(logChannel);
+	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.logLines', () => {
+		logChannel.trace('trace line');
+		logChannel.debug('debug line');
+		logChannel.info('info line');
+		logChannel.warn('warn line');
+		logChannel.error('error line');
+		vscode.window.showInformationMessage('logged');
+	}));
+
 	context.subscriptions.push(vscode.commands.registerCommand('helloWorld.askChoice', async () => {
 		const choice = await vscode.window.showWarningMessage('Pick one', 'Yes', 'No');
 		vscode.window.showInformationMessage(`You picked ${choice || 'nothing'}`);

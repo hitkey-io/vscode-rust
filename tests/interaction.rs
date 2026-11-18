@@ -846,6 +846,31 @@ fn output_view_shows_the_selected_channel() {
 }
 
 #[test]
+fn log_channels_have_the_set_log_level_gear() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_log_channel("Hello Log", "2026-11-18 14:05:12.345 [info] info line\n2026-11-18 14:05:12.346 [error] error line\n", 3);
+            a.bootstrap_panel(ctx, "output");
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    let _ = harness.get_by_label("Set Log Level...");
+    let _ = harness.get_by_label("Output channel: Hello Log");
+    harness.snapshot("interaction_output_log_gear");
+}
+
+#[test]
 fn extensions_needing_trust_wait_for_it() {
     use vscode_rust::extensions::{manifest::UntrustedSupport, Enablement, ExtensionService};
     // A throwaway extensions folder: one extension without a capability

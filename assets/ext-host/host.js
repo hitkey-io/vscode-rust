@@ -327,6 +327,7 @@ function showMessage(level) {
 
 const outputChannels = new Map();
 function createOutputChannel(name, options) {
+	const isLog = !!(options && (options === true || options.log));
 	const ch = {
 		name,
 		append(v) { send({ type: 'output', channel: name, text: String(v) }); },
@@ -335,16 +336,31 @@ function createOutputChannel(name, options) {
 		clear() { send({ type: 'output', channel: name, text: '', replace: true }); },
 		show() { send({ type: 'outputShow', channel: name }); }, hide() { }, dispose() { outputChannels.delete(name); send({ type: 'outputDispose', channel: name }); },
 	};
-	// LogOutputChannel (createOutputChannel(name, { log: true })).
-	if (options && (options === true || options.log)) {
-		for (const lvl of ['trace', 'debug', 'info', 'warn', 'error']) {
-			ch[lvl] = (msg, ...args) => ch.appendLine(`[${lvl}] ${formatArgs([msg, ...args])}`);
+	// LogOutputChannel (createOutputChannel(name, { log: true })): lines are
+	// "2026-11-18 14:05:12.345 [info] text", written when the level allows it
+	// (LogLevel: Off 0, Trace 1, Debug 2, Info 3, Warning 4, Error 5).
+	if (isLog) {
+		const stamp = () => {
+			const d = new Date(), p = (n, w = 2) => String(n).padStart(w, '0');
+			return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+		};
+		const levels = { trace: 1, debug: 2, info: 3, warn: 4, error: 5 };
+		const emitter = new EventEmitter();
+		let level = (state.defaultLogLevels && state.defaultLogLevels[name]);
+		if (typeof level !== 'number') { level = 3; }
+		for (const [lvl, n] of Object.entries(levels)) {
+			ch[lvl] = (msg, ...args) => {
+				if (level === 0 || n < level) { return; }
+				const text = msg instanceof Error ? (msg.stack || msg.message) : formatArgs([msg, ...args]);
+				ch.appendLine(`${stamp()} [${lvl === 'warn' ? 'warning' : lvl}] ${text}`);
+			};
 		}
-		ch.logLevel = 2;
-		ch.onDidChangeLogLevel = silentEvent;
+		Object.defineProperty(ch, 'logLevel', { get() { return level; } });
+		ch.onDidChangeLogLevel = emitter.event;
+		ch._setLevel = n => { if (n !== level) { level = n; emitter.fire(n); } };
 	}
 	outputChannels.set(name, ch);
-	send({ type: 'outputCreate', channel: name, log: !!(options && (options === true || options.log)) });
+	send({ type: 'outputCreate', channel: name, log: isLog, level: isLog ? ch.logLevel : null });
 	return ch;
 }
 
@@ -1730,6 +1746,7 @@ async function handle(msg) {
 			state.storageRoot = msg.storageRoot || null;
 			state.workspaceFolders = (msg.workspaceFolders || []).map((p, index) => ({ uri: Uri.file(p), name: path.basename(p), index }));
 			state.configDefaults = msg.configDefaults || {};
+			state.defaultLogLevels = msg.defaultLogLevels || {};
 			send({ type: 'ready' });
 			for (const e of state.extensions) {
 				const ev = e.activationEvents || [];
@@ -1744,6 +1761,11 @@ async function handle(msg) {
 					}
 				}
 			}
+			break;
+		}
+		case 'setLogLevel': {
+			const ch = outputChannels.get(msg.channel);
+			if (ch && ch._setLevel) { ch._setLevel(msg.level); }
 			break;
 		}
 		case 'apiCoverage': {

@@ -240,6 +240,8 @@ pub struct ExtensionState {
     pub workspace: BTreeMap<String, WorkspaceEnablement>,
     /// Ids that don't update by themselves.
     pub no_auto_update: BTreeSet<String>,
+    /// Output channels' default log levels ("Set As Default").
+    pub log_levels: BTreeMap<String, u8>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -307,6 +309,9 @@ pub struct ExtensionService {
     /// Output channels extensions created (`window.createOutputChannel`),
     /// by name: their text so far.
     pub channels: BTreeMap<String, String>,
+    /// Log channels (`createOutputChannel(name, { log: true })`) and their
+    /// current `LogLevel` (Off 0, Trace 1 … Error 5).
+    pub log_levels: BTreeMap<String, u8>,
     /// A channel an extension asked to show (`channel.show()`); the app
     /// takes it and reveals the Output view.
     pub show_channel: Option<String>,
@@ -522,6 +527,7 @@ impl ExtensionService {
             "workspaceFolders": workspace.map(|w| vec![w.to_path_buf()]).unwrap_or_default(),
             "configDefaults": config_defaults,
             "storageRoot": storage_root,
+            "defaultLogLevels": self.state.log_levels,
         }));
         self.host = Some(host);
     }
@@ -742,6 +748,30 @@ impl ExtensionService {
             for m in &msgs {
                 h.send(m);
             }
+        }
+    }
+
+    /// A log channel's level was chosen in the Output view.
+    pub fn set_log_level(&mut self, channel: &str, level: u8) {
+        if let Some(l) = self.log_levels.get_mut(channel) {
+            *l = level;
+        }
+        if let Some(h) = self.host.as_mut() {
+            h.send(&json!({ "type": "setLogLevel", "channel": channel, "level": level }));
+        }
+    }
+
+    /// The level a log channel starts at: the one chosen with "Set As
+    /// Default", else Info.
+    pub fn default_log_level(&self, channel: &str) -> u8 {
+        self.state.log_levels.get(channel).copied().unwrap_or(3)
+    }
+
+    /// "Set As Default": the channel's current level is kept for next time.
+    pub fn set_default_log_level(&mut self, channel: &str) {
+        if let Some(level) = self.log_levels.get(channel).copied() {
+            self.state.log_levels.insert(channel.to_string(), level);
+            self.state.write(&self.state_file());
         }
     }
 
@@ -1401,9 +1431,14 @@ impl ExtensionService {
             }
             "outputCreate" => {
                 self.channels.entry(s("channel")).or_default();
+                if msg.get("log").and_then(Value::as_bool).unwrap_or(false) {
+                    let level = msg.get("level").and_then(Value::as_u64).unwrap_or(3) as u8;
+                    self.log_levels.insert(s("channel"), level);
+                }
             }
             "outputDispose" => {
                 self.channels.remove(&s("channel"));
+                self.log_levels.remove(&s("channel"));
             }
             "outputShow" => {
                 let channel = s("channel");

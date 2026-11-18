@@ -113,6 +113,9 @@ pub const SYSTEM_CHANNELS: &[&str] =
 /// What the Output view needs of the app: the selected channel's text.
 pub struct OutputText<'a> {
     pub text: &'a str,
+    /// The selected channel's `LogLevel` when it is a log channel (it then
+    /// has the Set Log Level gear).
+    pub log_level: Option<u8>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -251,6 +254,8 @@ pub struct PanelOutput {
     pub kill_index: Option<usize>,
     /// The channel dropdown was clicked: where its menu opens.
     pub output_menu: Option<Pos2>,
+    /// The Set Log Level gear was clicked: where its menu opens.
+    pub output_log_menu: Option<Pos2>,
     /// Clear Output on the selected channel.
     pub output_clear: bool,
     /// A problem was activated: open the file at (line, UTF-16 column),
@@ -391,6 +396,8 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
         PanelView::Terminal if tabs_shown => &[("ellipsis", "Views and More Actions...")],
         PanelView::Problems if state.problems_table => &[("list-tree", "View as Tree")],
         PanelView::Problems => &[("list-flat", "View as Table"), ("collapse-all", "Collapse All")],
+        PanelView::Output if output.log_level.is_some() && state.output_follow => &[("ellipsis", "Views and More Actions..."), ("gear", "Set Log Level..."), ("lock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
+        PanelView::Output if output.log_level.is_some() => &[("ellipsis", "Views and More Actions..."), ("gear", "Set Log Level..."), ("unlock", "Turn Auto Scrolling On"), ("clear-all", "Clear Output")],
         PanelView::Output if state.output_follow => &[("ellipsis", "Views and More Actions..."), ("lock", "Turn Auto Scrolling Off"), ("clear-all", "Clear Output")],
         PanelView::Output => &[("ellipsis", "Views and More Actions..."), ("unlock", "Turn Auto Scrolling On"), ("clear-all", "Clear Output")],
         PanelView::DebugConsole => &[("clear-all", "Clear Console"), ("search", "Find")],
@@ -405,6 +412,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
         if icon_button(ui, &painter, at(from), name, tip, id) {
             match *name {
                 "collapse-all" => state.problems_collapsed = problems.iter().map(|f| f.path.clone()).collect(),
+                "gear" => out.output_log_menu = Some(Pos2::new(at(from).x - 10.0, at(from).y + 14.0)),
                 "list-flat" => state.problems_table = true,
                 "list-tree" => state.problems_table = false,
                 "lock" | "unlock" => state.output_follow = !state.output_follow,
@@ -436,7 +444,9 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
             filter_box(ui, &painter, r, text, placeholder, funnel, id.with(("filter", state.view.label())));
         }
         PanelView::Output => {
-            let dd = Rect::from_min_max(Pos2::new(card.right() - 314.0, ty), Pos2::new(card.right() - 144.0, ty + 24.0));
+            // The gear adds an action: everything left of the actions moves over.
+            let shift = if output.log_level.is_some() { 25.75 } else { 0.0 };
+            let dd = Rect::from_min_max(Pos2::new(card.right() - 314.0 - shift, ty), Pos2::new(card.right() - 144.0 - shift, ty + 24.0));
             painter.rect(dd, 4.0, Palette::SETTINGS_DROPDOWN_BG(), Stroke::new(1.0, Palette::SETTINGS_DROPDOWN_BORDER()), egui::StrokeKind::Inside);
             let dresp = ui.interact(dd, id.with("output-channel"), Sense::click());
             let channel = state.output_channel.clone();
@@ -446,7 +456,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut PanelState, problems: &[Problem
             }
             painter.text(Pos2::new(dd.left() + 7.0, dd.center().y), Align2::LEFT_CENTER, &state.output_channel, FontId::proportional(12.0), Palette::FG());
             painter.text(Pos2::new(dd.right() - 12.0, dd.center().y), Align2::CENTER_CENTER, icons::codicon_by_name("chevron-down").unwrap_or('v').to_string(), icons::codicon_font(16.0), Palette::FG());
-            let r = Rect::from_min_max(Pos2::new(card.right() - 518.0, ty), Pos2::new(card.right() - 318.0, ty + 24.0));
+            let r = Rect::from_min_max(Pos2::new(card.right() - 518.0 - shift, ty), Pos2::new(card.right() - 318.0 - shift, ty + 24.0));
             filter_box(ui, &painter, r, &mut state.output_filter, "Filter (e.g. text, !excludeText, text1,text2)", false, id.with("filter-output"));
         }
         PanelView::Ports => {}
