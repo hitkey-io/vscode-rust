@@ -626,15 +626,11 @@ impl App {
                 return true;
             }
             "editor.action.startFindReplace" => {
-                if self.active_doc.is_some() {
-                    self.find.open_replace();
-                }
+                self.open_find(ctx, true);
                 return true;
             }
             "actions.find" => {
-                if self.active_doc.is_some() {
-                    self.find.open();
-                }
+                self.open_find(ctx, false);
                 return true;
             }
             "workbench.action.findInFiles" => {
@@ -5344,14 +5340,14 @@ impl App {
         // Cmd+F — in-editor find (only when a document is open). Must come
         // after the Cmd+Shift+F check so the chord with Shift wins.
         // ⌥⌘F: find with the replace row (before ⌘F, which would match it too).
-        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F))) && self.active_doc.is_some() {
-            self.find.open_replace();
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F))) {
+            self.open_find(ctx, true);
         }
         let find_in_editor = ctx.input_mut(|i| {
             i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::F))
         });
-        if find_in_editor && self.active_doc.is_some() {
-            self.find.open();
+        if find_in_editor {
+            self.open_find(ctx, false);
         }
 
         let show_explorer = ctx.input_mut(|i| {
@@ -6076,6 +6072,16 @@ impl App {
         if out.forward_port {
             self.set_status("Port forwarding needs a remote tunnel, which this build doesn't have");
         }
+    }
+
+    /// Opens the find widget on the active editor, its input seeded with the
+    /// selection or the word at the caret.
+    fn open_find(&mut self, ctx: &Context, replace: bool) {
+        if self.active_doc.is_none() {
+            return;
+        }
+        let seed = ctx.data(|d| d.get_temp::<String>(egui::Id::new(crate::editor::view::FIND_SEED))).unwrap_or_default();
+        self.find.open_seeded(&seed, replace);
     }
 
     /// Replace / Replace All of the find widget in the active editor.

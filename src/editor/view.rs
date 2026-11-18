@@ -286,6 +286,9 @@ fn paint_gutter(
     toggled
 }
 
+/// egui memory key of the text ⌘F seeds the find input with.
+pub const FIND_SEED: &str = "find-seed";
+
 /// The editing a plain text box lacks (`smart.rs`): auto-closing pairs, auto
 /// indent, Backspace over a pair, Tab, line comments and the line commands.
 /// Reads this frame's keys and typed characters while the editor has the
@@ -512,6 +515,25 @@ fn show_editable(
     if let Some(range) = output.cursor_range {
         out.caret = Some(galley.pos_from_cursor(range.primary).translate(origin.to_vec2()));
         out.caret_char = Some(range.primary.index);
+        // What ⌘F seeds the find input with (`seedSearchStringFromSelection`):
+        // the selection, or the word at the caret.
+        let ch: Vec<char> = doc.text.chars().collect();
+        let (s, e) = (range.primary.index.min(range.secondary.index), range.primary.index.max(range.secondary.index));
+        let seed: String = if s != e {
+            ch[s.min(ch.len())..e.min(ch.len())].iter().take(1000).collect()
+        } else {
+            let word = |c: &char| c.is_alphanumeric() || *c == '_';
+            let mut a = s.min(ch.len());
+            let mut b = a;
+            while a > 0 && word(&ch[a - 1]) {
+                a -= 1;
+            }
+            while b < ch.len() && word(&ch[b]) {
+                b += 1;
+            }
+            ch[a..b].iter().collect()
+        };
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(FIND_SEED), seed));
     }
     let response = output.response.response;
     if let Some(pointer) = response.hover_pos() {

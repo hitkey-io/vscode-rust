@@ -36,12 +36,30 @@ pub struct FindState {
     pub preserve_case: bool,
     request_focus: bool,
     request_replace_focus: bool,
+    /// The input should select its whole text when it takes the focus.
+    select_on_focus: bool,
 }
 
 impl FindState {
     pub fn open(&mut self) {
         self.open = true;
         self.request_focus = true;
+        self.select_on_focus = true;
+    }
+
+    /// ⌘F / ⌥⌘F: opens the widget, seeding the query with `seed` (the
+    /// selection or the word at the caret; a multi-line selection or nothing
+    /// leaves the query as it was).
+    pub fn open_seeded(&mut self, seed: &str, replace: bool) {
+        if !seed.is_empty() && !seed.contains('\n') {
+            self.query = seed.to_string();
+            self.current = 0;
+        }
+        if replace {
+            self.open_replace();
+        } else {
+            self.open();
+        }
     }
 
     /// ⌥⌘F: the widget with its replace row, the replace input focused.
@@ -49,6 +67,7 @@ impl FindState {
         self.open = true;
         self.replace_open = true;
         self.request_replace_focus = true;
+        self.select_on_focus = true;
     }
 
     pub fn close(&mut self) {
@@ -205,6 +224,10 @@ fn input_box(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, text_w: f32
     );
     if focus {
         resp.request_focus();
+        // The whole text selected, so typing replaces the seed.
+        let mut st = TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+        st.store(ui.ctx(), id);
     }
     resp
 }
@@ -386,6 +409,19 @@ mod tests {
         assert!(compute_matches(text, &state("")).is_empty());
         // Plain text takes regex characters literally.
         assert_eq!(compute_matches("a.b axb", &state("a.b")).len(), 1);
+    }
+
+    #[test]
+    fn opening_seeds_the_query_with_the_selection_or_word() {
+        let mut s = FindState::default();
+        s.open_seeded("needle", false);
+        assert!(s.open && s.query == "needle" && !s.replace_open);
+        // Nothing under the caret, or several lines selected: the query stays.
+        s.open_seeded("", false);
+        assert_eq!(s.query, "needle");
+        s.open_seeded("two\nlines", true);
+        assert_eq!(s.query, "needle");
+        assert!(s.replace_open);
     }
 
     #[test]
