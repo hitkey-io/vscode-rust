@@ -5515,8 +5515,12 @@ impl App {
             if let Some(name) = sidebar_output.explorer_renamed {
                 self.explorer_prompt_answered(name);
             }
-            if let Some((src, dir)) = sidebar_output.explorer_drop {
-                self.explorer_move(&src, &dir);
+            if let Some((src, dir, copy)) = sidebar_output.explorer_drop {
+                if copy {
+                    self.explorer_copy_into(&src, &dir);
+                } else {
+                    self.explorer_move(&src, &dir);
+                }
             }
             if let Some((dir, folder)) = sidebar_output.explorer_new {
                 self.run_explorer_action(ctx, if folder { ExplorerAction::NewFolder(dir) } else { ExplorerAction::NewFile(dir) });
@@ -6287,6 +6291,22 @@ impl App {
                 d.path = if rest.as_os_str().is_empty() { target.to_path_buf() } else { target.join(rest) };
             }
         }
+    }
+
+    /// A row dropped on a folder with ⌥ held (`handleDrop`, copy case): no
+    /// question, and a name that is taken gets "name copy.ext".
+    fn explorer_copy_into(&mut self, src: &Path, dir: &Path) {
+        let target = free_copy_name(dir, src, false);
+        if let Err(e) = copy_path(src, &target) {
+            self.set_status(format!("Failed to copy {}: {e}", src.display()));
+            return;
+        }
+        if let Some(tree) = self.file_tree.as_mut() {
+            tree.refresh();
+            tree.reveal(&target);
+        }
+        self.explorer_selected = Some(target);
+        self.refresh_git();
     }
 
     /// A row dropped on a folder (explorerViewer.ts `handleDrop`, move case):

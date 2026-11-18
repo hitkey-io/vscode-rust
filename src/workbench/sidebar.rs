@@ -30,8 +30,9 @@ pub struct SidebarOutput {
     pub explorer_new: Option<(PathBuf, bool)>,
     /// A row was clicked (or right-clicked): the Explorer's selection.
     pub explorer_selected: Option<PathBuf>,
-    /// A row was dropped on a folder: (what, into which folder).
-    pub explorer_drop: Option<(PathBuf, PathBuf)>,
+    /// A row was dropped on a folder.
+    /// (what, into which folder, copy instead of move: ⌥ held).
+    pub explorer_drop: Option<(PathBuf, PathBuf, bool)>,
     /// The inline rename ended: the new name (`None` = cancelled).
     pub explorer_renamed: Option<Option<String>>,
 }
@@ -483,10 +484,11 @@ fn drag_source(ctx: &egui::Context) -> Option<PathBuf> {
     ctx.data(|d| d.get_temp::<Option<PathBuf>>(egui::Id::new(DRAG_SOURCE))).flatten()
 }
 
-/// A drop is only meaningful on a folder that isn't the source itself, inside
-/// it, or already its parent (`onDragOver`: "not allowed" there).
-fn can_drop(source: &std::path::Path, folder: &std::path::Path) -> bool {
-    !folder.starts_with(source) && source.parent() != Some(folder)
+/// A drop is only meaningful on a folder that isn't the source itself or
+/// inside it; a move onto its own parent is "not allowed" too (`onDragOver`),
+/// a copy there makes "name copy".
+fn can_drop(source: &std::path::Path, folder: &std::path::Path, copy: bool) -> bool {
+    !folder.starts_with(source) && (copy || source.parent() != Some(folder))
 }
 
 /// While a row is dragged, the folder `node` (or a file's parent folder)
@@ -494,7 +496,7 @@ fn can_drop(source: &std::path::Path, folder: &std::path::Path) -> bool {
 /// and remember it for `finish_drag`.
 fn drop_target_row(ui: &mut Ui, rect: egui::Rect, folder: Option<&std::path::Path>) {
     let (Some(source), Some(folder)) = (drag_source(ui.ctx()), folder) else { return };
-    if ui.rect_contains_pointer(rect) && can_drop(&source, folder) {
+    if ui.rect_contains_pointer(rect) && can_drop(&source, folder, ui.input(|i| i.modifiers.alt)) {
         ui.painter().rect_filled(rect, super::cards::RADIUS_SMALL, Palette::LIST_DROP_BG());
         let pass = ui.ctx().cumulative_pass_nr();
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(DROP_TARGET), (pass, folder.to_path_buf())));
@@ -507,6 +509,10 @@ fn finish_drag(ui: &mut Ui, out: &mut SidebarOutput) {
     let ctx = ui.ctx().clone();
     let Some(source) = drag_source(&ctx) else { return };
     if ctx.input(|i| i.pointer.primary_down()) {
+        // ⌥ copies (`isCopy` on macOS): the pointer shows it.
+        if ctx.input(|i| i.modifiers.alt) {
+            ctx.set_cursor_icon(egui::CursorIcon::Copy);
+        }
         if let Some(pos) = ctx.pointer_latest_pos() {
             // `.monaco-drag-image`: list.activeSelection colours, 12px text, pill.
             let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -520,10 +526,11 @@ fn finish_drag(ui: &mut Ui, out: &mut SidebarOutput) {
         return;
     }
     ctx.data_mut(|d| d.insert_temp::<Option<PathBuf>>(egui::Id::new(DRAG_SOURCE), None));
+    let copy = ctx.input(|i| i.modifiers.alt);
     let target = ctx.data(|d| d.get_temp::<(u64, PathBuf)>(egui::Id::new(DROP_TARGET)));
     if let Some((pass, folder)) = target {
-        if ctx.cumulative_pass_nr().saturating_sub(pass) <= 2 && can_drop(&source, &folder) {
-            out.explorer_drop = Some((source, folder));
+        if ctx.cumulative_pass_nr().saturating_sub(pass) <= 2 && can_drop(&source, &folder, copy) {
+            out.explorer_drop = Some((source, folder, copy));
         }
     }
 }

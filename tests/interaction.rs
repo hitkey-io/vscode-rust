@@ -1403,3 +1403,33 @@ fn inline_rename_input_sits_over_the_row_label() {
     harness.run();
     harness.snapshot("interaction_explorer_inline_rename");
 }
+
+#[test]
+fn alt_dragging_an_explorer_row_copies_it() {
+    let dir = std::env::temp_dir().join(format!("vscode-rust-altdrag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![dir.join("a.txt")], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    let from = harness.get_by_label("a.txt").rect().center();
+    let to = harness.get_by_label("sub").rect().center();
+    let alt = egui::Modifiers { alt: true, ..Default::default() };
+    harness.event_modifiers(egui::Event::PointerMoved(from), alt);
+    harness.step();
+    harness.event_modifiers(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: alt }, alt);
+    harness.step();
+    for t in [0.4, 0.8, 1.0] {
+        harness.event_modifiers(egui::Event::PointerMoved(from + (to - from) * t), alt);
+        harness.step();
+    }
+    harness.step();
+    harness.event_modifiers(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: alt }, alt);
+    harness.step();
+    harness.run();
+    // The original stays, the copy is in the folder.
+    assert!(dir.join("a.txt").exists() && dir.join("sub/a.txt").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
