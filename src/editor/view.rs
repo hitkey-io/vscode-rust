@@ -405,7 +405,29 @@ fn show_editable(
     let ctx = ui.ctx().clone();
     let style = ui.style().clone();
     let language = doc.language;
-    let find_owned = find.cloned();
+    let mut find_owned = find.cloned();
+    // Marks around the selection from the last frame's caret: other
+    // occurrences of the selected text and the bracket pair at the caret.
+    if let Some((anchor, head)) = ctx.data(|d| d.get_temp::<(usize, usize)>(egui::Id::new(("marks-sel", &doc.path)))) {
+        let mut spans = super::marks::selection_occurrences(&doc.text, anchor, head)
+            .into_iter()
+            .map(|(start, end)| super::highlight::DecorationSpan { start, end, background: Some(Palette::SELECTION_HIGHLIGHT_BG()), color: None, underline: None })
+            .collect::<Vec<_>>();
+        if anchor == head {
+            if let Some((a, b)) = super::marks::bracket_pair(&doc.text, head) {
+                for i in [a, b] {
+                    let start = doc.text.char_indices().nth(i).map_or(doc.text.len(), |(b, _)| b);
+                    let end = doc.text[start..].chars().next().map_or(start, |c| start + c.len_utf8());
+                    spans.push(super::highlight::DecorationSpan { start, end, background: Some(Palette::BRACKET_MATCH_BG()), color: None, underline: None });
+                }
+            }
+        }
+        if !spans.is_empty() {
+            let f = find_owned.get_or_insert_with(Default::default);
+            spans.extend(std::mem::take(&mut f.decorations));
+            f.decorations = spans;
+        }
+    }
     let mut layouter = move |ui: &Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
         let job = build_layout_job(
             &ctx,
@@ -534,6 +556,7 @@ fn show_editable(
             ch[a..b].iter().collect()
         };
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(FIND_SEED), seed));
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("marks-sel", &doc.path)), (range.secondary.index, range.primary.index)));
     }
     let response = output.response.response;
     if let Some(pointer) = response.hover_pos() {

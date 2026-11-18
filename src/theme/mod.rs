@@ -149,6 +149,10 @@ palette! {
     /// `editor.findMatchHighlightBackground` — the non-current matches.
     FIND_MATCH_HL_BG = Id("editor.findMatchHighlightBackground");
     SEARCH_MATCH_BG = Id("editor.findMatchHighlightBackground");
+    /// `editor.selectionHighlightBackground` — other occurrences of the selection.
+    SELECTION_HIGHLIGHT_BG = Id("editor.selectionHighlightBackground");
+    /// `editorBracketMatch.background` — the pair at the caret.
+    BRACKET_MATCH_BG = Id("editorBracketMatch.background");
     LINE_HIGHLIGHT_BG = Id("editor.lineHighlightBackground");
     LINE_HIGHLIGHT_BORDER = Id("editor.lineHighlightBorder");
     CURSOR_FG = Id("editorCursor.foreground");
