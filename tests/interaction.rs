@@ -748,6 +748,46 @@ fn keybindings_json_rebinds_app_shortcuts() {
 }
 
 #[test]
+fn outline_pane_lists_symbols_and_goes_to_them() {
+    use vscode_rust::extensions::DocumentSymbol;
+    let sym = |name: &str, kind: u8, line: usize, children: Vec<DocumentSymbol>| DocumentSymbol {
+        name: name.to_string(),
+        detail: String::new(),
+        kind,
+        range: [line, 0, line, 5],
+        selection: [line, 0, line, 5],
+        children,
+    };
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_open_file(workspace_path().join("tsconfig.json"));
+            a.bootstrap_outline(vec![sym("Title", 14, 0, vec![sym("greet", 11, 4, vec![]), sym("Point", 4, 6, vec![sym("x", 7, 7, vec![])])])]);
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    let _ = harness.get_by_label("outline:Title");
+    let _ = harness.get_by_label("outline:greet");
+    let _ = harness.get_by_label("outline:x");
+    harness.snapshot("interaction_outline_pane");
+    // A click goes to the symbol: line 7 (1-based) of the file.
+    harness.get_by_label("outline:Point").click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Ln 7, Col 1");
+}
+
+#[test]
 fn problems_view_lists_diagnostics_and_opens_them() {
     let mut app: Option<App> = None;
     let runner = move |ctx: &egui::Context| {

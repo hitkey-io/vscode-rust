@@ -116,6 +116,7 @@ pub struct App {
     /// Open Commit-mode dropdown: `(repo_root, anchor)`.
     /// Explorer OUTLINE / TIMELINE section expanded state.
     outline_expanded: bool,
+    outline: OutlineState,
     timeline_expanded: bool,
     /// In-editor find widget (Cmd+F) state.
     find: crate::editor::find::FindState,
@@ -201,6 +202,21 @@ enum ExplorerAction {
 }
 
 /// What an Explorer name prompt (Quick Access input) is for.
+/// What the Outline pane asked the extensions about the active editor.
+#[derive(Default)]
+struct OutlineState {
+    path: Option<PathBuf>,
+    /// The (file, text, provider present) last asked about.
+    asked: u64,
+    /// The latest text seen, and when: asks wait for typing to settle.
+    seen: u64,
+    seen_at: Option<std::time::Instant>,
+    request: Option<u64>,
+    symbols: Option<Vec<crate::extensions::DocumentSymbol>>,
+    /// Tests: symbols shown without asking an extension.
+    forced: Option<Vec<crate::extensions::DocumentSymbol>>,
+}
+
 #[derive(Clone, Debug)]
 enum ExplorerPrompt {
     NewFile(PathBuf),
@@ -495,6 +511,7 @@ impl App {
             git_head_blob: None,
             git_diff_snapshot: String::new(),
             outline_expanded: false,
+            outline: OutlineState::default(),
             timeline_expanded: false,
             find: crate::editor::find::FindState::default(),
             status_message_at: None,
@@ -5452,6 +5469,7 @@ impl App {
                             }
                             return SidebarOutput::default();
                         }
+                        self.update_outline(ctx);
                         let graph_root = self.active_repo_root();
                         let search_scope = crate::search::ui::SearchScope {
                             open_editors: self.documents.iter().filter(|d| !d.read_only && !d.untitled && d.webview.is_none()).map(|d| d.path.clone()).collect(),
@@ -5511,6 +5529,9 @@ impl App {
             }
             if let Some(m) = sidebar_output.explorer_menu {
                 self.pending_explorer_menu = Some(m);
+            }
+            if let Some((path, line, col)) = sidebar_output.outline_goto {
+                self.open_at_utf16(path, line, col);
             }
             if let Some(name) = sidebar_output.explorer_renamed {
                 self.explorer_prompt_answered(name);
@@ -5841,17 +5862,7 @@ impl App {
             }
         }
         if let Some((path, line, col)) = out.open_problem.take() {
-            // The marker's UTF-16 column → a byte offset in that line.
-            let byte = std::fs::read_to_string(&path)
-                .ok()
-                .or_else(|| self.documents.iter().find(|d| d.path == path).map(|d| d.text.clone()))
-                .map(|t| {
-                    let at = crate::extensions::text::utf16_to_byte(&t, line, col);
-                    let line_start = t[..at].rfind('\n').map(|p| p + 1).unwrap_or(0);
-                    at - line_start
-                })
-                .unwrap_or(col);
-            self.navigate_to(path, line + 1, byte);
+            self.open_at_utf16(path, line, col);
         }
         if out.new_terminal {
             self.create_terminal(ctx);
@@ -5871,6 +5882,88 @@ impl App {
         if out.forward_port {
             self.set_status("Port forwarding needs a remote tunnel, which this build doesn't have");
         }
+    }
+
+    /// Opens `path` with the cursor at a UTF-16 position of a provider
+    /// (0-based line and character): the character becomes a byte offset.
+    fn open_at_utf16(&mut self, path: PathBuf, line: usize, col: usize) {
+        let byte = std::fs::read_to_string(&path)
+            .ok()
+            .or_else(|| self.documents.iter().find(|d| d.path == path).map(|d| d.text.clone()))
+            .map(|t| {
+                let at = crate::extensions::text::utf16_to_byte(&t, line, col);
+                let line_start = t[..at].rfind('\n').map(|p| p + 1).unwrap_or(0);
+                at - line_start
+            })
+            .unwrap_or(col);
+        self.navigate_to(path, line + 1, byte);
+    }
+
+    /// The Outline pane's data for this frame: the active editor's symbols,
+    /// asked from the extensions while the pane is open (a new text waits
+    /// 300ms to settle, as the outline model does).
+    fn update_outline(&mut self, ctx: &Context) {
+        use crate::extensions::{LanguageFeature, ProviderResult};
+        use crate::workbench::sidebar::{set_outline, OutlineView};
+        use std::hash::{Hash, Hasher};
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)).filter(|d| !d.welcome && d.webview.is_none() && !d.untitled) else {
+            set_outline(ctx, None);
+            return;
+        };
+        let (path, name) = (doc.path.clone(), doc.display_name());
+        if !self.outline_expanded {
+            set_outline(ctx, Some(OutlineView { path, name, symbols: None, loading: false }));
+            return;
+        }
+        if let Some(forced) = self.outline.forced.clone() {
+            set_outline(ctx, Some(OutlineView { path, name, symbols: Some(forced), loading: false }));
+            return;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        doc.path.hash(&mut h);
+        doc.text.hash(&mut h);
+        self.extensions.provider_kinds.contains("documentSymbol").hash(&mut h);
+        let hash = h.finish();
+        if self.outline.path.as_ref() != Some(&path) {
+            self.outline = OutlineState { path: Some(path.clone()), ..Default::default() };
+        }
+        if let Some(id) = self.outline.request {
+            match self.extensions.take_result(id) {
+                Some(result) => {
+                    if let ProviderResult::Symbols(v) = result {
+                        self.outline.symbols = Some(v);
+                    }
+                    self.outline.request = None;
+                }
+                None => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+            }
+        }
+        if hash != self.outline.asked && self.outline.request.is_none() {
+            if hash != self.outline.seen {
+                self.outline.seen = hash;
+                self.outline.seen_at = Some(std::time::Instant::now());
+            }
+            let wait = std::time::Duration::from_millis(300);
+            let settled = self.outline.symbols.is_none() || self.outline.seen_at.is_none_or(|t| t.elapsed() >= wait);
+            if settled {
+                self.outline.asked = hash;
+                match self.extensions.request_language_feature(LanguageFeature::Symbols, &path, 0, 0, None) {
+                    Some(id) => self.outline.request = Some(id),
+                    None => self.outline.symbols = None,
+                }
+            } else {
+                ctx.request_repaint_after(wait);
+            }
+        }
+        let loading = self.outline.request.is_some() && self.outline.symbols.is_none();
+        set_outline(ctx, Some(OutlineView { path, name, symbols: self.outline.symbols.clone(), loading }));
+    }
+
+    /// Shows `symbols` in the (expanded) Outline pane without asking an
+    /// extension (tests).
+    pub fn bootstrap_outline(&mut self, symbols: Vec<crate::extensions::DocumentSymbol>) {
+        self.outline_expanded = true;
+        self.outline.forced = Some(symbols);
     }
 
     /// A link or button of the Run and Debug view.

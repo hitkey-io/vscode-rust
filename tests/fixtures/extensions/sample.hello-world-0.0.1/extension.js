@@ -98,6 +98,26 @@ function activate(context) {
 			return new vscode.Location(target, new vscode.Position(1, 2));
 		},
 	}));
+	// The Outline: markdown headings as a DocumentSymbol tree (a deeper
+	// heading is a child of the closest shallower one before it).
+	context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider({ language: 'markdown' }, {
+		provideDocumentSymbols(document) {
+			const roots = [];
+			const stack = [];
+			for (let i = 0; i < document.lineCount; i++) {
+				const m = /^(#{1,6})\s+(.*)$/.exec(document.lineAt(i).text);
+				if (!m) { continue; }
+				const level = m[1].length;
+				const line = document.lineAt(i);
+				const symbol = new vscode.DocumentSymbol(m[2], '', vscode.SymbolKind.String, line.range, line.range);
+				symbol.level = level;
+				while (stack.length && stack[stack.length - 1].level >= level) { stack.pop(); }
+				(stack.length ? stack[stack.length - 1].children : roots).push(symbol);
+				stack.push(symbol);
+			}
+			return roots;
+		},
+	}));
 	const problems = vscode.languages.createDiagnosticCollection('hello');
 	context.subscriptions.push(problems);
 	const lint = document => {

@@ -248,6 +248,22 @@ fn ask(svc: &mut ExtensionService, kind: LanguageFeature, path: &std::path::Path
 }
 
 #[test]
+fn document_symbols_come_back_as_a_tree() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    let text = "# Title\nintro\n## One\n### Deep\n## Two\n";
+    svc.sync_documents(&[(path.clone(), "markdown", text, false)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(svc.wait_until(WAIT, |s| s.provider_kinds.contains("documentSymbol")), "log: {:#?}", svc.log);
+    let ProviderResult::Symbols(tree) = ask(&mut svc, LanguageFeature::Symbols, &path, 0, 0) else { panic!("symbols") };
+    assert_eq!(tree.len(), 1);
+    assert_eq!(tree[0].name, "Title");
+    assert_eq!(tree[0].range, [0, 0, 0, 7]);
+    let names: Vec<&str> = tree[0].children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["One", "Two"]);
+    assert_eq!(tree[0].children[0].children[0].name, "Deep");
+}
+
+#[test]
 fn language_features_answer_through_the_host() {
     let Some(mut svc) = started() else { return };
     let path = fixtures().join("workspace/README.md");

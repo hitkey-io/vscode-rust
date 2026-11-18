@@ -1107,6 +1107,18 @@ class Diagnostic {
 class DiagnosticRelatedInformation { constructor(location, message) { this.location = location; this.message = message; } }
 class CompletionItem { constructor(label, kind) { this.label = label; this.kind = kind; } }
 class CompletionList { constructor(items = [], isIncomplete = false) { this.items = items; this.isIncomplete = isIncomplete; } }
+/** A symbol with a range and children (the Outline's rows). */
+class DocumentSymbol {
+	constructor(name, detail, kind, range, selectionRange) {
+		this.name = name; this.detail = detail; this.kind = kind; this.range = range; this.selectionRange = selectionRange; this.children = [];
+	}
+}
+/** A flat symbol with a container name (`SymbolInformation`). */
+class SymbolInformation {
+	constructor(name, kind, containerName, location) {
+		this.name = name; this.kind = kind; this.containerName = containerName || ''; this.location = location;
+	}
+}
 class Hover { constructor(contents, range) { this.contents = Array.isArray(contents) ? contents : [contents]; this.range = range; } }
 class Location {
 	constructor(uri, rangeOrPosition) {
@@ -1335,6 +1347,30 @@ async function provideLocations(kind, method, msg) {
 	return out;
 }
 
+/** `DocumentSymbol[]` (or flat `SymbolInformation[]`) as wire objects. */
+async function provideDocumentSymbols(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return []; }
+	const token = new CancellationTokenSource().token;
+	const wire = s => {
+		if (s.location) {
+			// SymbolInformation: one flat row, its container as detail.
+			return { name: s.name, detail: s.containerName || '', kind: s.kind, range: toWire(s.location.range), selectionRange: toWire(s.location.range), children: [] };
+		}
+		return {
+			name: s.name, detail: s.detail || '', kind: s.kind, range: toWire(s.range),
+			selectionRange: toWire(s.selectionRange || s.range), children: (s.children || []).map(wire),
+		};
+	};
+	for (const p of providersFor('documentSymbol', document)) {
+		try {
+			const r = await p.provider.provideDocumentSymbols(document, token);
+			if (Array.isArray(r)) { return r.map(wire); }
+		} catch (err) { console.error(err); }
+	}
+	return [];
+}
+
 const languages = new Proxy({
 	createLanguageStatusItem(id, selector) {
 		return { id, selector, name: undefined, text: '', detail: undefined, severity: 0, busy: false, command: undefined, accessibilityInformation: undefined, dispose() { } };
@@ -1348,6 +1384,7 @@ const languages = new Proxy({
 	registerCompletionItemProvider: registerProvider('completion'),
 	registerHoverProvider: registerProvider('hover'),
 	registerDefinitionProvider: registerProvider('definition'),
+	registerDocumentSymbolProvider: registerProvider('documentSymbol'),
 	registerDeclarationProvider: registerProvider('declaration'),
 	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
 	registerImplementationProvider: registerProvider('implementation'),
@@ -1430,7 +1467,7 @@ const vscodeApi = {
 	DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
 	UIKind: { Desktop: 1, Web: 2 },
 	LogLevel: { Off: 0, Trace: 1, Debug: 2, Info: 3, Warning: 4, Error: 5 },
-	Diagnostic, DiagnosticRelatedInformation, CompletionItem, CompletionList, Hover, Location,
+	Diagnostic, DiagnosticRelatedInformation, CompletionItem, CompletionList, Hover, Location, DocumentSymbol, SymbolInformation,
 	NotebookCellOutputItem: class NotebookCellOutputItem {
 		static text(value, mime = 'text/plain') { return new NotebookCellOutputItem(Buffer.from(String(value)), mime); }
 		static json(value, mime = 'text/x-json') { return new NotebookCellOutputItem(Buffer.from(JSON.stringify(value, undefined, '\t')), mime); }
@@ -1784,11 +1821,13 @@ async function handle(msg) {
 		}
 		case 'provideCompletion':
 		case 'provideHover':
+		case 'provideDocumentSymbols':
 		case 'provideDefinition': {
 			let result;
 			try {
 				result = msg.type === 'provideCompletion' ? await provideCompletion(msg)
 					: msg.type === 'provideHover' ? await provideHover(msg)
+						: msg.type === 'provideDocumentSymbols' ? await provideDocumentSymbols(msg)
 						: [
 							...await provideLocations('definition', 'provideDefinition', msg),
 							...await provideLocations('declaration', 'provideDeclaration', msg),

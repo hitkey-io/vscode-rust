@@ -146,6 +146,21 @@ pub enum ProviderResult {
     /// Markdown blocks, and the range they describe.
     Hover { contents: Vec<String>, range: Option<[usize; 4]> },
     Definition(Vec<SourceLocation>),
+    /// A document's symbols as a tree (`DocumentSymbol`).
+    Symbols(Vec<DocumentSymbol>),
+}
+
+/// A `DocumentSymbol`: the Outline view's rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub detail: String,
+    /// `SymbolKind` (File 0 … TypeParameter 25).
+    pub kind: u8,
+    /// Start line, start character, end line, end character (UTF-16).
+    pub range: [usize; 4],
+    pub selection: [usize; 4],
+    pub children: Vec<DocumentSymbol>,
 }
 
 /// Where a webview lives.
@@ -815,6 +830,7 @@ impl ExtensionService {
             LanguageFeature::Completion => ("provideCompletion", "completion"),
             LanguageFeature::Hover => ("provideHover", "hover"),
             LanguageFeature::Definition => ("provideDefinition", "definition"),
+            LanguageFeature::Symbols => ("provideDocumentSymbols", "documentSymbol"),
         };
         let available = self.provider_kinds.contains(provider)
             || (kind == LanguageFeature::Definition && self.provider_kinds.contains("declaration"));
@@ -1359,6 +1375,9 @@ impl ExtensionService {
                                 .unwrap_or_default(),
                             range: result.get("range").and_then(wire_range),
                         },
+                        "provideDocumentSymbols" => ProviderResult::Symbols(
+                            result.as_array().map(|a| a.iter().filter_map(symbol_entry).collect()).unwrap_or_default(),
+                        ),
                         _ => ProviderResult::Definition(
                             result
                                 .as_array()
@@ -1615,6 +1634,20 @@ pub enum LanguageFeature {
     Completion,
     Hover,
     Definition,
+    Symbols,
+}
+
+fn symbol_entry(v: &Value) -> Option<DocumentSymbol> {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    let range = v.get("range").and_then(wire_range)?;
+    Some(DocumentSymbol {
+        name: s("name")?,
+        detail: s("detail").unwrap_or_default(),
+        kind: v.get("kind").and_then(Value::as_u64).unwrap_or(0) as u8,
+        range,
+        selection: v.get("selectionRange").and_then(wire_range).unwrap_or(range),
+        children: v.get("children").and_then(Value::as_array).map(|a| a.iter().filter_map(symbol_entry).collect()).unwrap_or_default(),
+    })
 }
 
 fn wire_range(v: &Value) -> Option<[usize; 4]> {

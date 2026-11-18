@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use egui::{Align, FontId, Layout, RichText, ScrollArea, Sense, Stroke, Ui};
+use egui::{Align, Color32, FontId, Layout, RichText, ScrollArea, Sense, Stroke, Ui};
 
 use crate::fs::FileNode;
 use crate::icons::{self, codicon_font};
@@ -35,6 +35,9 @@ pub struct SidebarOutput {
     pub explorer_drop: Option<(PathBuf, PathBuf, bool)>,
     /// The inline rename ended: the new name (`None` = cancelled).
     pub explorer_renamed: Option<Option<String>>,
+    /// An Outline row was clicked: the file and the symbol's selection start
+    /// (0-based line, UTF-16 character).
+    pub outline_goto: Option<(PathBuf, usize, usize)>,
 }
 
 pub fn show(
@@ -66,6 +69,7 @@ pub fn show(
         explorer_selected: None,
         explorer_drop: None,
         explorer_renamed: None,
+        outline_goto: None,
     };
 
     let rect = ui.max_rect();
@@ -237,9 +241,10 @@ fn explorer_panel(
     // is expanded, it gets extra space for its (currently empty) body.
     ui.spacing_mut().item_spacing.y = 0.0;
     let body_h = 80.0;
+    let outline_h = outline_body_height(ui.ctx());
     let bottom_h = PANE_HEADER_HEIGHT * 2.0
         + PANES_BOTTOM
-        + if *outline_expanded { body_h } else { 0.0 }
+        + if *outline_expanded { outline_h } else { 0.0 }
         + if *timeline_expanded { body_h } else { 0.0 };
     // The workspace folder's pane header stays put above its tree.
     if let Some(root) = tree.as_mut() {
@@ -264,7 +269,7 @@ fn explorer_panel(
 
     finish_drag(ui, out);
 
-    explorer_section(ui, "Outline", outline_expanded, "The active editor cannot provide outline information.");
+    outline_section(ui, outline_expanded, outline_h, out);
     explorer_section(ui, "Timeline", timeline_expanded, "No timeline providers available.");
     ui.add_space(PANES_BOTTOM);
 }
@@ -313,6 +318,181 @@ pub fn pane_header(ui: &mut Ui, title: &str, expanded: bool, separator: bool) ->
     let label = title.to_string();
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
     (rect, resp)
+}
+
+// ── Outline ────────────────────────────────────────────────────────────────
+
+/// What the Outline pane shows: the active editor and its symbols (`None` =
+/// no provider answers for it).
+#[derive(Clone)]
+pub struct OutlineView {
+    pub path: PathBuf,
+    pub name: String,
+    pub symbols: Option<Vec<crate::extensions::DocumentSymbol>>,
+    /// The first answer is still on its way: no message yet.
+    pub loading: bool,
+}
+
+#[derive(Clone, Default)]
+struct OutlineUi {
+    path: Option<PathBuf>,
+    collapsed: std::collections::HashSet<String>,
+    selected: Option<String>,
+    scroll: f32,
+}
+
+const OUTLINE_VIEW: &str = "outline-view";
+const OUTLINE_UI: &str = "outline-ui";
+
+/// The app tells the pane what to show before the sidebar is drawn.
+pub fn set_outline(ctx: &egui::Context, view: Option<OutlineView>) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(OUTLINE_VIEW), view));
+}
+
+fn outline_view(ctx: &egui::Context) -> Option<OutlineView> {
+    ctx.data(|d| d.get_temp::<Option<OutlineView>>(egui::Id::new(OUTLINE_VIEW))).flatten()
+}
+
+struct OutlineRow {
+    depth: usize,
+    key: String,
+    name: String,
+    detail: String,
+    kind: u8,
+    selection: [usize; 4],
+    has_children: bool,
+    open: bool,
+}
+
+fn outline_rows(view: &OutlineView, ui_state: &OutlineUi) -> Vec<OutlineRow> {
+    fn walk(list: &[crate::extensions::DocumentSymbol], prefix: &str, depth: usize, collapsed: &std::collections::HashSet<String>, out: &mut Vec<OutlineRow>) {
+        for (i, s) in list.iter().enumerate() {
+            let key = format!("{prefix}/{i}");
+            let open = !collapsed.contains(&key);
+            out.push(OutlineRow { depth, key: key.clone(), name: s.name.clone(), detail: s.detail.clone(), kind: s.kind, selection: s.selection, has_children: !s.children.is_empty(), open });
+            if open {
+                walk(&s.children, &key, depth + 1, collapsed, out);
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    if let Some(symbols) = &view.symbols {
+        walk(symbols, "", 0, &ui_state.collapsed, &mut rows);
+    }
+    rows
+}
+
+/// The Outline body: the symbols (22px rows, at most ten before it scrolls),
+/// or room for its message.
+fn outline_body_height(ctx: &egui::Context) -> f32 {
+    let Some(view) = outline_view(ctx) else { return 80.0 };
+    let ui_state = ctx.data(|d| d.get_temp::<OutlineUi>(egui::Id::new(OUTLINE_UI))).unwrap_or_default();
+    let n = outline_rows(&view, &ui_state).len();
+    if n == 0 { 80.0 } else { (n as f32 * 22.0 + 4.0).clamp(80.0, 224.0) }
+}
+
+/// Codicon and `symbolIcon.*Foreground` colour of a `SymbolKind`.
+fn symbol_icon(kind: u8) -> (&'static str, Color32) {
+    const KINDS: [(&str, &str); 26] = [
+        ("symbol-file", "file"), ("symbol-module", "module"), ("symbol-namespace", "namespace"), ("symbol-package", "package"),
+        ("symbol-class", "class"), ("symbol-method", "method"), ("symbol-property", "property"), ("symbol-field", "field"),
+        ("symbol-constructor", "constructor"), ("symbol-enum", "enumerator"), ("symbol-interface", "interface"), ("symbol-function", "function"),
+        ("symbol-variable", "variable"), ("symbol-constant", "constant"), ("symbol-string", "string"), ("symbol-numeric", "number"),
+        ("symbol-boolean", "boolean"), ("symbol-array", "array"), ("symbol-object", "object"), ("symbol-key", "key"),
+        ("symbol-null", "null"), ("symbol-enum-member", "enumeratorMember"), ("symbol-structure", "struct"), ("symbol-event", "event"),
+        ("symbol-operator", "operator"), ("symbol-type-parameter", "typeParameter"),
+    ];
+    let (icon, id) = KINDS.get(kind as usize).copied().unwrap_or(("symbol-misc", "variable"));
+    (icon, crate::theme::color(&format!("symbolIcon.{id}Foreground")).unwrap_or(Palette::FG()))
+}
+
+fn outline_section(ui: &mut Ui, expanded: &mut bool, body_h: f32, out: &mut SidebarOutput) {
+    let (_, resp) = pane_header(ui, "Outline", *expanded, true);
+    if resp.clicked() {
+        *expanded = !*expanded;
+    }
+    if !*expanded {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let view = outline_view(&ctx);
+    let ui_id = egui::Id::new(OUTLINE_UI);
+    let mut st = ctx.data(|d| d.get_temp::<OutlineUi>(ui_id)).unwrap_or_default();
+    if st.path != view.as_ref().map(|v| v.path.clone()) {
+        st = OutlineUi { path: view.as_ref().map(|v| v.path.clone()), ..Default::default() };
+    }
+    let (body, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), body_h), Sense::hover());
+    let painter = ui.painter().with_clip_rect(body);
+    let message = match &view {
+        Some(v) if v.loading => Some(String::new()),
+        None => Some("The active editor cannot provide outline information.".to_string()),
+        Some(v) if v.symbols.is_none() => Some("The active editor cannot provide outline information.".to_string()),
+        Some(v) if v.symbols.as_ref().is_some_and(Vec::is_empty) => Some(format!("No symbols found in document '{}'", v.name)),
+        _ => None,
+    };
+    if let Some(m) = message {
+        painter.text(egui::pos2(body.left() + 18.0, body.top() + 14.0), egui::Align2::LEFT_TOP, m, FontId::proportional(12.0), Palette::FG_DESCRIPTION());
+        ctx.data_mut(|d| d.insert_temp(ui_id, st));
+        return;
+    }
+    let view = view.expect("rows exist only with a view");
+    let rows = outline_rows(&view, &st);
+    let total = rows.len() as f32 * 22.0 + 4.0;
+    let max_scroll = (total - body.height()).max(0.0);
+    if ui.rect_contains_pointer(body) {
+        st.scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    st.scroll = st.scroll.clamp(0.0, max_scroll);
+    let mut y = body.top() + 2.0 - st.scroll;
+    let mut toggle: Option<String> = None;
+    for row in &rows {
+        let r = egui::Rect::from_min_max(egui::pos2(body.left() + ROW_INSET, y), egui::pos2(body.right() - ROW_INSET, y + 22.0));
+        y += 22.0;
+        if r.bottom() < body.top() || r.top() > body.bottom() {
+            continue;
+        }
+        let resp = ui.interact(r.intersect(body), egui::Id::new(("outline-row", &row.key)), Sense::click());
+        let selected = st.selected.as_deref() == Some(row.key.as_str());
+        if selected {
+            painter.rect_filled(r, super::cards::RADIUS_SMALL, Palette::LIST_INACTIVE_SELECTION_BG());
+        } else if resp.hovered() {
+            painter.rect_filled(r, super::cards::RADIUS_SMALL, Palette::LIST_HOVER_BG());
+        }
+        let cy = r.center().y;
+        let indent = row.depth as f32 * 8.0;
+        let twistie = egui::pos2(r.left() + 18.0 + indent, cy);
+        if row.has_children {
+            let chev = if row.open { icons::CHEVRON_DOWN } else { icons::CHEVRON_RIGHT };
+            painter.text(twistie, egui::Align2::CENTER_CENTER, chev.to_string(), codicon_font(16.0), Palette::FG());
+        }
+        let (icon, colour) = symbol_icon(row.kind);
+        painter.text(egui::pos2(r.left() + 38.0 + indent, cy), egui::Align2::CENTER_CENTER, icons::codicon_by_name(icon).unwrap_or('?').to_string(), codicon_font(16.0), colour);
+        let g = painter.layout_no_wrap(row.name.clone(), FontId::proportional(13.0), Palette::FG());
+        let nx = r.left() + 50.0 + indent;
+        let w = g.size().x;
+        painter.galley(egui::pos2(nx, cy - g.size().y / 2.0 - 0.5), g, Palette::FG());
+        if !row.detail.is_empty() {
+            let d = painter.layout_no_wrap(row.detail.clone(), FontId::proportional(11.7), Palette::FG_DESCRIPTION());
+            painter.galley(egui::pos2(nx + w + 6.0, cy - d.size().y / 2.0 - 0.5), d, Palette::FG_DESCRIPTION());
+        }
+        let label = format!("outline:{}", row.name);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
+        if resp.clicked() {
+            let on_twistie = ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.x < twistie.x + 8.0);
+            st.selected = Some(row.key.clone());
+            if row.has_children && on_twistie {
+                toggle = Some(row.key.clone());
+            } else {
+                out.outline_goto = Some((view.path.clone(), row.selection[0], row.selection[1]));
+            }
+        }
+    }
+    if let Some(k) = toggle {
+        if !st.collapsed.remove(&k) {
+            st.collapsed.insert(k);
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(ui_id, st));
 }
 
 /// Collapsible Explorer section (OUTLINE / TIMELINE): clickable chevron-row
