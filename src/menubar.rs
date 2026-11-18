@@ -47,6 +47,12 @@ pub struct MenuKeys {
 }
 
 impl MenuKeys {
+    /// The title of the item running `id`'s command (without a `[⌘K …]` chord).
+    pub fn title(&self, id: &MenuId) -> Option<String> {
+        let item = self.items.iter().find(|(m, ..)| m.id() == id).map(|(m, ..)| m.text())?;
+        Some(item.split(" [").next().unwrap_or(&item).to_string())
+    }
+
     /// The VS Code command a menu item runs.
     pub fn command(&self, id: &MenuId) -> Option<&'static str> {
         self.items.iter().find(|(m, ..)| m.id() == id).map(|(_, c, _)| *c)
@@ -132,29 +138,448 @@ pub struct InstalledMenu {
     menu: Menu,
 }
 
-pub fn install() -> InstalledMenu {
-    let menu = Menu::new();
-    // Code ▸ Settings ▸ Themes ▸ Color Theme (⌘K ⌘T is a chord, which a
-    // native menu can't show, as in VS Code).
-    let color_theme = item("Color Theme", None);
-    // Code ▸ Settings ▸ Settings (⌘,).
-    let open_settings = item("Settings", Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)));
-    // Code ▸ Settings ▸ Keyboard Shortcuts (⌘K ⌘S, a chord).
-    let open_keybindings = item("Keyboard Shortcuts", None);
+/// One entry of the menu bar table.
+enum E {
+    Sep,
+    /// Title, VS Code command id, default keybinding (keybindings.json
+    /// spelling; chords are shown in the title like VS Code's `[⌘K ⌘S]`).
+    Item(&'static str, &'static str, &'static str),
+    /// The same, greyed out (nothing here can run it).
+    Off(&'static str, &'static str, &'static str),
+    Sub(&'static str, &'static [E]),
+}
+use E::{Item, Off, Sep, Sub};
 
-    // macOS application submenu — Apple, About, Services, Hide/Show, Quit
+/// Commands the app runs (`App::run_vscode_command`): only their menu items
+/// bind a key equivalent, so a key that the editor handles itself isn't
+/// swallowed by a menu item that does nothing.
+const IMPLEMENTED: &[&str] = &[
+    "workbench.action.files.newUntitledFile",
+    "workbench.action.files.openFolder",
+    "workbench.action.files.openFileFolder",
+    "workbench.action.closeFolder",
+    "workbench.action.files.save",
+    "workbench.action.files.saveAll",
+    "workbench.action.closeActiveEditor",
+    "workbench.action.closeAllEditors",
+    "workbench.action.closeWindow",
+    "workbench.action.showCommands",
+    "workbench.action.toggleSidebarVisibility",
+    "workbench.view.explorer",
+    "workbench.view.search",
+    "workbench.view.scm",
+    "workbench.view.debug",
+    "workbench.view.extensions",
+    "workbench.action.quickOpen",
+    "workbench.action.gotoLine",
+    "workbench.action.openWalkthrough",
+    "workbench.action.selectTheme",
+    "workbench.action.openSettings",
+    "workbench.action.openGlobalKeybindings",
+    "workbench.action.togglePanel",
+    "workbench.actions.view.problems",
+    "workbench.action.output.toggleOutput",
+    "workbench.debug.action.toggleRepl",
+    "workbench.action.terminal.toggleTerminal",
+    "workbench.action.terminal.new",
+    "workbench.action.terminal.split",
+    "workbench.action.splitEditor",
+    // The clipboard and undo items hand egui the events its text widgets
+    // react to (the editor can't be reached through the responder chain).
+    "undo",
+    "redo",
+    "editor.action.clipboardCutAction",
+    "editor.action.clipboardCopyAction",
+    "editor.action.clipboardPasteAction",
+    "editor.action.selectAll",
+];
+
+const PREFERENCES: &[E] = &[
+    Item("Profiles", "workbench.profiles.actions.manageProfiles", ""),
+    Item("Settings", "workbench.action.openSettings", "cmd+,"),
+    Item("Extensions", "workbench.view.extensions", "shift+cmd+x"),
+    Item("Keyboard Shortcuts [⌘K ⌘S]", "workbench.action.openGlobalKeybindings", ""),
+    Item("Configure Snippets", "workbench.action.openSnippets", ""),
+    Item("Tasks", "workbench.action.tasks.openUserTasks", ""),
+    Sub("Themes", &[
+        Item("Color Theme [⌘K ⌘T]", "workbench.action.selectTheme", ""),
+        Item("File Icon Theme", "workbench.action.selectIconTheme", ""),
+        Item("Product Icon Theme", "workbench.action.selectProductIconTheme", ""),
+    ]),
+    Sep,
+    Item("Backup and Sync Settings…", "workbench.userDataSync.actions.turnOn", ""),
+    Sep,
+    Item("Online Services Settings", "workbench.action.openApplicationSettings", ""),
+];
+
+const FILE: &[E] = &[
+    Item("New Text File", "workbench.action.files.newUntitledFile", "cmd+n"),
+    Item("New File…", "welcome.showNewFileEntries", "ctrl+alt+cmd+n"),
+    Item("New Window", "workbench.action.newWindow", "shift+cmd+n"),
+    Sub("New Window with Profile", &[Item("New Profile…", "workbench.profiles.actions.createProfile", "")]),
+    Sep,
+    Item("Open…", "workbench.action.files.openFileFolder", "cmd+o"),
+    Item("Open Folder…", "workbench.action.files.openFolder", ""),
+    Item("Open Workspace from File…", "workbench.action.openWorkspace", ""),
+    Sub("Open Recent", &[
+        Off("Reopen Closed Editor", "workbench.action.reopenClosedEditor", "shift+cmd+t"),
+        Sep,
+        Item("More… [⌃R]", "workbench.action.openRecent", ""),
+        Sep,
+        Item("Clear Recently Opened…", "workbench.action.clearRecentFiles", ""),
+    ]),
+    Sep,
+    Item("Add Folder to Workspace…", "workbench.action.addRootFolder", ""),
+    Item("Save Workspace As…", "workbench.action.saveWorkspaceAs", ""),
+    Item("Duplicate Workspace", "workbench.action.duplicateWorkspaceInNewWindow", ""),
+    Sep,
+    Item("Save", "workbench.action.files.save", "cmd+s"),
+    Item("Save As…", "workbench.action.files.saveAs", "shift+cmd+s"),
+    Item("Save All", "workbench.action.files.saveAll", "alt+cmd+s"),
+    Sep,
+    Sub("Share", &[Item("Export Profile (Default)…", "workbench.profiles.actions.exportProfile", "")]),
+    Sep,
+    Item("Auto Save", "workbench.action.toggleAutoSave", ""),
+    Sep,
+    Item("Revert File", "workbench.action.files.revert", ""),
+    Item("Close Editor", "workbench.action.closeActiveEditor", "cmd+w"),
+    Item("Close Folder [⌘K F]", "workbench.action.closeFolder", ""),
+    Item("Close Window", "workbench.action.closeWindow", "shift+cmd+w"),
+];
+
+const EDIT: &[E] = &[
+    Item("Undo", "undo", "cmd+z"),
+    Item("Redo", "redo", "shift+cmd+z"),
+    Sep,
+    Item("Cut", "editor.action.clipboardCutAction", "cmd+x"),
+    Item("Copy", "editor.action.clipboardCopyAction", "cmd+c"),
+    Item("Paste", "editor.action.clipboardPasteAction", "cmd+v"),
+    Sep,
+    Item("Find", "actions.find", "cmd+f"),
+    Item("Replace", "editor.action.startFindReplace", "alt+cmd+f"),
+    Sep,
+    Item("Find in Files", "workbench.action.findInFiles", "shift+cmd+f"),
+    Item("Replace in Files", "workbench.action.replaceInFiles", "shift+cmd+h"),
+    Sep,
+    Item("Toggle Line Comment", "editor.action.commentLine", "cmd+/"),
+    Item("Toggle Block Comment", "editor.action.blockComment", "alt+shift+a"),
+    Item("Emmet: Expand Abbreviation", "editor.emmet.action.expandAbbreviation", ""),
+];
+
+const SELECTION: &[E] = &[
+    Item("Select All", "editor.action.selectAll", "cmd+a"),
+    Item("Expand Selection", "editor.action.smartSelect.expand", "ctrl+shift+cmd+right"),
+    Item("Shrink Selection", "editor.action.smartSelect.shrink", "ctrl+shift+cmd+left"),
+    Sep,
+    Item("Copy Line Up", "editor.action.copyLinesUpAction", "alt+shift+up"),
+    Item("Copy Line Down", "editor.action.copyLinesDownAction", "alt+shift+down"),
+    Item("Move Line Up", "editor.action.moveLinesUpAction", "alt+up"),
+    Item("Move Line Down", "editor.action.moveLinesDownAction", "alt+down"),
+    Item("Duplicate Selection", "editor.action.duplicateSelection", ""),
+    Sep,
+    Item("Add Cursor Above", "editor.action.insertCursorAbove", "alt+cmd+up"),
+    Item("Add Cursor Below", "editor.action.insertCursorBelow", "alt+cmd+down"),
+    Item("Add Cursors to Line Ends", "editor.action.insertCursorAtEndOfEachLineSelected", "alt+shift+i"),
+    Item("Add Next Occurrence", "editor.action.addSelectionToNextFindMatch", "cmd+d"),
+    Item("Add Previous Occurrence", "editor.action.addSelectionToPreviousFindMatch", ""),
+    Item("Select All Occurrences", "editor.action.selectHighlights", "shift+cmd+l"),
+    Sep,
+    Item("Switch to Cmd+Click for Multi-Cursor", "workbench.action.toggleMultiCursorModifier", ""),
+    Item("Column Selection Mode", "editor.action.toggleColumnSelection", ""),
+];
+
+const APPEARANCE: &[E] = &[
+    Item("Full Screen", "workbench.action.toggleFullScreen", "ctrl+cmd+f"),
+    Item("Zen Mode [⌘K Z]", "workbench.action.toggleZenMode", ""),
+    Item("Centered Layout", "workbench.action.toggleCenteredLayout", ""),
+    Sep,
+    Item("Primary Side Bar", "workbench.action.toggleSidebarVisibility", "cmd+b"),
+    Item("Secondary Side Bar", "workbench.action.toggleAuxiliaryBar", "alt+cmd+b"),
+    Item("Status Bar", "workbench.action.toggleStatusbarVisibility", ""),
+    Item("Panel", "workbench.action.togglePanel", "cmd+j"),
+    Sep,
+    Item("Move Primary Side Bar Right", "workbench.action.moveSideBarRight", ""),
+    Sub("Activity Bar Position", &[
+        Item("Default", "workbench.action.activityBarLocation.default", ""),
+        Item("Top", "workbench.action.activityBarLocation.top", ""),
+        Item("Bottom", "workbench.action.activityBarLocation.bottom", ""),
+        Item("Hidden", "workbench.action.activityBarLocation.hide", ""),
+    ]),
+    Sub("Panel Position", &[
+        Item("Top", "workbench.action.positionPanelTop", ""),
+        Item("Left", "workbench.action.positionPanelLeft", ""),
+        Item("Right", "workbench.action.positionPanelRight", ""),
+        Item("Bottom", "workbench.action.positionPanelBottom", ""),
+    ]),
+    Sub("Align Panel", &[
+        Item("Center", "workbench.action.alignPanelCenter", ""),
+        Item("Justify", "workbench.action.alignPanelJustify", ""),
+        Item("Left", "workbench.action.alignPanelLeft", ""),
+        Item("Right", "workbench.action.alignPanelRight", ""),
+    ]),
+    Sub("Tab Bar", &[
+        Item("Multiple Tabs", "workbench.action.showMultipleEditorTabs", ""),
+        Item("Single Tab", "workbench.action.showEditorTab", ""),
+        Item("Hidden", "workbench.action.hideEditorTabs", ""),
+    ]),
+    Sub("Editor Actions Position", &[
+        Item("Tab Bar", "workbench.action.editorActionsDefault", ""),
+        Item("Title Bar", "workbench.action.editorActionsTitleBar", ""),
+        Item("Hidden", "workbench.action.editorActionsHidden", ""),
+    ]),
+    Sep,
+    Item("Minimap", "editor.action.toggleMinimap", ""),
+    Item("Breadcrumbs", "breadcrumbs.toggle", ""),
+    Item("Sticky Scroll", "editor.action.toggleStickyScroll", ""),
+    Sub("Render Whitespace", &[
+        Item("Set Render Whitespace to None", "editor.action.renderWhitespace.none", ""),
+        Item("Set Render Whitespace to Boundary", "editor.action.renderWhitespace.boundary", ""),
+        Item("Set Render Whitespace to Selection", "editor.action.renderWhitespace.selection", ""),
+        Item("Set Render Whitespace to Trailing", "editor.action.renderWhitespace.trailing", ""),
+        Item("Set Render Whitespace to All", "editor.action.renderWhitespace.all", ""),
+    ]),
+    Item("Render Control Characters", "editor.action.toggleRenderControlCharacter", ""),
+    Sep,
+    Item("Zoom In", "workbench.action.zoomIn", "cmd+="),
+    Item("Zoom Out", "workbench.action.zoomOut", "cmd+-"),
+    Item("Reset Zoom", "workbench.action.zoomReset", ""),
+];
+
+const EDITOR_LAYOUT: &[E] = &[
+    Item("Split Up [⌘K ⌘\\]", "workbench.action.splitEditorUp", ""),
+    Item("Split Down", "workbench.action.splitEditorDown", ""),
+    Item("Split Left", "workbench.action.splitEditorLeft", ""),
+    Item("Split Right", "workbench.action.splitEditor", ""),
+    Sep,
+    Item("Move Editor into New Window", "workbench.action.moveEditorToNewWindow", ""),
+    Item("Copy Editor into New Window [⌘K O]", "workbench.action.copyEditorToNewWindow", ""),
+    Sep,
+    Item("Single", "workbench.action.editorLayoutSingle", ""),
+    Item("Two Columns", "workbench.action.editorLayoutTwoColumns", ""),
+    Item("Three Columns", "workbench.action.editorLayoutThreeColumns", ""),
+    Item("Two Rows", "workbench.action.editorLayoutTwoRows", ""),
+    Item("Three Rows", "workbench.action.editorLayoutThreeRows", ""),
+    Item("Grid (2x2)", "workbench.action.editorLayoutTwoByTwoGrid", ""),
+    Item("Two Rows Right", "workbench.action.editorLayoutTwoRowsRight", ""),
+    Item("Two Columns Bottom", "workbench.action.editorLayoutTwoColumnsBottom", ""),
+    Sep,
+    Item("Flip Layout", "workbench.action.flipEditorLayout", "alt+cmd+0"),
+];
+
+const VIEW: &[E] = &[
+    Item("Command Palette…", "workbench.action.showCommands", "shift+cmd+p"),
+    Item("Open View…", "workbench.action.openView", ""),
+    Sep,
+    Sub("Appearance", APPEARANCE),
+    Sub("Editor Layout", EDITOR_LAYOUT),
+    Sep,
+    Item("Explorer", "workbench.view.explorer", "shift+cmd+e"),
+    Item("Search", "workbench.view.search", "shift+cmd+f"),
+    Item("Source Control", "workbench.view.scm", "ctrl+shift+g"),
+    Item("Run", "workbench.view.debug", "shift+cmd+d"),
+    Item("Extensions", "workbench.view.extensions", "shift+cmd+x"),
+    Sep,
+    Item("Browser", "workbench.action.browser.open", "alt+cmd+/"),
+    Sep,
+    Item("Problems", "workbench.actions.view.problems", "shift+cmd+m"),
+    Item("Output", "workbench.action.output.toggleOutput", "shift+cmd+u"),
+    Item("Debug Console", "workbench.debug.action.toggleRepl", "shift+cmd+y"),
+    Item("Terminal", "workbench.action.terminal.toggleTerminal", "ctrl+`"),
+    Sep,
+    Off("Word Wrap", "editor.action.toggleWordWrap", "alt+z"),
+];
+
+const SWITCH_EDITOR: &[E] = &[
+    Item("Next Editor", "workbench.action.nextEditor", "alt+cmd+right"),
+    Item("Previous Editor", "workbench.action.previousEditor", "alt+cmd+left"),
+    Sep,
+    Item("Next Used Editor", "workbench.action.openNextRecentlyUsedEditor", ""),
+    Item("Previous Used Editor", "workbench.action.openPreviousRecentlyUsedEditor", ""),
+    Sep,
+    Item("Next Editor in Group [⌘K ⌥⌘→]", "workbench.action.nextEditorInGroup", ""),
+    Item("Previous Editor in Group [⌘K ⌥⌘←]", "workbench.action.previousEditorInGroup", ""),
+    Sep,
+    Item("Next Used Editor in Group", "workbench.action.openNextRecentlyUsedEditorInGroup", ""),
+    Item("Previous Used Editor in Group", "workbench.action.openPreviousRecentlyUsedEditorInGroup", ""),
+];
+
+const SWITCH_GROUP: &[E] = &[
+    Item("Group 1", "workbench.action.focusFirstEditorGroup", "cmd+1"),
+    Item("Group 2", "workbench.action.focusSecondEditorGroup", "cmd+2"),
+    Off("Group 3", "workbench.action.focusThirdEditorGroup", "cmd+3"),
+    Off("Group 4", "workbench.action.focusFourthEditorGroup", "cmd+4"),
+    Off("Group 5", "workbench.action.focusFifthEditorGroup", "cmd+5"),
+    Sep,
+    Item("Next Group", "workbench.action.focusNextGroup", ""),
+    Item("Previous Group", "workbench.action.focusPreviousGroup", ""),
+    Sep,
+    Item("Group Left [⌘K ⌘←]", "workbench.action.focusLeftGroup", ""),
+    Item("Group Right [⌘K ⌘→]", "workbench.action.focusRightGroup", ""),
+    Item("Group Above [⌘K ⌘↑]", "workbench.action.focusAboveGroup", ""),
+    Item("Group Below [⌘K ⌘↓]", "workbench.action.focusBelowGroup", ""),
+];
+
+const GO: &[E] = &[
+    Off("Back", "workbench.action.navigateBack", "ctrl+-"),
+    Off("Forward", "workbench.action.navigateForward", "ctrl+shift+-"),
+    Off("Last Edit Location [⌘K ⌘Q]", "workbench.action.navigateToLastEditLocation", ""),
+    Sep,
+    Sub("Switch Editor", SWITCH_EDITOR),
+    Sub("Switch Group", SWITCH_GROUP),
+    Sep,
+    Item("Go to File…", "workbench.action.quickOpen", "cmd+p"),
+    Item("Go to Symbol in Workspace…", "workbench.action.showAllSymbols", "cmd+t"),
+    Sep,
+    Item("Go to Symbol in Editor…", "workbench.action.gotoSymbol", "shift+cmd+o"),
+    Item("Go to Definition", "editor.action.revealDefinition", "f12"),
+    Item("Go to Declaration", "editor.action.revealDeclaration", ""),
+    Item("Go to Type Definition", "editor.action.goToTypeDefinition", ""),
+    Item("Go to Implementations", "editor.action.goToImplementation", "cmd+f12"),
+    Item("Go to References", "editor.action.goToReferences", "shift+f12"),
+    Sep,
+    Item("Go to Line/Column…", "workbench.action.gotoLine", "ctrl+g"),
+    Item("Go to Bracket", "editor.action.jumpToBracket", "shift+cmd+\\"),
+    Sep,
+    Item("Next Problem", "editor.action.marker.nextInFiles", "f8"),
+    Item("Previous Problem", "editor.action.marker.prevInFiles", "shift+f8"),
+    Sep,
+    Item("Next Change", "workbench.action.editor.nextChange", "alt+f3"),
+    Item("Previous Change", "workbench.action.editor.previousChange", "alt+shift+f3"),
+];
+
+const RUN: &[E] = &[
+    Item("Start Debugging", "workbench.action.debug.start", "f5"),
+    Item("Run Without Debugging", "workbench.action.debug.run", "ctrl+f5"),
+    Off("Stop Debugging", "workbench.action.debug.stop", "shift+f5"),
+    Off("Restart Debugging", "workbench.action.debug.restart", "shift+cmd+f5"),
+    Sep,
+    Off("Open Configurations", "workbench.action.debug.configure", ""),
+    Item("Add Configuration…", "debug.addConfiguration", ""),
+    Sep,
+    Off("Step Over", "workbench.action.debug.stepOver", "f10"),
+    Off("Step Into", "workbench.action.debug.stepInto", "f11"),
+    Off("Step Out", "workbench.action.debug.stepOut", "shift+f11"),
+    Off("Continue", "workbench.action.debug.continue", "f5"),
+    Sep,
+    Item("Toggle Breakpoint", "editor.debug.action.toggleBreakpoint", "f9"),
+    Sub("New Breakpoint", &[
+        Item("Conditional Breakpoint…", "editor.debug.action.conditionalBreakpoint", ""),
+        Item("Edit Breakpoint", "editor.debug.action.editBreakpoint", ""),
+        Item("Inline Breakpoint", "editor.debug.action.toggleInlineBreakpoint", "shift+f9"),
+        Item("Function Breakpoint…", "workbench.debug.viewlet.action.addFunctionBreakpointAction", ""),
+        Item("Logpoint…", "editor.debug.action.addLogPoint", ""),
+        Item("Triggered Breakpoint…", "editor.debug.action.triggerByBreakpoint", ""),
+    ]),
+    Sep,
+    Item("Enable All Breakpoints", "workbench.debug.viewlet.action.enableAllBreakpoints", ""),
+    Item("Disable All Breakpoints", "workbench.debug.viewlet.action.disableAllBreakpoints", ""),
+    Item("Remove All Breakpoints", "workbench.debug.viewlet.action.removeAllBreakpoints", ""),
+    Sep,
+    Item("Install Additional Debuggers…", "debug.installAdditionalDebuggers", ""),
+];
+
+const TERMINAL: &[E] = &[
+    Item("New Terminal", "workbench.action.terminal.new", "ctrl+shift+`"),
+    Item("Split Terminal", "workbench.action.terminal.split", "cmd+\\"),
+    Off("New Terminal Window", "workbench.action.terminal.newInNewWindow", "ctrl+alt+shift+`"),
+    Sep,
+    Item("Run Task…", "workbench.action.tasks.runTask", ""),
+    Item("Run Build Task…", "workbench.action.tasks.build", "shift+cmd+b"),
+    Item("Run Active File", "workbench.action.terminal.runActiveFile", ""),
+    Item("Run Selected Text", "workbench.action.terminal.runSelectedText", ""),
+    Sep,
+    Off("Show Running Tasks…", "workbench.action.tasks.showTasks", ""),
+    Off("Restart Running Task…", "workbench.action.tasks.restartTask", ""),
+    Off("Terminate Task…", "workbench.action.tasks.terminate", ""),
+    Sep,
+    Item("Configure Tasks…", "workbench.action.tasks.configureTaskRunner", ""),
+    Item("Configure Default Build Task…", "workbench.action.tasks.configureDefaultBuildTask", ""),
+];
+
+const WINDOW: &[E] = &[
+    Item("Switch Window…", "workbench.action.quickSwitchWindow", ""),
+];
+
+const HELP: &[E] = &[
+    Item("Welcome", "workbench.action.openWalkthrough", ""),
+    Item("Show All Commands", "workbench.action.showCommands", "shift+cmd+p"),
+    Item("Documentation", "workbench.action.openDocumentationUrl", ""),
+    Item("Editor Playground", "workbench.action.showInteractivePlayground", ""),
+    Item("Open Walkthrough…", "workbench.action.openWalkthrough.pick", ""),
+    Item("Show Release Notes", "update.showCurrentReleaseNotes", ""),
+    Item("Get Started with Accessibility Features", "workbench.action.openAccessibilityHelp", ""),
+    Sep,
+    Item("Keyboard Shortcuts Reference [⌘K ⌘R]", "workbench.action.keybindingsReference", ""),
+    Item("Video Tutorials", "workbench.action.openVideoTutorialsUrl", ""),
+    Item("Tips and Tricks", "workbench.action.openTipsAndTricksUrl", ""),
+    Sep,
+    Item("Join Us on YouTube", "workbench.action.openYouTubeUrl", ""),
+    Item("Search Feature Requests", "workbench.action.openRequestFeatureUrl", ""),
+    Item("Report Issue", "workbench.action.openIssueReporter", ""),
+    Sep,
+    Item("View License", "workbench.action.openLicenseUrl", ""),
+    Item("Privacy Statement", "workbench.action.openPrivacyStatementUrl", ""),
+    Sep,
+    Item("Toggle Developer Tools", "workbench.action.toggleDevTools", ""),
+    Item("Open Process Explorer", "workbench.action.openProcessExplorer", ""),
+];
+
+type Built = Vec<(MenuItem, &'static str, Option<Accelerator>)>;
+
+/// Builds `entries` into `parent` (a `Menu` or `Submenu`), collecting the
+/// command items.
+fn build(entries: &[E], parent: &dyn muda::ContextMenu, append: &dyn Fn(&dyn muda::IsMenuItem), built: &mut Built) {
+    let _ = parent;
+    for e in entries {
+        match e {
+            Sep => append(&PredefinedMenuItem::separator()),
+            Item(title, command, key) | Off(title, command, key) => {
+                let enabled = matches!(e, Item(..));
+                let accelerator = if IMPLEMENTED.contains(command) { keybinding_to_accelerator(key) } else { None };
+                let m = MenuItem::new(*title, enabled, accelerator);
+                built.push((m.clone(), command, accelerator));
+                append(&m);
+            }
+            Sub(title, children) => {
+                let sub = Submenu::new(*title, true);
+                build(children, &sub, &|i| {
+                    let _ = sub.append(i);
+                }, built);
+                append(&sub);
+            }
+        }
+    }
+}
+
+pub fn install() -> InstalledMenu {
+    // macOS adds "Enter Full Screen" to every View menu unless told not to
+    // (Electron does the same): VS Code's own Full Screen item is in
+    // View ▸ Appearance.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSUserDefaults};
+        NSUserDefaults::standardUserDefaults().setBool_forKey(false, &NSString::from_str("NSFullScreenMenuItemEverywhere"));
+    }
+    let menu = Menu::new();
+    let mut built: Built = Vec::new();
+
+    // macOS application menu: About, Check for Updates…, Preferences ▸,
+    // Services ▸, Hide, Hide Others, Show All, Quit (names the app).
     #[cfg(target_os = "macos")]
     {
         let app_m = Submenu::new("vscode-rust", true);
-        let themes_m = Submenu::new("Themes", true);
-        let _ = themes_m.append(&color_theme);
-        let settings_m = Submenu::new("Settings", true);
-        let _ = settings_m.append_items(&[&open_settings, &open_keybindings, &PredefinedMenuItem::separator(), &themes_m]);
         let _ = menu.append(&app_m);
+        let updates = MenuItem::new("Check for Updates…", true, None);
+        built.push((updates.clone(), "update.checkForUpdate", None));
+        let preferences = Submenu::new("Preferences", true);
+        build(PREFERENCES, &preferences, &|i| {
+            let _ = preferences.append(i);
+        }, &mut built);
         let _ = app_m.append_items(&[
             &PredefinedMenuItem::about(Some("About vscode-rust"), None),
+            &updates,
             &PredefinedMenuItem::separator(),
-            &settings_m,
+            &preferences,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::services(None),
             &PredefinedMenuItem::separator(),
@@ -166,177 +591,74 @@ pub fn install() -> InstalledMenu {
         ]);
     }
 
-    // File menu
-    let file_m = Submenu::new("File", true);
-    let new_file = item("New Text File", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyN)),
-    );
-    let open_folder = item("Open Folder…", None);
-    let open_file = item("Open File…", None);
-    let close_folder = item("Close Folder", None);
-    let save = item("Save", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)),
-    );
-    let save_all = item("Save All", Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::ALT),
-            Code::KeyS,
-        )),
-    );
-    let close_editor = item("Close Editor", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyW)),
-    );
-    let close_all = item("Close All Editors", None);
-    let _ = file_m.append_items(&[
-        &new_file,
-        &PredefinedMenuItem::separator(),
-        &open_folder,
-        &open_file,
-        &PredefinedMenuItem::separator(),
-        &save,
-        &save_all,
-        &PredefinedMenuItem::separator(),
-        &close_editor,
-        &close_all,
-        &close_folder,
-    ]);
+    // Edit: plain items (not the predefined cut/copy/paste that route through
+    // the responder chain, which can't reach egui's custom-drawn text). Only
+    // implemented commands bind a key equivalent, so ⌘C and friends still
+    // reach the editor.
+    let top: [(&str, &[E]); 7] = [("File", FILE), ("Edit", EDIT), ("Selection", SELECTION), ("View", VIEW), ("Go", GO), ("Run", RUN), ("Terminal", TERMINAL)];
+    for (title, entries) in top {
+        let sub = Submenu::new(title, true);
+        build(entries, &sub, &|i| {
+            let _ = sub.append(i);
+        }, &mut built);
+        let _ = menu.append(&sub);
+    }
 
-    // Edit menu. NOTE: we deliberately do NOT use PredefinedMenuItem here.
-    // Predefined cut/copy/paste/selectAll bind the native Cmd+X/C/V/A
-    // accelerators and route through the NSResponder chain, which cannot reach
-    // egui's custom-drawn text — so they would swallow the shortcuts and do
-    // nothing. Plain items without accelerators keep the menu present for
-    // parity while letting egui's editor handle the shortcuts directly.
-    let edit_m = Submenu::new("Edit", true);
-    let _ = edit_m.append_items(&[
-        &MenuItem::new("Undo", true, None),
-        &MenuItem::new("Redo", true, None),
-        &PredefinedMenuItem::separator(),
-        &MenuItem::new("Cut", true, None),
-        &MenuItem::new("Copy", true, None),
-        &MenuItem::new("Paste", true, None),
-        &MenuItem::new("Select All", true, None),
-    ]);
+    // Window: Minimize / Zoom, the switcher, and (macOS) the system's window list.
+    let window_m = Submenu::new("Window", true);
+    let _ = window_m.append_items(&[&PredefinedMenuItem::minimize(None), &PredefinedMenuItem::maximize(None), &PredefinedMenuItem::separator()]);
+    build(WINDOW, &window_m, &|i| {
+        let _ = window_m.append(i);
+    }, &mut built);
+    let _ = window_m.append_items(&[&PredefinedMenuItem::separator(), &PredefinedMenuItem::bring_all_to_front(None)]);
+    let _ = menu.append(&window_m);
 
-    // View menu
-    let view_m = Submenu::new("View", true);
-    let palette = item("Command Palette…", Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyP,
-        )),
-    );
-    let toggle_sidebar = item("Toggle Sidebar Visibility", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyB)),
-    );
-    let show_explorer = item("Explorer", Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyE,
-        )),
-    );
-    let show_search = item("Search", Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyF,
-        )),
-    );
-    // View ▸ Problems / Output / Debug Console / Terminal and the panel
-    // toggle (⌘J), as VS Code's View menu.
-    let toggle_panel = item("Toggle Panel", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyJ)));
-    let show_problems = item("Problems", Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyM)));
-    let show_output = item("Output", Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyU)));
-    let show_debug_console = item("Debug Console", Some(Accelerator::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyY)));
-    let show_terminal = item("Terminal", Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Backquote)));
-    let _ = view_m.append_items(&[
-        &palette,
-        &PredefinedMenuItem::separator(),
-        &toggle_sidebar,
-        &toggle_panel,
-        &show_explorer,
-        &show_search,
-        &PredefinedMenuItem::separator(),
-        &show_problems,
-        &show_output,
-        &show_debug_console,
-        &show_terminal,
-    ]);
-
-    // Terminal menu
-    let terminal_m = Submenu::new("Terminal", true);
-    let new_terminal = item("New Terminal", Some(Accelerator::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Backquote)));
-    let _ = terminal_m.append(&new_terminal);
-
-    // Go menu
-    let go_m = Submenu::new("Go", true);
-    let go_to_file = item("Go to File…", Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
-    );
-    let _ = go_m.append_items(&[&go_to_file]);
-
-    // Help menu
     let help_m = Submenu::new("Help", true);
-    let welcome = item("Welcome", None);
-    let _ = help_m.append_items(&[&welcome]);
-
-    let _ = menu.append_items(&[&file_m, &edit_m, &view_m, &go_m, &terminal_m, &help_m]);
+    build(HELP, &help_m, &|i| {
+        let _ = help_m.append(i);
+    }, &mut built);
+    let _ = menu.append(&help_m);
 
     #[cfg(target_os = "macos")]
     {
         let _ = menu.init_for_nsapp();
+        let _ = window_m.set_as_windows_menu_for_nsapp();
+        let _ = help_m.set_as_help_menu_for_nsapp();
     }
     #[cfg(target_os = "windows")]
     {
         // Windows attaches per-HWND; we do that from the App when the window is ready.
     }
 
+    // The ids the app keeps for its own items (by command); a command that is
+    // in the table twice (Settings, Extensions…) takes its first item.
+    let id_of = |command: &str| built.iter().find(|(_, c, _)| *c == command).map(|(m, ..)| m.id().clone()).unwrap_or_else(|| MenuId::new(command));
     let ids = MenuIds {
-        new_file: new_file.id().clone(),
-        open_folder: open_folder.id().clone(),
-        open_file: open_file.id().clone(),
-        close_folder: close_folder.id().clone(),
-        save: save.id().clone(),
-        save_all: save_all.id().clone(),
-        close_editor: close_editor.id().clone(),
-        close_all: close_all.id().clone(),
-        palette: palette.id().clone(),
-        toggle_sidebar: toggle_sidebar.id().clone(),
-        show_explorer: show_explorer.id().clone(),
-        show_search: show_search.id().clone(),
-        go_to_file: go_to_file.id().clone(),
-        welcome: welcome.id().clone(),
-        color_theme: color_theme.id().clone(),
-        open_settings: open_settings.id().clone(),
-        open_keybindings: open_keybindings.id().clone(),
-        toggle_panel: toggle_panel.id().clone(),
-        show_problems: show_problems.id().clone(),
-        show_output: show_output.id().clone(),
-        show_debug_console: show_debug_console.id().clone(),
-        show_terminal: show_terminal.id().clone(),
-        new_terminal: new_terminal.id().clone(),
+        new_file: id_of("workbench.action.files.newUntitledFile"),
+        open_folder: id_of("workbench.action.files.openFolder"),
+        open_file: id_of("workbench.action.files.openFileFolder"),
+        close_folder: id_of("workbench.action.closeFolder"),
+        save: id_of("workbench.action.files.save"),
+        save_all: id_of("workbench.action.files.saveAll"),
+        close_editor: id_of("workbench.action.closeActiveEditor"),
+        close_all: id_of("workbench.action.closeAllEditors"),
+        palette: id_of("workbench.action.showCommands"),
+        toggle_sidebar: id_of("workbench.action.toggleSidebarVisibility"),
+        show_explorer: id_of("workbench.view.explorer"),
+        show_search: id_of("workbench.view.search"),
+        go_to_file: id_of("workbench.action.quickOpen"),
+        welcome: id_of("workbench.action.openWalkthrough"),
+        color_theme: id_of("workbench.action.selectTheme"),
+        open_settings: id_of("workbench.action.openSettings"),
+        open_keybindings: id_of("workbench.action.openGlobalKeybindings"),
+        toggle_panel: id_of("workbench.action.togglePanel"),
+        show_problems: id_of("workbench.actions.view.problems"),
+        show_output: id_of("workbench.action.output.toggleOutput"),
+        show_debug_console: id_of("workbench.debug.action.toggleRepl"),
+        show_terminal: id_of("workbench.action.terminal.toggleTerminal"),
+        new_terminal: id_of("workbench.action.terminal.new"),
     };
-
-    let keys = MenuKeys {
-        items: [
-            (&new_file, "workbench.action.files.newUntitledFile"),
-            (&open_folder, "workbench.action.files.openFolder"),
-            (&open_file, "workbench.action.files.openFile"),
-            (&close_folder, "workbench.action.closeFolder"),
-            (&save, "workbench.action.files.save"),
-            (&save_all, "workbench.action.files.saveAll"),
-            (&close_editor, "workbench.action.closeActiveEditor"),
-            (&close_all, "workbench.action.closeAllEditors"),
-            (&palette, "workbench.action.showCommands"),
-            (&toggle_sidebar, "workbench.action.toggleSidebarVisibility"),
-            (&show_explorer, "workbench.view.explorer"),
-            (&show_search, "workbench.view.search"),
-            (&go_to_file, "workbench.action.quickOpen"),
-            (&welcome, "workbench.action.openWalkthrough"),
-            (&color_theme, "workbench.action.selectTheme"),
-            (&open_settings, "workbench.action.openSettings"),
-            (&open_keybindings, "workbench.action.openGlobalKeybindings"),
-            (&toggle_panel, "workbench.action.togglePanel"),
-            (&show_problems, "workbench.actions.view.problems"),
-            (&show_output, "workbench.action.output.toggleOutput"),
-            (&show_debug_console, "workbench.debug.action.toggleRepl"),
-            (&show_terminal, "workbench.action.terminal.toggleTerminal"),
-            (&new_terminal, "workbench.action.terminal.new"),
-        ]
-        .into_iter()
-        .map(|(item, command)| ((*item).clone(), command, item_accelerator(item)))
-        .collect(),
-    };
+    let keys = MenuKeys { items: built };
 
     InstalledMenu { ids, keys, menu }
 }
@@ -388,6 +710,45 @@ fn item(text: &str, accelerator: Option<Accelerator>) -> MenuItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every entry of the table: (title, command, key).
+    fn walk(entries: &[E], out: &mut Vec<(&'static str, &'static str, &'static str)>) {
+        for e in entries {
+            match e {
+                Sep => {}
+                Item(t, c, k) | Off(t, c, k) => out.push((t, c, k)),
+                Sub(_, children) => walk(children, out),
+            }
+        }
+    }
+
+    fn all_entries() -> Vec<(&'static str, &'static str, &'static str)> {
+        let mut out = Vec::new();
+        for table in [PREFERENCES, FILE, EDIT, SELECTION, VIEW, GO, RUN, TERMINAL, WINDOW, HELP] {
+            walk(table, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn the_menu_table_matches_what_the_app_runs() {
+        let all = all_entries();
+        // The key of every item that runs a command the app implements parses
+        // (an item without a key is fine; so is a command with no menu item).
+        for command in IMPLEMENTED {
+            for (title, _, key) in all.iter().filter(|(_, c, _)| c == command) {
+                if !key.is_empty() {
+                    assert!(keybinding_to_accelerator(key).is_some(), "{title}: key {key:?} doesn't parse");
+                }
+            }
+        }
+        // Chords are only in titles (a native menu can't show them), never as keys.
+        for (title, _, key) in &all {
+            assert!(!key.contains(' '), "{title}: chord as a key");
+        }
+        // The count VS Code's menus have (minus the AI items, the open recent list, the system ones).
+        assert!(all.len() > 200, "{} entries", all.len());
+    }
 
     #[test]
     fn keybindings_become_accelerators() {

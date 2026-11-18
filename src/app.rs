@@ -602,7 +602,10 @@ impl App {
 
     fn dispatch_menu_event(&mut self, ctx: &Context, id: &muda::MenuId) {
         if let Some(command) = self.menu_keys.as_ref().and_then(|k| k.command(id)) {
-            self.run_vscode_command(ctx, command);
+            if !self.run_vscode_command(ctx, command) {
+                let title = self.menu_keys.as_ref().and_then(|k| k.title(id)).unwrap_or_else(|| command.to_string());
+                self.extensions.notify_info(format!("{title}: not available in this build."));
+            }
         }
     }
 
@@ -617,7 +620,45 @@ impl App {
                 return true;
             }
             "workbench.action.files.openFolder" => CommandId::OpenFolder,
-            "workbench.action.files.openFile" => CommandId::OpenFile,
+            "workbench.action.files.openFile" | "workbench.action.files.openFileFolder" => CommandId::OpenFile,
+            "workbench.action.closeWindow" => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            }
+            "workbench.action.gotoLine" => {
+                self.palette.open_quick_open(self.workspace_root.as_deref(), &[]);
+                self.palette.query = ":".to_string();
+                return true;
+            }
+            // The Edit menu: the events egui's widgets react to, queued ahead of
+            // this frame's widgets.
+            "editor.action.clipboardCopyAction" => {
+                ctx.input_mut(|i| i.events.push(egui::Event::Copy));
+                return true;
+            }
+            "editor.action.clipboardCutAction" => {
+                ctx.input_mut(|i| i.events.push(egui::Event::Cut));
+                return true;
+            }
+            "editor.action.clipboardPasteAction" => {
+                if let Some(text) = read_clipboard() {
+                    ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
+                }
+                return true;
+            }
+            "undo" | "redo" | "editor.action.selectAll" => {
+                let (key, modifiers) = match id {
+                    "undo" => (Key::Z, Modifiers::COMMAND),
+                    "redo" => (Key::Z, Modifiers::COMMAND | Modifiers::SHIFT),
+                    _ => (Key::A, Modifiers::COMMAND),
+                };
+                ctx.input_mut(|i| {
+                    for pressed in [true, false] {
+                        i.events.push(egui::Event::Key { key, physical_key: Some(key), pressed, repeat: false, modifiers });
+                    }
+                });
+                return true;
+            }
             "workbench.action.closeFolder" => CommandId::CloseFolder,
             "workbench.action.files.save" => CommandId::Save,
             "workbench.action.files.saveAll" => CommandId::SaveAll,
@@ -7407,6 +7448,13 @@ fn copy_path(src: &Path, dst: &Path) -> std::io::Result<()> {
     } else {
         std::fs::copy(src, dst).map(|_| ())
     }
+}
+
+/// The system clipboard's text (macOS `pbpaste`); the Edit menu's Paste
+/// hands it to egui as a paste event.
+fn read_clipboard() -> Option<String> {
+    let out = std::process::Command::new("pbpaste").output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Where a paste of `src` into `dir` lands: its own name when free (or a
