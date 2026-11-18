@@ -162,6 +162,8 @@ pub struct PanelState {
     /// A terminal tab being renamed: its index and the text so far.
     terminal_rename: Option<(usize, String)>,
     terminal_rename_focus: bool,
+    /// The terminal whose tab is being dragged (`TerminalTabsDragAndDrop`).
+    terminal_drag: Option<usize>,
     /// Width of the terminal tabs list (None = 120px).
     pub terminal_tabs_width: Option<f32>,
     output_seen: (String, usize),
@@ -202,6 +204,38 @@ impl PanelState {
             None => self.groups.push(vec![i]),
         }
         self.active_terminal = i;
+        self.selection = None;
+        self.focus_pending = true;
+    }
+
+    /// A tab dropped on another (`moveGroup`): in the same group the dragged
+    /// terminal takes the target's place; across groups its whole group goes
+    /// before or after the target's group (after when it came from earlier).
+    /// `target: None` (empty space in the list) sends the group to the end.
+    /// The dragged terminal becomes the active one.
+    pub fn move_terminal_group(&mut self, src: usize, target: Option<usize>) {
+        let Some(sg) = self.groups.iter().position(|g| g.contains(&src)) else { return };
+        match target {
+            Some(t) => {
+                let Some(tg) = self.groups.iter().position(|g| g.contains(&t)) else { return };
+                if sg == tg {
+                    let g = &mut self.groups[sg];
+                    let at = g.iter().position(|&x| x == t).unwrap_or(0);
+                    g.retain(|&x| x != src);
+                    g.insert(at.min(g.len()), src);
+                } else {
+                    let group = self.groups.remove(sg);
+                    // From an earlier group the target shifted up by one, and "after"
+                    // puts it back: `tg` either way.
+                    self.groups.insert(tg, group);
+                }
+            }
+            None => {
+                let group = self.groups.remove(sg);
+                self.groups.push(group);
+            }
+        }
+        self.active_terminal = src;
         self.selection = None;
         self.focus_pending = true;
     }
@@ -540,12 +574,20 @@ fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut P
     painter.vline(list.left() + 0.5, list.y_range(), Stroke::new(1.0, Palette::TERMINAL_BORDER()));
     let mut y = list.top();
     let groups = state.groups.clone();
+    let mut drop_target: Option<usize> = None;
     for g in &groups {
         for (k, &ti) in g.iter().enumerate() {
             let row = Rect::from_min_max(Pos2::new(list.left() + 5.0, y), Pos2::new(list.right() - 4.0, y + 22.0));
             y += 22.0;
             let Some(term) = state.terminals.get(ti) else { continue };
-            let resp = ui.interact(row, id.with(("tab", ti)), Sense::click());
+            let resp = ui.interact(row, id.with(("tab", ti)), Sense::click_and_drag());
+            if resp.drag_started() {
+                state.terminal_drag = Some(ti);
+            }
+            if state.terminal_drag.is_some() && state.terminal_drag != Some(ti) && ui.rect_contains_pointer(row) {
+                drop_target = Some(ti);
+                painter.rect_filled(row, 4.0, Palette::LIST_DROP_BG());
+            }
             let active = ti == state.active_terminal;
             if active {
                 painter.rect_filled(row, 4.0, Palette::LIST_INACTIVE_SELECTION_BG());
@@ -624,6 +666,28 @@ fn terminal_tabs(ui: &mut Ui, painter: &egui::Painter, list: Rect, state: &mut P
                 state.active_terminal = ti;
                 state.selection = None;
                 state.focus_pending = true;
+            }
+        }
+    }
+    // The drag image next to the pointer, and the drop on release.
+    if let Some(src) = state.terminal_drag {
+        let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.pointer.primary_down()) {
+            if let Some(pos) = ctx.pointer_latest_pos() {
+                let title = state.terminals.get(src).map(|t| t.title.clone()).unwrap_or_default();
+                let layer = ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("terminal-drag-image")));
+                let galley = layer.layout_no_wrap(title, FontId::proportional(12.0), Palette::LIST_ACTIVE_SELECTION_FG());
+                let rect = Rect::from_min_size(pos + Vec2::new(12.0, 12.0), galley.size() + Vec2::new(14.0, 2.0));
+                layer.rect_filled(rect, 10.0, Palette::LIST_ACTIVE_SELECTION_BG());
+                layer.galley(rect.min + Vec2::new(7.0, 1.0), galley, Palette::LIST_ACTIVE_SELECTION_FG());
+            }
+            ctx.request_repaint();
+        } else {
+            state.terminal_drag = None;
+            if drop_target.is_some() {
+                state.move_terminal_group(src, drop_target);
+            } else if ui.rect_contains_pointer(list) {
+                state.move_terminal_group(src, None);
             }
         }
     }
@@ -1723,6 +1787,73 @@ mod tests {
         harness.run();
         let title: String = harness.ctx.data(|d| d.get_temp(egui::Id::new("title"))).unwrap_or_default();
         assert_eq!(title, "build");
+    }
+
+    #[test]
+    fn dropping_a_terminal_tab_moves_it_or_its_group() {
+        let mut s = PanelState::default();
+        for _ in 0..4 {
+            s.add_terminal(term(), false);
+        }
+        // 0 1 2 3 as groups: 0 goes after 2 (it came from earlier).
+        s.move_terminal_group(0, Some(2));
+        assert_eq!(s.groups, vec![vec![1], vec![2], vec![0], vec![3]]);
+        assert_eq!(s.active_terminal, 0);
+        // 3 goes before 1 (it came from later).
+        s.move_terminal_group(3, Some(1));
+        assert_eq!(s.groups, vec![vec![3], vec![1], vec![2], vec![0]]);
+        // Empty space: to the end.
+        s.move_terminal_group(3, None);
+        assert_eq!(s.groups, vec![vec![1], vec![2], vec![0], vec![3]]);
+        // Within a group the dragged terminal takes the target's place.
+        let mut g = PanelState::default();
+        g.add_terminal(term(), false);
+        g.add_terminal(term(), true);
+        g.add_terminal(term(), true);
+        assert_eq!(g.groups, vec![vec![0, 1, 2]]);
+        g.move_terminal_group(0, Some(2));
+        assert_eq!(g.groups, vec![vec![1, 2, 0]]);
+        g.move_terminal_group(0, Some(1));
+        assert_eq!(g.groups, vec![vec![0, 1, 2]]);
+    }
+
+    #[test]
+    fn a_terminal_tab_can_be_dragged_onto_another() {
+        use egui_kittest::Harness;
+        let mut state = PanelState::default();
+        for _ in 0..3 {
+            state.add_terminal(term(), false);
+        }
+        let mut out = PanelOutput::default();
+        let mut first = true;
+        let mut harness = Harness::builder().with_size(Vec2::new(400.0, 200.0)).build_ui(move |ui| {
+            if std::mem::take(&mut first) {
+                crate::icons::register_fonts(ui.ctx());
+                return;
+            }
+            let list = Rect::from_min_size(Pos2::new(100.0, 10.0), Vec2::new(121.0, 150.0));
+            let painter = ui.painter().clone();
+            terminal_tabs(ui, &painter, list, &mut state, &mut out, egui::Id::new("tabs"));
+            ui.data_mut(|d| d.insert_temp(egui::Id::new("groups"), state.groups.clone()));
+        });
+        harness.run();
+        harness.run();
+        // Rows are 22px from y = 10: centres at 21, 43, 65. Drag the first onto the last.
+        let from = Pos2::new(150.0, 21.0);
+        let to = Pos2::new(150.0, 65.0);
+        harness.event(egui::Event::PointerMoved(from));
+        harness.step();
+        harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        for t in [0.4, 0.8, 1.0] {
+            harness.event(egui::Event::PointerMoved(from + (to - from) * t));
+            harness.step();
+        }
+        harness.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        harness.step();
+        harness.run();
+        let groups: Vec<Vec<usize>> = harness.ctx.data(|d| d.get_temp(egui::Id::new("groups"))).unwrap_or_default();
+        assert_eq!(groups, vec![vec![1], vec![2], vec![0]]);
     }
 
     #[test]
