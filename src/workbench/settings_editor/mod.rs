@@ -182,6 +182,8 @@ pub struct Values<'a> {
     pub user: &'a Map<String, Value>,
     /// `None` without a folder (the Workspace tab is disabled).
     pub workspace: Option<&'a Map<String, Value>>,
+    /// The folder is trusted: restricted workspace settings apply.
+    pub trusted: bool,
 }
 
 impl Values<'_> {
@@ -197,6 +199,7 @@ impl Values<'_> {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(self.user).unwrap_or_default().hash(&mut h);
         self.workspace.map(|w| serde_json::to_string(w).unwrap_or_default()).hash(&mut h);
+        self.trusted.hash(&mut h);
         h.finish()
     }
 }
@@ -216,7 +219,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut SettingsEditorState, values: &V
     let pick = |m: &Map<String, Value>| m.get(&section).and_then(Value::as_object).cloned().unwrap_or_default();
     let user = pick(values.user);
     let workspace = values.workspace.map(pick);
-    let overrides = Values { user: &user, workspace: workspace.as_ref() };
+    let overrides = Values { user: &user, workspace: workspace.as_ref(), trusted: values.trusted };
     let mut out = show_values(ui, rect, state, &overrides);
     if let Some((target, key, value)) = out.set.take() {
         let mut object = overrides.of(target).cloned().unwrap_or_default();
@@ -434,13 +437,22 @@ fn relayout(ui: &Ui, state: &mut SettingsEditorState, values: &Values<'_>, width
             .map(|i| (i, order.iter().find(|(j, _)| *j == i).map(|(_, t)| t.clone()).unwrap_or_default()))
             .collect()
     });
-    let tree = match &ranked {
+    let mut tree = match &ranked {
         Some(found) => {
             let set: HashSet<usize> = found.iter().map(|(i, _)| *i).collect();
             model::build_tree(&|i| set.contains(&i))
         }
         None => model::build_tree(&|i| !model::hidden_by_default(i, &configured)),
     };
+    // Workspace tab of an untrusted folder: a "Workspace Trust" group first,
+    // with the restricted settings the workspace configures
+    // (`resolveConfiguredUntrustedSettings`).
+    if ranked.is_none() && target == Target::Workspace && !values.trusted {
+        let held: Vec<usize> = (0..model::settings().len()).filter(|&i| model::settings()[i].restricted && configured(&model::settings()[i].key)).collect();
+        if !held.is_empty() {
+            tree.children.insert(0, TocNode { id: "workspaceTrust".into(), label: "Workspace Trust".into(), settings: held, children: Vec::new() });
+        }
+    }
     let content_w = (width - 2.0 * PAD_X).min(1400.0 - 2.0 * PAD_X) - 2.0 * ITEM_PAD_X;
     let mut rows = Vec::new();
     let mut y = 0.0;
@@ -908,6 +920,24 @@ fn setting_row(
             painter.galley(Pos2::new(r.left() + 4.0, r.top()), g, Palette::BADGE_FG());
             x = r.right() + 4.0;
         }
+    }
+
+    // "(shield Requires workspace trust)": a restricted setting the untrusted
+    // workspace configures isn't applied (`isUntrusted`).
+    if target == Target::Workspace && s.restricted && configured && !values.trusted {
+        let font = FontId::proportional(12.0);
+        let glyph = icons::codicon_by_name("shield").unwrap_or('!').to_string();
+        let open = painter.layout_no_wrap("(".into(), font.clone(), Palette::FG_DESCRIPTION());
+        let text = painter.layout_no_wrap("Requires workspace trust)".into(), font, Palette::FG_DESCRIPTION());
+        let ix = x + 4.0;
+        let iy = ty;
+        painter.galley(Pos2::new(ix, iy - open.size().y / 2.0), open.clone(), Color32::PLACEHOLDER);
+        painter.text(Pos2::new(ix + open.size().x + 7.0, iy), Align2::CENTER_CENTER, glyph, icons::codicon_font(12.0), Palette::FG_DESCRIPTION());
+        painter.galley(Pos2::new(ix + open.size().x + 15.0, iy - text.size().y / 2.0), text, Color32::PLACEHOLDER);
+        let hit = Rect::from_min_size(Pos2::new(ix, iy - 9.0), Vec2::new(open.size().x + 15.0 + 130.0, 18.0));
+        let tip = ui.interact(hit.intersect(clip), id.with(("trust-indicator", &key)), Sense::hover());
+        tip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Requires workspace trust"));
+        tip.on_hover_text("The setting value can only be applied in a trusted workspace.");
     }
 
     // Description (beside the checkbox for booleans).

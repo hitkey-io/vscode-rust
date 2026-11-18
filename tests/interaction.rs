@@ -455,6 +455,40 @@ fn launch_settings_watching(query: Option<&'static str>, key: &'static str) -> (
 }
 
 #[test]
+fn untrusted_workspace_settings_get_a_trust_group_and_an_indicator() {
+    let dir = std::env::temp_dir().join("vscode-rust-trust-settings");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+    // A restricted setting and an ordinary one.
+    std::fs::write(dir.join(".vscode/settings.json"), r#"{ "editor.renderControlCharacters": true, "editor.formatOnSave": true }"#).unwrap();
+    let mut app: Option<App> = None;
+    let folder = dir.clone();
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            let mut a = App::for_testing(ctx);
+            a.bootstrap_workspace(folder.clone());
+            a.bootstrap_settings(None);
+            app = Some(a);
+            return;
+        }
+        app.as_mut().unwrap().render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    harness.run();
+    harness.run();
+    // The User tab has neither.
+    assert!(harness.query_by_label("toc:Workspace Trust").is_none());
+    harness.get_all_by_label("Workspace").next().unwrap().click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("toc:Workspace Trust");
+    // Only the restricted setting carries the indicator (shown in its group and where it lives).
+    assert!(harness.get_all_by_label("Requires workspace trust").count() >= 1);
+    harness.snapshot("interaction_settings_workspace_trust");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn settings_editor_shows_toc_and_writes_values() {
     let (mut harness, seen) = launch_settings(None);
     harness.run();

@@ -6657,6 +6657,7 @@ impl App {
             let values = settings_editor::Values {
                 user: self.settings.values(),
                 workspace: self.workspace_settings.as_ref().map(|w| w.values()),
+                trusted: self.workspace_trusted(),
             };
             modal::show(ctx, egui::Id::new("settings-modal"), &modal_state, &header, self.title_bar_offset(), |ui| {
                 let rect = ui.max_rect();
