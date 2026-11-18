@@ -625,6 +625,12 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return true;
             }
+            "editor.action.startFindReplace" => {
+                if self.active_doc.is_some() {
+                    self.find.open_replace();
+                }
+                return true;
+            }
             "actions.find" => {
                 if self.active_doc.is_some() {
                     self.find.open();
@@ -2769,10 +2775,7 @@ impl App {
                 self.documents
                     .get(idx)
                     .map(|d| {
-                        crate::editor::find::compute_matches(
-                            &d.text,
-                            &self.find.query,
-                        )
+                        crate::editor::find::compute_matches(&d.text, &self.find)
                     })
                     .unwrap_or_default()
             } else {
@@ -5340,6 +5343,10 @@ impl App {
 
         // Cmd+F — in-editor find (only when a document is open). Must come
         // after the Cmd+Shift+F check so the chord with Shift wins.
+        // ⌥⌘F: find with the replace row (before ⌘F, which would match it too).
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::F))) && self.active_doc.is_some() {
+            self.find.open_replace();
+        }
         let find_in_editor = ctx.input_mut(|i| {
             i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::F))
         });
@@ -5852,6 +5859,9 @@ impl App {
         // In-editor find widget (drawn over the editor, after all panels).
         if self.find.open && self.active_doc.is_some() {
             let fr = crate::editor::find::show(ctx, &mut self.find, &find_matches_for_widget);
+            if let Some(action) = fr.replace {
+                self.find_replace(action);
+            }
             if let Some(byte) = fr.goto {
                 if let Some(doc) = self.active_doc.and_then(|i| self.documents.get_mut(i)) {
                     // Byte offset → (1-based line, byte offset within that line).
@@ -6066,6 +6076,19 @@ impl App {
         if out.forward_port {
             self.set_status("Port forwarding needs a remote tunnel, which this build doesn't have");
         }
+    }
+
+    /// Replace / Replace All of the find widget in the active editor.
+    fn find_replace(&mut self, action: crate::editor::find::ReplaceAction) {
+        use crate::editor::find::{apply_replacements, replace_edits, ReplaceAction};
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get_mut(i)).filter(|d| !d.read_only) else { return };
+        let only = (action == ReplaceAction::One).then_some(self.find.current);
+        let edits = replace_edits(&doc.text, &self.find, only);
+        if edits.is_empty() {
+            return;
+        }
+        doc.text = apply_replacements(&doc.text, &edits);
+        doc.check_dirty();
     }
 
     /// Opens `path` with the cursor at a UTF-16 position of a provider

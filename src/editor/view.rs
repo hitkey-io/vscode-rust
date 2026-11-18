@@ -116,6 +116,8 @@ pub fn show_with_squiggles(
         full.min,
         egui::pos2(full.right() - mm_w - SCROLLBAR_W, full.bottom()),
     );
+    // The find widget docks to this area, left of the minimap and scrollbar.
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(super::find::ANCHOR), (full, mm_w + SCROLLBAR_W)));
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(editor_rect).layout(*ui.layout()), |ui| {
         if has_folds {

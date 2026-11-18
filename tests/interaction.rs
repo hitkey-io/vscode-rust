@@ -1589,3 +1589,51 @@ fn the_editor_closes_pairs_indents_on_enter_and_comments_lines() {
     assert_eq!(value(&harness), "    x\nf() {\n}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_find_widget_searches_with_options_and_replaces() {
+    use egui::{Key, Modifiers};
+    use egui_kittest::kittest::NodeT;
+    let dir = std::env::temp_dir().join("vscode-rust-find-widget");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.txt");
+    std::fs::write(&file, "Foo foo FOO food\n").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    let value = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.run();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("foo".to_string()));
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("Match Case (⌥⌘C)");
+    harness.snapshot("interaction_find_widget");
+    // Match Case narrows 4 matches to 2, and the toggle reports it.
+    harness.get_by_label("Match Case (⌥⌘C)").click();
+    harness.run();
+    harness.run();
+    assert_eq!(harness.get_by_label("Match Case (⌥⌘C)").accesskit_node().toggled().map(|t| format!("{t:?}") == "True"), Some(true));
+    // The replace row opens with the chevron; Replace All writes into the text.
+    harness.get_by_label("Toggle Replace").click();
+    harness.run();
+    harness.run();
+    // ⌥⌘F puts the keyboard in the replace input.
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::F);
+    harness.run();
+    harness.run();
+    harness.event(egui::Event::Text("bar".to_string()));
+    harness.run();
+    harness.snapshot("interaction_find_replace_widget");
+    harness.get_by_label("Replace All (⌘Enter)").click();
+    harness.run();
+    harness.run();
+    // Case-sensitive "foo": the lower-case word and the start of "food".
+    assert_eq!(value(&harness), "Foo bar FOO bard\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
