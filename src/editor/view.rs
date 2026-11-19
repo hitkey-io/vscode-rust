@@ -286,6 +286,9 @@ fn paint_gutter(
     toggled
 }
 
+/// egui memory key of an editor action queued by a menu command.
+pub const EDITOR_ACTION: &str = "editor-action";
+
 /// egui memory key of the text ⌘F seeds the find input with.
 pub const FIND_SEED: &str = "find-seed";
 
@@ -308,7 +311,12 @@ fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
     let language = doc.language;
     let text = doc.text.clone();
     let alt = Modifiers::ALT;
+    // An action the menu asked for (`App::run_vscode_command`).
+    let action = ctx.data_mut(|d| d.remove_temp::<&'static str>(egui::Id::new(EDITOR_ACTION)));
     let edit: Option<smart::Edit> = ctx.input_mut(|i| {
+        if action == Some("duplicate") {
+            return Some(smart::duplicate_selection(&text, a, h));
+        }
         // Keys that don't produce text: exact modifiers, consumed when handled.
         if i.consume_key(Modifiers::NONE, Key::Enter) {
             return Some(smart::enter(&text, a, h, &unit, language));

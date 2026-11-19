@@ -241,6 +241,23 @@ pub fn copy_lines(text: &str, anchor: usize, head: usize, up: bool) -> Edit {
     Edit { text: l.text(), anchor: l.pos(a.0 + shift, a.1), head: l.pos(h.0 + shift, h.1) }
 }
 
+/// Selection ▸ Duplicate Selection: the selected text is inserted again right
+/// after it and the copy is selected; without a selection the line is
+/// duplicated below and the caret goes to the copy.
+pub fn duplicate_selection(text: &str, anchor: usize, head: usize) -> Edit {
+    let (s, e) = (anchor.min(head), anchor.max(head));
+    if s == e {
+        return copy_lines(text, anchor, head, false);
+    }
+    let ch = chars(text);
+    let selected: String = ch[s..e].iter().collect();
+    let mut out: String = ch[..e].iter().collect();
+    out.push_str(&selected);
+    out.extend(ch[e..].iter());
+    let len = e - s;
+    Edit { text: out, anchor: anchor + len, head: head + len }
+}
+
 /// ⇧⌘K: the covered lines go; the cursor lands on the line that took their place.
 pub fn delete_lines(text: &str, anchor: usize, head: usize) -> Edit {
     let mut l = Lines::new(text);
@@ -456,6 +473,14 @@ pub fn toggle_block_comment(text: &str, anchor: usize, head: usize, language: &s
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn duplicating_a_selection_or_a_line() {
+        let e = super::duplicate_selection("ab cd", 3, 5);
+        assert_eq!((e.text.as_str(), e.anchor, e.head), ("ab cdcd", 5, 7));
+        let e = super::duplicate_selection("one\ntwo", 1, 1);
+        assert_eq!((e.text.as_str(), e.head), ("one\none\ntwo", 5));
+    }
+
     use super::*;
 
     fn at(text: &str) -> (String, usize) {

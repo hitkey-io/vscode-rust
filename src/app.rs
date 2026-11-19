@@ -669,6 +669,10 @@ impl App {
                 }
                 return true;
             }
+            "editor.action.duplicateSelection" => {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::editor::view::EDITOR_ACTION), "duplicate"));
+                return true;
+            }
             "editor.action.jumpToBracket" => {
                 self.jump_to_bracket(ctx);
                 return true;
