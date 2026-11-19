@@ -48,6 +48,8 @@ pub struct App {
     /// Recently opened folders, most recent first (the Welcome page's
     /// Recent list), kept in `<user data>/User/globalStorage`.
     recent_folders: Vec<PathBuf>,
+    /// What File ▸ Open Recent was last filled with (folders, files).
+    open_recent_shown: (Vec<PathBuf>, Vec<PathBuf>),
     /// `--user-data-dir`; `None` in tests (nothing is written).
     user_data_dir: Option<PathBuf>,
     /// User settings (`settings.json`); in memory until
@@ -511,6 +513,7 @@ impl App {
             palette: CommandPaletteState::default(),
             settings: crate::settings::Settings::in_memory(),
             recent_folders: Vec::new(),
+            open_recent_shown: (Vec::new(), Vec::new()),
             user_data_dir: None,
             theme_pick: None,
             visuals_generation: 0,
@@ -601,6 +604,18 @@ impl App {
     }
 
     fn dispatch_menu_event(&mut self, ctx: &Context, id: &muda::MenuId) {
+        // File ▸ Open Recent entries carry their path in the id.
+        if let Some(path) = id.0.strip_prefix("recent:") {
+            let path = PathBuf::from(path);
+            if path.is_dir() {
+                self.set_workspace(path);
+            } else if path.is_file() {
+                self.open_file(path);
+            } else {
+                self.extensions.notify_info(format!("The path '{}' does not exist anymore on disk.", path.display()));
+            }
+            return;
+        }
         if let Some(command) = self.menu_keys.as_ref().and_then(|k| k.command(id)) {
             if !self.run_vscode_command(ctx, command) {
                 let title = self.menu_keys.as_ref().and_then(|k| k.title(id)).unwrap_or_else(|| command.to_string());
@@ -623,6 +638,14 @@ impl App {
             "workbench.action.files.openFile" | "workbench.action.files.openFileFolder" => CommandId::OpenFile,
             "workbench.action.closeWindow" => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            }
+            "workbench.action.clearRecentFiles" => {
+                if Self::confirm("Are you sure you want to clear all recently opened files and workspaces?", "This action is irreversible!", "Clear") {
+                    self.recent_folders.clear();
+                    self.recent_files.clear();
+                    self.save_recent_folders();
+                }
                 return true;
             }
             "editor.action.startFindReplace" => {
@@ -5462,6 +5485,11 @@ impl App {
                 continue;
             }
             self.dispatch_menu_event(ctx, &ev.id);
+        }
+        // File ▸ Open Recent follows the recent folders and files.
+        if self.open_recent_shown.0 != self.recent_folders || self.open_recent_shown.1 != self.recent_files {
+            crate::menubar::set_recent(&self.recent_folders, &self.recent_files);
+            self.open_recent_shown = (self.recent_folders.clone(), self.recent_files.clone());
         }
         if let Some(text) = self.pending_copy.take() {
             ctx.copy_text(text);

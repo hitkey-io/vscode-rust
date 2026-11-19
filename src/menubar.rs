@@ -176,6 +176,7 @@ const IMPLEMENTED: &[&str] = &[
     "editor.action.duplicateSelection",
     "editor.action.smartSelect.expand",
     "editor.action.smartSelect.shrink",
+    "workbench.action.clearRecentFiles",
     "workbench.action.openWalkthrough",
     "workbench.action.selectTheme",
     "workbench.action.openSettings",
@@ -557,9 +558,22 @@ fn build(entries: &[E], parent: &dyn muda::ContextMenu, append: &dyn Fn(&dyn mud
             }
             Sub(title, children) => {
                 let sub = Submenu::new(*title, true);
+                let first = built.len();
                 build(children, &sub, &|i| {
                     let _ = sub.append(i);
                 }, built);
+                if *title == "Open Recent" {
+                    let item = |command: &str| built[first..].iter().find(|(_, c, _)| *c == command).map(|(m, ..)| m.clone());
+                    RECENT.with(|r| {
+                        *r.borrow_mut() = Some(RecentMenu {
+                            sub: sub.clone(),
+                            reopen: item("workbench.action.reopenClosedEditor"),
+                            more: item("workbench.action.openRecent"),
+                            clear: item("workbench.action.clearRecentFiles"),
+                            dynamic: Vec::new(),
+                        });
+                    });
+                }
                 append(&sub);
             }
         }
@@ -709,6 +723,74 @@ pub fn poll_event() -> Option<MenuEvent> {
 /// back from the platform item's title-independent state we set here).
 fn item_accelerator(item: &MenuItem) -> Option<Accelerator> {
     BUILT_WITH.with(|m| m.borrow().iter().find(|(id, _)| id == item.id()).and_then(|(_, a)| *a))
+}
+
+/// File ▸ Open Recent: the submenu, its fixed items and the entries put in
+/// for the recent folders and files (ids `recent:<path>`).
+struct RecentMenu {
+    sub: Submenu,
+    reopen: Option<MenuItem>,
+    more: Option<MenuItem>,
+    clear: Option<MenuItem>,
+    dynamic: Vec<MenuItem>,
+}
+
+thread_local! {
+    static RECENT: std::cell::RefCell<Option<RecentMenu>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The label of a recent entry: the home folder as `~`.
+pub fn recent_label(path: &std::path::Path) -> String {
+    let full = path.to_string_lossy().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && full.starts_with(&format!("{home}/")) => format!("~{}", &full[home.len()..]),
+        _ => full,
+    }
+}
+
+/// Puts the recent folders and files into File ▸ Open Recent, in VS Code's
+/// order: Reopen Closed Editor, folders, files, More…, Clear Recently Opened….
+/// An entry's id is `recent:<path>`.
+pub fn set_recent(folders: &[std::path::PathBuf], files: &[std::path::PathBuf]) {
+    RECENT.with(|r| {
+        let mut guard = r.borrow_mut();
+        let Some(m) = guard.as_mut() else { return };
+        // Everything out, then back in order.
+        for child in m.sub.items() {
+            match &child {
+                muda::MenuItemKind::MenuItem(i) => drop(m.sub.remove(i)),
+                muda::MenuItemKind::Predefined(i) => drop(m.sub.remove(i)),
+                muda::MenuItemKind::Submenu(i) => drop(m.sub.remove(i)),
+                muda::MenuItemKind::Check(i) => drop(m.sub.remove(i)),
+                muda::MenuItemKind::Icon(i) => drop(m.sub.remove(i)),
+            }
+        }
+        m.dynamic.clear();
+        let sep = || PredefinedMenuItem::separator();
+        if let Some(i) = &m.reopen {
+            let _ = m.sub.append(i);
+            let _ = m.sub.append(&sep());
+        }
+        for (list, kind) in [(folders, "folder"), (files, "file")] {
+            let _ = kind;
+            if list.is_empty() {
+                continue;
+            }
+            for path in list.iter().take(10) {
+                let item = MenuItem::with_id(MenuId::new(format!("recent:{}", path.display())), recent_label(path), true, None);
+                let _ = m.sub.append(&item);
+                m.dynamic.push(item);
+            }
+            let _ = m.sub.append(&sep());
+        }
+        if let Some(i) = &m.more {
+            let _ = m.sub.append(i);
+            let _ = m.sub.append(&sep());
+        }
+        if let Some(i) = &m.clear {
+            let _ = m.sub.append(i);
+        }
+    });
 }
 
 thread_local! {
