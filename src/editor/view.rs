@@ -300,7 +300,11 @@ pub const FIND_SEED: &str = "find-seed";
 fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
     use super::smart;
     use egui::{Event, Key, Modifiers};
-    if !ctx.memory(|m| m.has_focus(id)) {
+    // An action asked for by a menu applies to the editor whether or not it
+    // holds the keyboard; keys only count while it does.
+    let action = ctx.data_mut(|d| d.remove_temp::<&'static str>(egui::Id::new(EDITOR_ACTION)));
+    let focused = ctx.memory(|m| m.has_focus(id));
+    if action.is_none() && !focused {
         return false;
     }
     let Some(state) = TextEdit::load_state(ctx, id) else { return false };
@@ -311,9 +315,30 @@ fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
     let language = doc.language;
     let text = doc.text.clone();
     let alt = Modifiers::ALT;
-    // An action the menu asked for (`App::run_vscode_command`).
-    let action = ctx.data_mut(|d| d.remove_temp::<&'static str>(egui::Id::new(EDITOR_ACTION)));
-    let edit: Option<smart::Edit> = ctx.input_mut(|i| {
+    // Expand / Shrink Selection: the ranges left behind are kept to shrink back.
+    let pre: Option<smart::Edit> = match action {
+        Some("expand") | Some("shrink") => {
+            let key = egui::Id::new(("expand-stack", &doc.path));
+            let mut stack: Vec<(usize, usize)> = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+            let sel = (a.min(h), a.max(h));
+            let result = if action == Some("expand") {
+                smart::expand_selection(&text, a, h).map(|(x, y)| {
+                    stack.push(sel);
+                    smart::Edit { text: text.clone(), anchor: x, head: y }
+                })
+            } else {
+                stack.pop().map(|(x, y)| smart::Edit { text: text.clone(), anchor: x, head: y })
+            };
+            ctx.data_mut(|d| d.insert_temp(key, stack));
+            result
+        }
+        _ => None,
+    };
+    let edit: Option<smart::Edit> = if pre.is_some() {
+        pre
+    } else if !focused {
+        (action == Some("duplicate")).then(|| smart::duplicate_selection(&text, a, h))
+    } else { ctx.input_mut(|i| {
         if action == Some("duplicate") {
             return Some(smart::duplicate_selection(&text, a, h));
         }
@@ -380,7 +405,7 @@ fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
             return Some(e);
         }
         None
-    });
+    }) };
     let Some(e) = edit else { return false };
     let changed = e.text != doc.text;
     doc.text = e.text;

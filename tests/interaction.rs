@@ -1637,3 +1637,51 @@ fn the_find_widget_searches_with_options_and_replaces() {
     assert_eq!(value(&harness), "Foo bar FOO bard\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn expand_and_shrink_selection_keep_the_text() {
+    use egui_kittest::kittest::NodeT;
+    let dir = std::env::temp_dir().join("vscode-rust-expand-selection");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.txt");
+    let original = "fn a() {\n  call(x, yy);\n}\n";
+    std::fs::write(&file, original).unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    let editor = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.run();
+    let queue = |h: &mut Harness<'static>, what: &'static str| {
+        h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("editor-action"), what));
+        h.run();
+        h.run();
+    };
+    // What is selected shows when it is duplicated: the caret starts in "fn",
+    // so the first expansion is the word, the second the line's text.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowUp);
+    harness.run();
+    queue(&mut harness, "expand");
+    queue(&mut harness, "duplicate");
+    assert!(editor(&harness).starts_with("fnfn a()"), "got {:?}", editor(&harness));
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    harness.run();
+    assert_eq!(editor(&harness), original);
+    // From inside the call's arguments, to the last step, the text stays put.
+    for _ in 0..17 {
+        harness.key_press(egui::Key::ArrowRight);
+    }
+    harness.run();
+    // Further expansions and shrinks never touch the text.
+    for _ in 0..6 {
+        queue(&mut harness, "expand");
+        assert_eq!(editor(&harness), original, "expand must not touch the text");
+    }
+    for _ in 0..8 {
+        queue(&mut harness, "shrink");
+        assert_eq!(editor(&harness), original, "shrink must not touch the text");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

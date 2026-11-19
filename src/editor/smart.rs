@@ -258,6 +258,49 @@ pub fn duplicate_selection(text: &str, anchor: usize, head: usize) -> Edit {
     Edit { text: out, anchor: anchor + len, head: head + len }
 }
 
+/// Selection ▸ Expand Selection: the next larger range around the selection
+/// (char indexes): the word, the line's text, the whole line, the inside and
+/// the outside of each enclosing bracket pair, the document. `None` when the
+/// selection already is the whole text.
+pub fn expand_selection(text: &str, anchor: usize, head: usize) -> Option<(usize, usize)> {
+    let ch = chars(text);
+    let (s, e) = (anchor.min(head), anchor.max(head));
+    let mut cands: Vec<(usize, usize)> = vec![(0, ch.len())];
+    // The word under the start of the selection.
+    let (mut a, mut b) = (s.min(ch.len()), s.min(ch.len()));
+    while a > 0 && is_word(ch[a - 1]) {
+        a -= 1;
+    }
+    while b < ch.len() && is_word(ch[b]) {
+        b += 1;
+    }
+    if a < b {
+        cands.push((a, b));
+    }
+    // The line of the selection's start.
+    let ls = ch[..s.min(ch.len())].iter().rposition(|&c| c == '\n').map_or(0, |p| p + 1);
+    let le = ch[s.min(ch.len())..].iter().position(|&c| c == '\n').map_or(ch.len(), |p| s + p);
+    let first = (ls..le).find(|&i| !ch[i].is_whitespace()).unwrap_or(ls);
+    let last = (ls..le).rev().find(|&i| !ch[i].is_whitespace()).map_or(le, |i| i + 1);
+    cands.push((first, last.max(first)));
+    cands.push((ls, le));
+    // Bracket pairs, matched in one pass.
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, &c) in ch.iter().enumerate() {
+        match c {
+            '(' | '[' | '{' => stack.push(i),
+            ')' | ']' | '}' => {
+                if let Some(o) = stack.pop() {
+                    cands.push((o + 1, i));
+                    cands.push((o, i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    cands.into_iter().filter(|&(x, y)| x <= s && y >= e && (x, y) != (s, e) && x < y).min_by_key(|&(x, y)| y - x)
+}
+
 /// ⇧⌘K: the covered lines go; the cursor lands on the line that took their place.
 pub fn delete_lines(text: &str, anchor: usize, head: usize) -> Edit {
     let mut l = Lines::new(text);
@@ -473,6 +516,19 @@ pub fn toggle_block_comment(text: &str, anchor: usize, head: usize, language: &s
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expanding_grows_word_line_brackets_document() {
+        let t = "fn a() {\n  call(x, yy);\n}\n";
+        let at = t.find("yy").unwrap();
+        assert_eq!(super::expand_selection(t, at + 1, at + 1), Some((at, at + 2))); // word
+        assert_eq!(super::expand_selection(t, at, at + 2), Some((at - 3, at + 2))); // inside ( )
+        let r = super::expand_selection(t, at - 3, at + 2).unwrap();
+        assert_eq!(&t[r.0..r.1], "(x, yy)");
+        let r = super::expand_selection(t, r.0, r.1).unwrap();
+        assert_eq!(&t[r.0..r.1], "call(x, yy);");
+        assert_eq!(super::expand_selection("ab", 0, 2), None);
+    }
+
     #[test]
     fn duplicating_a_selection_or_a_line() {
         let e = super::duplicate_selection("ab cd", 3, 5);

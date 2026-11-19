@@ -669,6 +669,11 @@ impl App {
                 }
                 return true;
             }
+            "editor.action.smartSelect.expand" | "editor.action.smartSelect.shrink" => {
+                let name = if id.ends_with("expand") { "expand" } else { "shrink" };
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::editor::view::EDITOR_ACTION), name));
+                return true;
+            }
             "editor.action.duplicateSelection" => {
                 ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::editor::view::EDITOR_ACTION), "duplicate"));
                 return true;

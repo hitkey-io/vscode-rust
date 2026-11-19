@@ -174,6 +174,8 @@ const IMPLEMENTED: &[&str] = &[
     "workbench.action.gotoLine",
     "editor.action.jumpToBracket",
     "editor.action.duplicateSelection",
+    "editor.action.smartSelect.expand",
+    "editor.action.smartSelect.shrink",
     "workbench.action.openWalkthrough",
     "workbench.action.selectTheme",
     "workbench.action.openSettings",
