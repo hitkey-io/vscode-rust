@@ -34,6 +34,10 @@ pub struct FindState {
     pub replace_open: bool,
     pub replace: String,
     pub preserve_case: bool,
+    /// Find in Selection: the byte range being searched, while it is on.
+    pub scope: Option<(usize, usize)>,
+    /// The editor has a selection the scope could be taken from.
+    pub can_scope: bool,
     request_focus: bool,
     request_replace_focus: bool,
     /// The input should select its whole text when it takes the focus.
@@ -94,7 +98,12 @@ fn pattern(state: &FindState) -> Option<regex::Regex> {
 /// Byte ranges of the matches of the query in `text` (empty matches left out).
 pub fn compute_matches(text: &str, state: &FindState) -> Vec<(usize, usize)> {
     match pattern(state) {
-        Some(re) => re.find_iter(text).filter(|m| !m.as_str().is_empty()).map(|m| (m.start(), m.end())).collect(),
+        Some(re) => re
+            .find_iter(text)
+            .filter(|m| !m.as_str().is_empty())
+            .filter(|m| state.scope.is_none_or(|(s, e)| m.start() >= s && m.end() <= e))
+            .map(|m| (m.start(), m.end()))
+            .collect(),
         None => Vec::new(),
     }
 }
@@ -154,6 +163,8 @@ pub struct FindResponse {
     pub goto: Option<usize>,
     /// Replace the current match / every match.
     pub replace: Option<ReplaceAction>,
+    /// The Find in Selection button was pressed.
+    pub toggle_scope: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -235,7 +246,7 @@ fn input_box(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, text_w: f32
 /// Render the widget (only when `state.open`). `matches` must be the ranges
 /// computed from the active document's current text.
 pub fn show(ctx: &Context, state: &mut FindState, matches: &[(usize, usize)]) -> FindResponse {
-    let mut out = FindResponse { goto: None, replace: None };
+    let mut out = FindResponse { goto: None, replace: None, toggle_scope: false };
     if !state.open {
         return out;
     }
@@ -259,6 +270,9 @@ pub fn show(ctx: &Context, state: &mut FindState, matches: &[(usize, usize)]) ->
         }
         if i.consume_key(alt_cmd, Key::R) {
             state.regex = !state.regex;
+        }
+        if i.consume_key(alt_cmd, Key::L) {
+            out.toggle_scope = true;
         }
         if i.consume_key(alt_cmd, Key::P) {
             state.preserve_case = !state.preserve_case;
@@ -343,7 +357,13 @@ pub fn show(ctx: &Context, state: &mut FindState, matches: &[(usize, usize)]) ->
             }
             // Find in Selection: 40% while there is no selection to search.
             let sel = at(367.0, 5.5, 22.0, 22.0);
-            p.text(sel.center(), Align2::CENTER_CENTER, icons::codicon_by_name("selection").unwrap_or('?').to_string(), codicon_font(16.0), Palette::FG().gamma_multiply(0.4));
+            if state.scope.is_some() || state.can_scope {
+                if toggle(ui, sel, "selection", state.scope.is_some(), "Find in Selection (⌥⌘L)", id.with("scope")) {
+                    out.toggle_scope = true;
+                }
+            } else {
+                p.text(sel.center(), Align2::CENTER_CENTER, icons::codicon_by_name("selection").unwrap_or('?').to_string(), codicon_font(16.0), Palette::FG().gamma_multiply(0.4));
+            }
             if button(ui, at(392.0, 6.0, 22.0, 22.0), "close", true, "Close (Escape)", id.with("close"), true) {
                 state.open = false;
             }
@@ -409,6 +429,14 @@ mod tests {
         assert!(compute_matches(text, &state("")).is_empty());
         // Plain text takes regex characters literally.
         assert_eq!(compute_matches("a.b axb", &state("a.b")).len(), 1);
+    }
+
+    #[test]
+    fn find_in_selection_limits_the_matches() {
+        let mut s = FindState { query: "a".into(), ..Default::default() };
+        assert_eq!(compute_matches("a a a", &s).len(), 3);
+        s.scope = Some((2, 5));
+        assert_eq!(compute_matches("a a a", &s), vec![(2, 3), (4, 5)]);
     }
 
     #[test]

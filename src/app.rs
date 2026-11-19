@@ -2784,6 +2784,16 @@ impl App {
             let mut find_hl =
                 crate::editor::find::highlight_for(&self.find, &find_matches);
             if let Some(doc) = self.documents.get(idx) {
+                if self.find.open {
+                    let key = egui::Id::new(("marks-sel", &doc.path));
+                    self.find.can_scope = ui.ctx().data(|d| d.get_temp::<(usize, usize)>(key)).is_some_and(|(a, h)| a != h);
+                    if let Some((s, e)) = self.find.scope.filter(|(s, e)| e <= &doc.text.len() && s < e) {
+                        find_hl
+                            .get_or_insert_with(Default::default)
+                            .decorations
+                            .push(crate::editor::highlight::DecorationSpan { start: s, end: e, background: Some(Palette::FIND_RANGE_HL_BG()), color: None, underline: None });
+                    }
+                }
                 let spans = self.extension_decoration_spans(doc);
                 if !spans.is_empty() {
                     find_hl
@@ -2792,7 +2802,8 @@ impl App {
                             current: 0,
                             decorations: Vec::new(),
                         })
-                        .decorations = spans;
+                        .decorations
+                        .extend(spans);
                 }
             }
             let squiggles = self
@@ -5878,6 +5889,9 @@ impl App {
         // In-editor find widget (drawn over the editor, after all panels).
         if self.find.open && self.active_doc.is_some() {
             let fr = crate::editor::find::show(ctx, &mut self.find, &find_matches_for_widget);
+            if fr.toggle_scope {
+                self.toggle_find_scope(ctx);
+            }
             if let Some(action) = fr.replace {
                 self.find_replace(action);
             }
@@ -6116,8 +6130,31 @@ impl App {
         if edits.is_empty() {
             return;
         }
+        let before = doc.text.len();
         doc.text = apply_replacements(&doc.text, &edits);
+        // The searched range grows or shrinks with what was replaced in it.
+        if let Some((s, e)) = self.find.scope {
+            let after = doc.text.len() as isize - before as isize;
+            self.find.scope = Some((s, (e as isize + after).max(s as isize) as usize));
+        }
         doc.check_dirty();
+    }
+
+    /// Find in Selection: turns the scope off, or takes the editor's current
+    /// selection (kept by the view in `("marks-sel", path)`) as the range.
+    fn toggle_find_scope(&mut self, ctx: &Context) {
+        if self.find.scope.take().is_some() {
+            return;
+        }
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        let Some((a, h)) = ctx.data(|d| d.get_temp::<(usize, usize)>(egui::Id::new(("marks-sel", &doc.path)))) else { return };
+        let (s, e) = (a.min(h), a.max(h));
+        if s == e {
+            return;
+        }
+        let byte = |i: usize| doc.text.char_indices().nth(i).map_or(doc.text.len(), |(b, _)| b);
+        self.find.scope = Some((byte(s), byte(e)));
+        self.find.current = 0;
     }
 
     /// Opens `path` with the cursor at a UTF-16 position of a provider

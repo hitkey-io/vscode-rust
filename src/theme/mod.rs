@@ -148,6 +148,8 @@ palette! {
     FIND_MATCH_BG = Id("editor.findMatchBackground");
     /// `editor.findMatchHighlightBackground` — the non-current matches.
     FIND_MATCH_HL_BG = Id("editor.findMatchHighlightBackground");
+    /// `editor.findRangeHighlightBackground` — the range Find in Selection searches.
+    FIND_RANGE_HL_BG = Id("editor.findRangeHighlightBackground");
     SEARCH_MATCH_BG = Id("editor.findMatchHighlightBackground");
     /// `editor.selectionHighlightBackground` — other occurrences of the selection.
     SELECTION_HIGHLIGHT_BG = Id("editor.selectionHighlightBackground");
