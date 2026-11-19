@@ -172,6 +172,7 @@ const IMPLEMENTED: &[&str] = &[
     "workbench.view.extensions",
     "workbench.action.quickOpen",
     "workbench.action.gotoLine",
+    "editor.action.jumpToBracket",
     "workbench.action.openWalkthrough",
     "workbench.action.selectTheme",
     "workbench.action.openSettings",

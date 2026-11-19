@@ -105,6 +105,35 @@ pub fn bracket_pair(text: &str, caret: usize) -> Option<(usize, usize)> {
     None
 }
 
+/// Where "Go to Bracket" (`editor.action.jumpToBracket`) puts the caret
+/// (char index): on a bracket, the start of its partner; elsewhere the start
+/// of the closing bracket of the enclosing pair, else the next bracket.
+pub fn jump_target(text: &str, caret: usize) -> Option<usize> {
+    if let Some((open, close)) = bracket_pair(text, caret) {
+        // On the closing one (its start or end edge) the partner is the opener.
+        return Some(if caret == close || caret == close + 1 { open } else { close });
+    }
+    let chars: Vec<char> = text.chars().collect();
+    // The closest unmatched opener before the caret, then its closer.
+    let mut depth = 0usize;
+    for i in (0..caret.min(chars.len())).rev() {
+        match partner(chars[i]) {
+            Some((_, false)) => depth += 1,
+            Some((_, true)) if depth > 0 => depth -= 1,
+            Some((_, true)) => {
+                if let Some((_, close)) = bracket_pair(text, i) {
+                    if close >= caret {
+                        return Some(close);
+                    }
+                }
+                break;
+            }
+            None => {}
+        }
+    }
+    (caret..chars.len()).find(|&i| partner(chars[i]).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +149,16 @@ mod tests {
         assert!(selection_occurrences(text, 4, 4).is_empty());
         assert!(selection_occurrences("a b\nc", 1, 2).is_empty());
         assert!(selection_occurrences("a\nb a\nb", 0, 3).is_empty());
+    }
+
+    #[test]
+    fn go_to_bracket_jumps_to_the_partner_enclosing_or_next() {
+        let text = "x (a, [b]) y (z)";
+        assert_eq!(jump_target(text, 2), Some(9)); // before "(" → its ")"
+        assert_eq!(jump_target(text, 10), Some(2)); // after ")" → its "("
+        assert_eq!(jump_target(text, 4), Some(9)); // inside → enclosing closer
+        assert_eq!(jump_target(text, 0), Some(2)); // none around → next bracket
+        assert_eq!(jump_target("abc", 1), None);
     }
 
     #[test]

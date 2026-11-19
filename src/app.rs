@@ -669,6 +669,10 @@ impl App {
                 }
                 return true;
             }
+            "editor.action.jumpToBracket" => {
+                self.jump_to_bracket(ctx);
+                return true;
+            }
             "workbench.action.gotoLine" => {
                 self.palette.open_quick_open(self.workspace_root.as_deref(), &[]);
                 self.palette.query = ":".to_string();
@@ -4869,6 +4873,25 @@ impl App {
         let mut doc = Document::read_only(PathBuf::from(format!("{title}.code-search")), text, title);
         doc.read_only = false;
         self.open_tab(doc, true);
+    }
+
+    /// Go to Bracket: the caret goes to the partner of the bracket it is on
+    /// (or the enclosing / next one), see `marks::jump_target`.
+    fn jump_to_bracket(&mut self, ctx: &Context) {
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get_mut(i)) else {
+            return;
+        };
+        let key = egui::Id::new(("marks-sel", &doc.path));
+        let Some((anchor, head)) = ctx.data(|d| d.get_temp::<(usize, usize)>(key)) else {
+            return;
+        };
+        let Some(target) = crate::editor::marks::jump_target(&doc.text, anchor.min(head)) else {
+            return;
+        };
+        let byte = doc.text.char_indices().nth(target).map_or(doc.text.len(), |(b, _)| b);
+        let line_start = doc.text[..byte].rfind('\n').map_or(0, |n| n + 1);
+        let line = doc.text[..byte].matches('\n').count() + 1;
+        doc.pending_nav = Some((line, byte - line_start));
     }
 
     /// Put the cursor at the start of 1-based `line` in the active editor,
