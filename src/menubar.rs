@@ -177,6 +177,7 @@ const IMPLEMENTED: &[&str] = &[
     "editor.action.smartSelect.expand",
     "editor.action.smartSelect.shrink",
     "workbench.action.clearRecentFiles",
+    "workbench.action.reopenClosedEditor",
     "workbench.action.openWalkthrough",
     "workbench.action.selectTheme",
     "workbench.action.openSettings",
@@ -238,7 +239,7 @@ const FILE: &[E] = &[
     Item("Open Folder…", "workbench.action.files.openFolder", ""),
     Item("Open Workspace from File…", "workbench.action.openWorkspace", ""),
     Sub("Open Recent", &[
-        Off("Reopen Closed Editor", "workbench.action.reopenClosedEditor", "shift+cmd+t"),
+        Item("Reopen Closed Editor", "workbench.action.reopenClosedEditor", "shift+cmd+t"),
         Sep,
         Item("More… [⌃R]", "workbench.action.openRecent", ""),
         Sep,

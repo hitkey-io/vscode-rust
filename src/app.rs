@@ -48,6 +48,8 @@ pub struct App {
     /// Recently opened folders, most recent first (the Welcome page's
     /// Recent list), kept in `<user data>/User/globalStorage`.
     recent_folders: Vec<PathBuf>,
+    /// Files whose editors were closed, newest last (Reopen Closed Editor).
+    closed_editors: Vec<PathBuf>,
     /// What File ▸ Open Recent was last filled with (folders, files).
     open_recent_shown: (Vec<PathBuf>, Vec<PathBuf>),
     /// `--user-data-dir`; `None` in tests (nothing is written).
@@ -513,6 +515,7 @@ impl App {
             palette: CommandPaletteState::default(),
             settings: crate::settings::Settings::in_memory(),
             recent_folders: Vec::new(),
+            closed_editors: Vec::new(),
             open_recent_shown: (Vec::new(), Vec::new()),
             user_data_dir: None,
             theme_pick: None,
@@ -638,6 +641,18 @@ impl App {
             "workbench.action.files.openFile" | "workbench.action.files.openFileFolder" => CommandId::OpenFile,
             "workbench.action.closeWindow" => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            }
+            "workbench.action.reopenClosedEditor" => {
+                while let Some(path) = self.closed_editors.pop() {
+                    if path.is_file() && !self.documents.iter().any(|d| d.path == path) {
+                        self.open_file(path);
+                        if let Some(d) = self.active_doc.and_then(|i| self.documents.get_mut(i)) {
+                            d.preview = false;
+                        }
+                        break;
+                    }
+                }
                 return true;
             }
             "workbench.action.clearRecentFiles" => {
@@ -3102,6 +3117,16 @@ impl App {
         }
         let group = self.documents[idx].group;
         let was_active = self.group_active(group) == Some(idx);
+        {
+            // What Reopen Closed Editor brings back: real files only.
+            let d = &self.documents[idx];
+            if d.webview.is_none() && !d.welcome && !d.untitled && !d.read_only && d.path.is_file() {
+                let path = d.path.clone();
+                self.closed_editors.retain(|p| p != &path);
+                self.closed_editors.push(path);
+                self.closed_editors.drain(..self.closed_editors.len().saturating_sub(20));
+            }
+        }
         // The neighbour that takes over: the one before, else the one after.
         let members = self.group_members(group);
         let next = members.iter().rev().find(|&&m| m < idx).or_else(|| members.iter().find(|&&m| m > idx)).copied();
@@ -5391,6 +5416,10 @@ impl App {
         });
         if close_editor {
             self.close_active();
+        }
+        // ⇧⌘T: Reopen Closed Editor (the native menu takes the key in the app).
+        if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::T))) {
+            self.run_vscode_command(ctx, "workbench.action.reopenClosedEditor");
         }
 
         let show_search = ctx.input_mut(|i| {

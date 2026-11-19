@@ -1685,3 +1685,25 @@ fn expand_and_shrink_selection_keep_the_text() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn reopen_closed_editor_brings_the_file_back() {
+    let dir = std::env::temp_dir().join("vscode-rust-reopen-closed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("keep.txt");
+    std::fs::write(&file, "hello\n").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    // Close the editor with ⌘W, then ⇧⌘T brings it back.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::W);
+    harness.run();
+    assert!(harness.query_by_role(egui::accesskit::Role::MultilineTextInput).is_none(), "the editor should be closed");
+    harness.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::T);
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_role(egui::accesskit::Role::MultilineTextInput).is_some(), "the editor should be back");
+    let _ = std::fs::remove_dir_all(&dir);
+}
