@@ -168,6 +168,8 @@ pub struct PickOptions {
     pub item_button: Option<(char, &'static str)>,
     /// A button inside the input box, on the right: (codicon, tooltip).
     pub input_button: Option<(char, &'static str)>,
+    /// The query also matches the description (`matchOnDescription`).
+    pub match_description: bool,
 }
 
 /// An extension's own use of the Quick Input (quickInput.ts): a list to pick
@@ -449,7 +451,7 @@ fn empty_message(state: &CommandPaletteState) -> Option<&'static str> {
 
 fn build_items(state: &CommandPaletteState) -> Vec<Item> {
     match &state.custom {
-        Some(CustomInput::Pick { request_id, items, .. }) => return pick_items(*request_id, items, &state.query),
+        Some(CustomInput::Pick { request_id, items, options, .. }) => return pick_items(*request_id, items, &state.query, options.match_description),
         Some(CustomInput::Text { .. }) => return Vec::new(),
         None => {}
     }
@@ -466,6 +468,7 @@ fn pick_items(
     request_id: u64,
     items: &[(String, Option<String>, Option<String>, bool)],
     query: &str,
+    match_description: bool,
 ) -> Vec<Item> {
     let q = query.trim().to_lowercase();
     let mut out = Vec::new();
@@ -477,11 +480,19 @@ fn pick_items(
             group = Some("");
             continue;
         }
+        let mut desc_hl = Vec::new();
         let hl = if q.is_empty() {
             Vec::new()
         } else {
             match fuzzy_match(&label.to_lowercase(), &q) {
                 Some((_, hl)) => hl,
+                None if match_description => match description.as_deref().and_then(|d| fuzzy_match(&d.to_lowercase(), &q)) {
+                    Some((_, dh)) => {
+                        desc_hl = dh;
+                        Vec::new()
+                    }
+                    None => continue,
+                },
                 None => continue,
             }
         };
@@ -498,7 +509,7 @@ fn pick_items(
             label: label.clone(),
             label_hl: hl,
             description,
-            desc_hl: Vec::new(),
+            desc_hl,
             separator,
             from_history: false,
             command_id: String::new(),

@@ -48,6 +48,8 @@ pub struct App {
     /// Recently opened folders, most recent first (the Welcome page's
     /// Recent list), kept in `<user data>/User/globalStorage`.
     recent_folders: Vec<PathBuf>,
+    /// The Open Recent picker's entries by item index (`None` for separators).
+    open_recent_pick: Vec<Option<PathBuf>>,
     /// Files whose editors were closed, newest last (Reopen Closed Editor).
     closed_editors: Vec<PathBuf>,
     /// What File ▸ Open Recent was last filled with (folders, files).
@@ -338,6 +340,8 @@ const GIT_PROMPT_BASE: u64 = 1 << 52;
 const THEME_PICK_ID: u64 = 1 << 53;
 /// Request id of Run and Debug's "Select debugger" pick.
 const DEBUGGER_PICK_ID: u64 = 1 << 54;
+/// File ▸ Open Recent ▸ More… (`workbench.action.openRecent`, ⌃R).
+const OPEN_RECENT_PICK_ID: u64 = (1 << 54) + 1;
 const STATUS_EOL_PICK_ID: u64 = 1 << 55;
 const STATUS_INDENT_PICK_ID: u64 = 1 << 56;
 const STATUS_LANGUAGE_PICK_ID: u64 = 1 << 57;
@@ -516,6 +520,7 @@ impl App {
             settings: crate::settings::Settings::in_memory(),
             recent_folders: Vec::new(),
             closed_editors: Vec::new(),
+            open_recent_pick: Vec::new(),
             open_recent_shown: (Vec::new(), Vec::new()),
             user_data_dir: None,
             theme_pick: None,
@@ -641,6 +646,10 @@ impl App {
             "workbench.action.files.openFile" | "workbench.action.files.openFileFolder" => CommandId::OpenFile,
             "workbench.action.closeWindow" => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return true;
+            }
+            "workbench.action.openRecent" => {
+                self.open_recent_picker();
                 return true;
             }
             "workbench.action.reopenClosedEditor" => {
@@ -4547,6 +4556,17 @@ impl App {
                 self.show_view(ActivityView::Extensions);
                 self.extensions.marketplace.set_query("@id:vscode.theme-defaults".into());
             }
+            PaletteAction::PickItemButton { request_id, index } if request_id == OPEN_RECENT_PICK_ID => {
+                // Remove from Recently Opened, then show the list again.
+                if let Some(Some(path)) = self.open_recent_pick.get(index).cloned() {
+                    self.recent_folders.retain(|p| p != &path);
+                    self.recent_files.retain(|p| p != &path);
+                    self.save_recent_folders();
+                }
+                let query = self.palette.query.clone();
+                self.open_recent_picker();
+                self.palette.query = query;
+            }
             PaletteAction::PickItemButton { .. } => {}
             PaletteAction::PickInputButton { request_id } => {
                 if request_id == THEME_PICK_ID {
@@ -4555,6 +4575,18 @@ impl App {
                 }
             }
             PaletteAction::Picked { request_id, index } if request_id == THEME_PICK_ID => self.theme_pick_closed(index),
+            PaletteAction::Picked { request_id, index } if request_id == OPEN_RECENT_PICK_ID => {
+                if let Some(Some(path)) = index.and_then(|i| self.open_recent_pick.get(i).cloned()) {
+                    if path.is_dir() {
+                        self.set_workspace(path);
+                    } else if path.is_file() {
+                        self.show_welcome = false;
+                        self.open_file(path);
+                    } else {
+                        self.extensions.notify_info(format!("The path '{}' does not exist anymore on disk.", path.display()));
+                    }
+                }
+            }
             PaletteAction::Picked { request_id, index } if request_id == DEBUGGER_PICK_ID => {
                 if index.is_some() {
                     // `debug.installAdditionalDebuggers`.
@@ -4759,6 +4791,7 @@ impl App {
                     crate::icons::codicon_by_name("color-mode").unwrap_or('?'),
                     "Detect system color mode disabled. Click to configure.",
                 )),
+                match_description: false,
             },
         );
     }
@@ -5425,6 +5458,10 @@ impl App {
         });
         if close_editor {
             self.close_active();
+        }
+        // ⌃R: Open Recent (More…), unless a text input holds the keyboard.
+        if !ctx.wants_keyboard_input() && ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::CTRL, Key::R))) {
+            self.run_vscode_command(ctx, "workbench.action.openRecent");
         }
         // ⇧⌘T: Reopen Closed Editor (the native menu takes the key in the app).
         if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::T))) {
@@ -6238,6 +6275,46 @@ impl App {
         let byte = |i: usize| doc.text.char_indices().nth(i).map_or(doc.text.len(), |(b, _)| b);
         self.find.scope = Some((byte(s), byte(e)));
         self.find.current = 0;
+    }
+
+    /// File ▸ Open Recent ▸ More… (windowActions.ts `BaseOpenRecentAction`):
+    /// "folders" then "files", each entry its name with the parent folder as
+    /// the description, the second entry focused when the first is the open
+    /// folder, a Remove from Recently Opened button, matching descriptions too.
+    fn open_recent_picker(&mut self) {
+        let entry = |p: &PathBuf| {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string());
+            let parent = p.parent().map(|d| crate::menubar::recent_label(d)).filter(|d| !d.is_empty());
+            (name, parent, None, false)
+        };
+        let mut items = vec![("folders".to_string(), None, None, true)];
+        let mut paths = vec![None];
+        for p in &self.recent_folders {
+            items.push(entry(p));
+            paths.push(Some(p.clone()));
+        }
+        items.push(("files".to_string(), None, None, true));
+        paths.push(None);
+        for p in &self.recent_files {
+            items.push(entry(p));
+            paths.push(Some(p.clone()));
+        }
+        // The open folder first in the list: the next one is focused.
+        let entries: Vec<usize> = paths.iter().enumerate().filter(|(_, p)| p.is_some()).map(|(i, _)| i).collect();
+        let first_is_current = self.recent_folders.first().is_some_and(|f| Some(f) == self.workspace_root.as_ref());
+        let active = entries.get(if first_is_current { 1 } else { 0 }).copied();
+        self.open_recent_pick = paths;
+        self.palette.open_pick_with(
+            OPEN_RECENT_PICK_ID,
+            items,
+            Some("Select to open (hold Cmd-key to force new window or Option-key for same window)".into()),
+            crate::workbench::command_palette::PickOptions {
+                active,
+                item_button: crate::icons::codicon_by_name("close").map(|g| (g, "Remove from Recently Opened")),
+                match_description: true,
+                ..Default::default()
+            },
+        );
     }
 
     /// Opens `path` with the cursor at a UTF-16 position of a provider

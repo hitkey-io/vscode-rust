@@ -178,6 +178,7 @@ const IMPLEMENTED: &[&str] = &[
     "editor.action.smartSelect.shrink",
     "workbench.action.clearRecentFiles",
     "workbench.action.reopenClosedEditor",
+    "workbench.action.openRecent",
     "workbench.action.openWalkthrough",
     "workbench.action.selectTheme",
     "workbench.action.openSettings",

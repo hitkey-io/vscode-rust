@@ -1649,31 +1649,31 @@ fn expand_and_shrink_selection_keep_the_text() {
     std::fs::write(&file, original).unwrap();
     let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
     for _ in 0..3 {
-        harness.run();
+        harness.run_steps(3);
     }
     let editor = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
     harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
-    harness.run();
+    harness.run_steps(3);
     let queue = |h: &mut Harness<'static>, what: &'static str| {
         h.ctx.data_mut(|d| d.insert_temp(egui::Id::new("editor-action"), what));
-        h.run();
-        h.run();
+        h.run_steps(3);
+        h.run_steps(3);
     };
     // What is selected shows when it is duplicated: the caret starts in "fn",
     // so the first expansion is the word, the second the line's text.
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowUp);
-    harness.run();
+    harness.run_steps(3);
     queue(&mut harness, "expand");
     queue(&mut harness, "duplicate");
     assert!(editor(&harness).starts_with("fnfn a()"), "got {:?}", editor(&harness));
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(editor(&harness), original);
     // From inside the call's arguments, to the last step, the text stays put.
     for _ in 0..17 {
         harness.key_press(egui::Key::ArrowRight);
     }
-    harness.run();
+    harness.run_steps(3);
     // Further expansions and shrinks never touch the text.
     for _ in 0..6 {
         queue(&mut harness, "expand");
@@ -1751,4 +1751,35 @@ fn problems_show_related_information_under_the_problem() {
     harness.run();
     harness.run();
     let _ = harness.get_by_label("tab:package.json");
+}
+
+#[test]
+fn open_recent_picker_lists_folders_and_files() {
+    let dir = std::env::temp_dir().join("vscode-rust-open-recent");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("recent-one.txt");
+    std::fs::write(&file, "hello\n").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run();
+    }
+    // ⌃R opens the picker: the folder, then the file.
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::R);
+    harness.run();
+    harness.run();
+    // Each row is the name with its parent folder as the description.
+    let parent = vscode_rust::menubar::recent_label(dir.parent().unwrap());
+    let folder_row = format!("vscode-rust-open-recent, {parent}");
+    let file_row = format!("recent-one.txt, {}", vscode_rust::menubar::recent_label(&dir));
+    let _ = harness.get_by_label(&folder_row);
+    let _ = harness.get_by_label(&file_row);
+    harness.snapshot("interaction_open_recent");
+    // The open folder comes first, so the file is focused; its button removes it.
+    harness.get_by_label("Remove from Recently Opened").click();
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label(&file_row).is_none(), "the file should be gone from the list");
+    let _ = harness.get_by_label(&folder_row);
+    let _ = std::fs::remove_dir_all(&dir);
 }
