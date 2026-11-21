@@ -439,6 +439,33 @@ fn rename_prepares_at_the_word_and_returns_edits_per_file() {
 }
 
 #[test]
+fn references_come_back_from_every_open_document() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    let other = fixtures().join("workspace/notes.md");
+    svc.sync_documents(
+        &[(path.clone(), "markdown", "foo bar foo\n", false), (other.clone(), "markdown", "(foo)\n", false)],
+        Some((path.clone(), [0, 0, 0, 0])),
+    );
+    assert!(svc.wait_until(WAIT, |s| s.can_rename()), "log: {:#?}", svc.log);
+    let id = svc
+        .request_language_feature(vscode_rust::extensions::LanguageFeature::References, &path, 0, 9, None)
+        .expect("a reference provider");
+    let mut answer = None;
+    for _ in 0..200 {
+        if let Some(r) = svc.take_result(id) {
+            answer = Some(r);
+            break;
+        }
+        svc.wait_until(Duration::from_millis(30), |_| false);
+    }
+    let Some(ProviderResult::Definition(mut locs)) = answer else { panic!("no answer: {answer:?}") };
+    locs.sort_by(|a, b| a.path.cmp(&b.path).then(a.range.cmp(&b.range)));
+    let got: Vec<(String, [usize; 4])> = locs.iter().map(|l| (l.path.file_name().unwrap().to_string_lossy().to_string(), l.range)).collect();
+    assert_eq!(got, vec![("README.md".into(), [0, 0, 0, 3]), ("README.md".into(), [0, 8, 0, 11]), ("notes.md".into(), [0, 1, 0, 4])]);
+}
+
+#[test]
 fn signature_help_comes_back_with_the_active_parameter() {
     let Some(mut svc) = started() else { return };
     let path = fixtures().join("workspace/README.md");

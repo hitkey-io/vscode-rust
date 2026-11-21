@@ -1347,7 +1347,9 @@ async function provideLocations(kind, method, msg) {
 	const out = [];
 	for (const p of providersFor(kind, document)) {
 		try {
-			let r = await p.provider[method](document, position, token);
+			let r = kind === 'reference'
+				? await p.provider[method](document, position, { includeDeclaration: true }, token)
+				: await p.provider[method](document, position, token);
 			if (!r) { continue; }
 			if (!Array.isArray(r)) { r = [r]; }
 			for (const l of r) {
@@ -1548,6 +1550,7 @@ const languages = new Proxy({
 	registerDeclarationProvider: registerProvider('declaration'),
 	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
 	registerImplementationProvider: registerProvider('implementation'),
+	registerReferenceProvider: registerProvider('reference'),
 	async setTextDocumentLanguage(document, languageId) { document.languageId = languageId; return document; },
 }, {
 	get(target, prop) {
@@ -1994,6 +1997,7 @@ async function handle(msg) {
 		case 'provideRename':
 		case 'provideSignatureHelp':
 		case 'provideCodeActions':
+		case 'provideReferences':
 		case 'provideDefinition': {
 			let result;
 			try {
@@ -2005,6 +2009,7 @@ async function handle(msg) {
 						: msg.type === 'provideRename' ? await provideRename(msg)
 						: msg.type === 'provideSignatureHelp' ? await provideSignatureHelp(msg)
 						: msg.type === 'provideCodeActions' ? await provideCodeActions(msg)
+						: msg.type === 'provideReferences' ? await provideLocations('reference', 'provideReferences', msg)
 						: [
 							...await provideLocations('definition', 'provideDefinition', msg),
 							...await provideLocations('declaration', 'provideDeclaration', msg),

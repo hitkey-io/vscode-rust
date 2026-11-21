@@ -17,6 +17,7 @@ pub mod welcome;
 pub mod banner;
 pub mod dialog;
 pub mod panel;
+pub mod references_peek;
 pub mod run_debug;
 pub mod workspace_trust_editor;
 pub mod keybindings_editor;

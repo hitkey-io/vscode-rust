@@ -890,6 +890,7 @@ impl ExtensionService {
             LanguageFeature::Hover => ("provideHover", "hover"),
             LanguageFeature::Definition => ("provideDefinition", "definition"),
             LanguageFeature::Symbols => ("provideDocumentSymbols", "documentSymbol"),
+            LanguageFeature::References => ("provideReferences", "reference"),
         };
         let available = self.provider_kinds.contains(provider)
             || (kind == LanguageFeature::Definition && self.provider_kinds.contains("declaration"));
@@ -1860,6 +1861,9 @@ pub enum LanguageFeature {
     Hover,
     Definition,
     Symbols,
+    /// `provideReferences` (declaration included); the answer is a
+    /// `ProviderResult::Definition` list of locations.
+    References,
 }
 
 fn symbol_entry(v: &Value) -> Option<DocumentSymbol> {

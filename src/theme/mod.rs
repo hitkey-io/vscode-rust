@@ -76,6 +76,21 @@ palette! {
     /// `editorLightBulbAutoFix.foreground` — a preferred quick fix is there.
     LIGHT_BULB_AUTOFIX_FG = Id("editorLightBulbAutoFix.foreground");
     MENU_BORDER = Id("menu.border");
+    /// The references peek (peekView.ts / referencesWidget.css).
+    PEEK_BORDER = Id("peekView.border");
+    PEEK_TITLE_BG = Id("peekViewTitle.background");
+    PEEK_TITLE_LABEL_FG = Id("peekViewTitleLabel.foreground");
+    PEEK_TITLE_DESC_FG = Id("peekViewTitleDescription.foreground");
+    PEEK_RESULT_BG = Id("peekViewResult.background");
+    PEEK_RESULT_LINE_FG = Id("peekViewResult.lineForeground");
+    PEEK_RESULT_FILE_FG = Id("peekViewResult.fileForeground");
+    PEEK_RESULT_SEL_BG = Id("peekViewResult.selectionBackground");
+    PEEK_RESULT_SEL_FG = Id("peekViewResult.selectionForeground");
+    PEEK_RESULT_MATCH_BG = Id("peekViewResult.matchHighlightBackground");
+    PEEK_EDITOR_BG = Id("peekViewEditor.background");
+    PEEK_EDITOR_GUTTER_BG = Id("peekViewEditorGutter.background");
+    PEEK_EDITOR_MATCH_BG = Id("peekViewEditor.matchHighlightBackground");
+    PEEK_EDITOR_MATCH_BORDER = Id("peekViewEditor.matchHighlightBorder");
     MENU_SELECTION_BG = Id("menu.selectionBackground");
     MENU_SELECTION_FG = Id("menu.selectionForeground");
     MENU_SEPARATOR = Id("menu.separatorBackground");

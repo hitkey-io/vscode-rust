@@ -487,6 +487,10 @@ struct LanguageState {
     bulb_at: Option<(PathBuf, usize, std::time::Instant)>,
     pending_bulb: Option<u64>,
     bulb: Option<(u64, Vec<crate::extensions::CodeActionEntry>)>,
+    /// References asked for (⇧F12): request, file, line, char column and
+    /// the caret's rect; and the peek on screen.
+    pending_references: Option<(u64, PathBuf, usize, usize, egui::Rect)>,
+    peek: Option<crate::workbench::references_peek::ReferencesPeek>,
 }
 
 /// The code action list (codeActionMenu.ts `toMenuItems` + actionList.ts):
@@ -774,6 +778,14 @@ impl App {
                     "workbench.action.zoomOut" => (z - 0.1).max(0.5),
                     _ => 1.0,
                 });
+                return true;
+            }
+            "editor.action.goToReferences" | "editor.action.referenceSearch.trigger" => {
+                self.request_references();
+                return true;
+            }
+            "closeReferenceSearch" => {
+                self.lang.peek = None;
                 return true;
             }
             "editor.action.revealDefinition" => {
@@ -1360,6 +1372,16 @@ impl App {
         if self.lang.signature.is_some() && self.lang.suggest.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.lang.signature = None;
         }
+        // The references peek holds Escape, and the tree's keys while it
+        // has the focus.
+        if let Some(peek) = self.lang.peek.as_mut() {
+            let out = peek.keys(ctx);
+            self.peek_output(out);
+        }
+        // ⇧F12: Peek References (before F12, which matches with Shift too).
+        if ctx.input_mut(|i| i.consume_key(Modifiers::SHIFT, Key::F12)) {
+            self.request_references();
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F12)) {
             if let Some(ch) = self.lang.caret_char {
                 self.request_definition(ch);
@@ -1841,6 +1863,76 @@ impl App {
         }
     }
 
+    /// Asks the reference providers about the symbol at the caret
+    /// (`editor.action.referenceSearch.trigger`).
+    fn request_references(&mut self) {
+        let (Some(ch), Some(caret)) = (self.lang.caret_char, self.lang.caret) else { return };
+        let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
+        let byte = crate::extensions::text::char_to_byte(&doc.text, ch);
+        let (line, ch16) = crate::extensions::text::byte_to_position(&doc.text, byte);
+        let line_start = doc.text[..byte].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let col = doc.text[line_start..byte].chars().count();
+        let path = doc.path.clone();
+        self.sync_extension_documents();
+        match self.extensions.request_language_feature(crate::extensions::LanguageFeature::References, &path, line, ch16, None) {
+            Some(id) => self.lang.pending_references = Some((id, path, line, col, caret)),
+            None => self.set_status("No reference provider"),
+        }
+    }
+
+    /// Acts on what the references peek asked for.
+    fn peek_output(&mut self, out: crate::workbench::references_peek::PeekOutput) {
+        use crate::workbench::references_peek::PeekOutput;
+        match out {
+            PeekOutput::None => {}
+            PeekOutput::Close => self.lang.peek = None,
+            PeekOutput::Open { path, line, col } => {
+                self.lang.peek = None;
+                let text = self
+                    .documents
+                    .iter()
+                    .find(|d| d.path == path)
+                    .map(|d| d.text.clone())
+                    .or_else(|| std::fs::read_to_string(&path).ok())
+                    .unwrap_or_default();
+                let line_text = text.split('\n').nth(line).unwrap_or("");
+                let byte = line_text.char_indices().nth(col).map_or(line_text.len(), |(b, _)| b);
+                self.navigate_to(path, line + 1, byte);
+            }
+        }
+    }
+
+    /// The references answer (opens the peek, or says there are none) and
+    /// the peek itself.
+    fn references_peek(&mut self, ctx: &Context) {
+        if let Some((id, path, line, col, caret)) = self.lang.pending_references.clone() {
+            match self.extensions.take_result(id) {
+                Some(crate::extensions::ProviderResult::Definition(locs)) => {
+                    self.lang.pending_references = None;
+                    let docs: Vec<(PathBuf, String)> = self.documents.iter().map(|d| (d.path.clone(), d.text.clone())).collect();
+                    let locations: Vec<(PathBuf, [usize; 4])> = locs.into_iter().map(|l| (l.path, l.range)).collect();
+                    let text_of = |p: &std::path::Path| docs.iter().find(|(dp, _)| dp == p).map(|(_, t)| t.clone()).or_else(|| std::fs::read_to_string(p).ok());
+                    self.lang.peek = crate::workbench::references_peek::ReferencesPeek::new(&locations, text_of, (&path, line, col), caret, self.workspace_root.clone());
+                    if self.lang.peek.is_none() {
+                        self.extensions.notify_info("No references found".to_string());
+                    }
+                }
+                Some(_) => self.lang.pending_references = None,
+                None => ctx.request_repaint_after(std::time::Duration::from_millis(30)),
+            }
+        }
+        // The peek belongs to the editor it was opened in.
+        let active = self.active_doc.and_then(|i| self.documents.get(i)).map(|d| d.path.clone());
+        if self.lang.peek.as_ref().is_some_and(|p| Some(&p.origin) != active.as_ref()) {
+            self.lang.peek = None;
+        }
+        let Some(anchor) = ctx.data(|d| d.get_temp::<(egui::Rect, f32)>(egui::Id::new(crate::editor::find::ANCHOR))) else { return };
+        if let Some(peek) = self.lang.peek.as_mut() {
+            let out = peek.show(ctx, anchor.0, anchor.1);
+            self.peek_output(out);
+        }
+    }
+
     fn request_definition(&mut self, char_index: usize) {
         let Some(doc) = self.active_doc.and_then(|i| self.documents.get(i)) else { return };
         let byte = crate::extensions::text::char_to_byte(&doc.text, char_index);
@@ -2001,6 +2093,7 @@ impl App {
         self.signature_widget(ctx);
         self.code_action_widget(ctx);
         self.lightbulb(ctx);
+        self.references_peek(ctx);
         if let Some((id, path, start)) = self.lang.pending_completion.clone() {
             if let Some(ProviderResult::Completion { items, .. }) = self.extensions.take_result(id) {
                 self.lang.pending_completion = None;

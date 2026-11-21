@@ -1869,3 +1869,53 @@ fn the_lightbulb_shows_code_actions_and_applies_one() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn shift_f12_peeks_the_references_and_enter_goes_to_one() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return;
+    }
+    use egui::{Key, Modifiers};
+    let dir = std::env::temp_dir().join("vscode-rust-references");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.md");
+    std::fs::write(&file, "foo bar\nbaz foo\n").unwrap();
+    let mut harness = launch_with_extensions(Some(dir.clone()), vec![file.clone()], None, Some(sample_extensions_dir()));
+    harness.step();
+    harness.step();
+    run_until_label(&mut harness, "$(smiley) Hello");
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.step();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowUp);
+    harness.step();
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::F12);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.query_by_label("a.md, 2 references").is_none() {
+        assert!(std::time::Instant::now() < deadline, "the peek never opened");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    // Both references are listed by their line; the one at the caret is
+    // selected first, ↓ moves to the other, Enter goes there and closes.
+    assert!(harness.query_by_label("foo bar").is_some());
+    assert!(harness.query_by_label("baz foo").is_some());
+    harness.key_press(Key::ArrowDown);
+    harness.step();
+    harness.key_press(Key::Enter);
+    harness.step();
+    harness.step();
+    assert!(harness.query_by_label("a.md, 2 references").is_none(), "Enter closes the peek");
+    // ⇧F12 again and Escape closes it.
+    harness.key_press_modifiers(Modifiers::SHIFT, Key::F12);
+    while harness.query_by_label("a.md, 2 references").is_none() {
+        assert!(std::time::Instant::now() < deadline, "the peek never opened again");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    harness.key_press(Key::Escape);
+    harness.step();
+    harness.step();
+    assert!(harness.query_by_label("a.md, 2 references").is_none(), "Escape closes the peek");
+    let _ = std::fs::remove_dir_all(&dir);
+}

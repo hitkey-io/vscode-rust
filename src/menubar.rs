@@ -154,6 +154,7 @@ use E::{Item, Off, Sep, Sub};
 /// bind a key equivalent, so a key that the editor handles itself isn't
 /// swallowed by a menu item that does nothing.
 const IMPLEMENTED: &[&str] = &[
+    "editor.action.goToReferences",
     "workbench.action.files.newUntitledFile",
     "workbench.action.files.openFolder",
     "workbench.action.files.openFileFolder",

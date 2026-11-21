@@ -201,6 +201,23 @@ function activate(context) {
 			return edit;
 		},
 	}));
+	context.subscriptions.push(vscode.languages.registerReferenceProvider({ language: 'markdown' }, {
+		provideReferences(document, position) {
+			const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+			if (!range) { return []; }
+			const word = document.getText(range);
+			const out = [];
+			for (const doc of vscode.workspace.textDocuments.filter(d => d.languageId === 'markdown')) {
+				const re = new RegExp(`\\b${word}\\b`, 'g');
+				const text = doc.getText();
+				let m;
+				while ((m = re.exec(text))) {
+					out.push(new vscode.Location(doc.uri, new vscode.Range(doc.positionAt(m.index), doc.positionAt(m.index + word.length))));
+				}
+			}
+			return out;
+		},
+	}));
 	const problems = vscode.languages.createDiagnosticCollection('hello');
 	context.subscriptions.push(problems);
 	const lint = document => {
