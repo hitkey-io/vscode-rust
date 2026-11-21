@@ -2362,9 +2362,18 @@ impl App {
                 severity,
                 source: source.map(str::to_string),
                 code: code.map(str::to_string),
+                related: Vec::new(),
             })
             .collect();
         self.extensions.diagnostics.entry(path).or_default().insert("test".to_string(), list);
+    }
+
+    /// Adds related information (path, 0-based line, column, message) to the
+    /// `index`-th problem `bootstrap_problems` reported for `path` (tests).
+    pub fn bootstrap_problem_related(&mut self, path: &std::path::Path, index: usize, related: Vec<(PathBuf, usize, usize, &str)>) {
+        if let Some(d) = self.extensions.diagnostics.get_mut(path).and_then(|c| c.get_mut("test")).and_then(|l| l.get_mut(index)) {
+            d.related = related.into_iter().map(|(path, line, col, message)| crate::extensions::RelatedInfo { path, line, col, message: message.to_string() }).collect();
+        }
     }
 
     /// Opens the Keyboard Shortcuts editor (⌘K ⌘S), optionally searching.
@@ -6084,7 +6093,15 @@ impl App {
                     items: collections
                         .values()
                         .flatten()
-                        .map(|d| ProblemItem { severity: d.severity, message: d.message.clone(), source: d.source.clone(), code: d.code.clone(), line: d.range[0], col: d.range[1] })
+                        .map(|d| ProblemItem {
+                            severity: d.severity,
+                            message: d.message.clone(),
+                            source: d.source.clone(),
+                            code: d.code.clone(),
+                            line: d.range[0],
+                            col: d.range[1],
+                            related: d.related.iter().map(|r| crate::workbench::panel::ProblemRelated { path: r.path.clone(), line: r.line, col: r.col, message: r.message.clone() }).collect(),
+                        })
                         .collect(),
                 }
             })

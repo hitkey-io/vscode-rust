@@ -1141,6 +1141,11 @@ function sendDiagnostics(owner, uri, diags) {
 			severity: typeof d.severity === 'number' ? d.severity : 0,
 			source: d.source || null,
 			code: d.code === undefined ? null : String(typeof d.code === 'object' && d.code ? d.code.value : d.code),
+			related: (d.relatedInformation || []).filter(r => r && r.location).map(r => ({
+				path: r.location.uri ? (r.location.uri.fsPath || Uri.parse(String(r.location.uri)).fsPath) : fsPath,
+				range: toWire(r.location.range),
+				message: String(r.message),
+			})),
 		})),
 	});
 	diagnosticsChanged.fire({ uris: [uri] });

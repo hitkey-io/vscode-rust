@@ -114,6 +114,18 @@ pub struct Diagnostic {
     pub severity: u8,
     pub source: Option<String>,
     pub code: Option<String>,
+    /// `relatedInformation`: other places that explain this one.
+    pub related: Vec<RelatedInfo>,
+}
+
+/// One `DiagnosticRelatedInformation`: a place (0-based line, UTF-16
+/// column) and what it says about the diagnostic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelatedInfo {
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
 }
 
 /// One completion suggestion.
@@ -1354,6 +1366,23 @@ impl ExtensionService {
                                     severity: d.get("severity").and_then(Value::as_u64).unwrap_or(0).min(3) as u8,
                                     source: d.get("source").and_then(Value::as_str).map(str::to_string),
                                     code: d.get("code").and_then(Value::as_str).map(str::to_string),
+                                    related: d
+                                        .get("related")
+                                        .and_then(Value::as_array)
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|r| {
+                                                    let range = wire_range(r.get("range")?)?;
+                                                    Some(RelatedInfo {
+                                                        path: PathBuf::from(r.get("path")?.as_str()?),
+                                                        line: range[0],
+                                                        col: range[1],
+                                                        message: r.get("message").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                                    })
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
                                 })
                             })
                             .collect()

@@ -297,6 +297,10 @@ fn language_features_answer_through_the_host() {
     let warn = svc.diagnostics_for(&path).into_iter().find(|d| d.severity == 1).unwrap().clone();
     assert_eq!(warn.range, [1, 0, 1, 5]);
     assert_eq!(warn.message, "FIXME found");
+    // Its related information crosses the wire with the place and message.
+    assert_eq!(warn.related.len(), 1, "{warn:?}");
+    assert_eq!((warn.related[0].path.clone(), warn.related[0].line, warn.related[0].col), (path.clone(), 0, 0));
+    assert_eq!(warn.related[0].message, "FIXME is a marker word");
 
     match ask(&mut svc, LanguageFeature::Completion, &path, 2, 3) {
         ProviderResult::Completion { items, .. } => {

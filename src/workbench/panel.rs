@@ -52,6 +52,18 @@ pub struct ProblemItem {
     /// 0-based line and UTF-16 column.
     pub line: usize,
     pub col: usize,
+    /// `relatedInformation`, shown as children of the problem.
+    pub related: Vec<ProblemRelated>,
+}
+
+/// One related place of a problem (`RelatedInformation`): the file, its
+/// 0-based line and UTF-16 column, and the message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProblemRelated {
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
 }
 
 /// A file with problems (`ResourceMarkers`).
@@ -173,6 +185,8 @@ pub struct PanelState {
     /// Problems whose multi-line message was folded to one line (the chevron
     /// after the position); by file and index.
     pub problems_single: HashSet<(PathBuf, usize)>,
+    /// Problems whose related information is folded away (shown by default).
+    pub problems_related_collapsed: HashSet<(PathBuf, usize)>,
     /// The selected problem: file and index in its (sorted) problems.
     pub problems_selected: Option<(PathBuf, usize)>,
     pub problems_scroll: f32,
@@ -1042,12 +1056,19 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
     enum Row<'a> {
         File(&'a ProblemFile, usize),
         Item(&'a ProblemFile, usize),
+        /// A problem's related information: (file, problem, entry).
+        Related(&'a ProblemFile, usize, usize),
     }
     let mut rows: Vec<Row> = Vec::new();
     for (f, idx) in &shown {
         rows.push(Row::File(f, idx.len()));
         if !state.problems_collapsed.contains(&f.path) {
-            rows.extend(idx.iter().map(|&k| Row::Item(f, k)));
+            for &k in idx {
+                rows.push(Row::Item(f, k));
+                if !state.problems_related_collapsed.contains(&(f.path.clone(), k)) {
+                    rows.extend((0..f.items[k].related.len()).map(|j| Row::Related(f, k, j)));
+                }
+            }
         }
     }
     // A problem is as tall as its message has lines (22px each), unless it was
@@ -1060,6 +1081,7 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
         .map(|r| match r {
             Row::File(..) => 22.0,
             Row::Item(f, k) => 22.0 * lines_of(f, *k, &state.problems_single) as f32,
+            Row::Related(..) => 22.0,
         })
         .collect();
     let total_h: f32 = heights.iter().sum();
@@ -1088,6 +1110,7 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
             .map(|r| match r {
                 Row::File(f, _) => (*f, FILE_ROW),
                 Row::Item(f, k) => (*f, *k),
+                Row::Related(f, k, j) => (*f, related_key(*k, *j)),
             })
             .collect();
         let at = state.problems_selected.as_ref().and_then(|(p, i)| flat.iter().position(|(f, k)| &f.path == p && k == i));
@@ -1104,12 +1127,21 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
             if left {
                 if k == FILE_ROW {
                     state.problems_collapsed.insert(f.path.clone());
+                } else if k >= RELATED_BASE {
+                    let parent = (k - RELATED_BASE) / RELATED_STRIDE;
+                    next = flat.iter().position(|(rf, rk)| rf.path == f.path && *rk == parent);
+                } else if !f.items[k].related.is_empty() && !state.problems_related_collapsed.contains(&(f.path.clone(), k)) {
+                    state.problems_related_collapsed.insert((f.path.clone(), k));
                 } else {
                     next = flat.iter().position(|(rf, rk)| rf.path == f.path && *rk == FILE_ROW);
                 }
             } else if right && k == FILE_ROW {
                 if state.problems_collapsed.remove(&f.path) {
                 } else {
+                    next = Some(at.unwrap() + 1).filter(|n| *n < flat.len());
+                }
+            } else if right && k < RELATED_BASE && !f.items[k].related.is_empty() {
+                if !state.problems_related_collapsed.remove(&(f.path.clone(), k)) {
                     next = Some(at.unwrap() + 1).filter(|n| *n < flat.len());
                 }
             }
@@ -1132,6 +1164,11 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                     if !state.problems_collapsed.remove(p) {
                         state.problems_collapsed.insert(p.clone());
                     }
+                } else if *i >= RELATED_BASE {
+                    let (k, j) = ((*i - RELATED_BASE) / RELATED_STRIDE, (*i - RELATED_BASE) % RELATED_STRIDE);
+                    if let Some(r) = flat.iter().find(|(f, _)| &f.path == p).and_then(|(f, _)| f.items.get(k)).and_then(|it| it.related.get(j)) {
+                        out.open_problem = Some((r.path.clone(), r.line, r.col));
+                    }
                 } else if let Some(item) = flat.iter().find(|(f, k)| &f.path == p && k == i).map(|(f, k)| &f.items[*k]) {
                     out.open_problem = Some((p.clone(), item.line, item.col));
                 }
@@ -1150,7 +1187,7 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
         let r = Rect::from_min_max(Pos2::new(row_left, y), Pos2::new(row_right, y + heights[row_index]));
         y += heights[row_index];
         if r.bottom() < area.top() || r.top() > area.bottom() {
-            if let Row::Item(f, _) = row {
+            if let Row::Item(f, _) | Row::Related(f, _, _) = row {
                 let sel = state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path);
                 match guide_runs.last_mut() {
                     Some(last) if last.1 >= r.top() - 0.5 && last.2 == sel => last.1 = r.bottom(),
@@ -1163,10 +1200,12 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
         let (path, selected) = match row {
             Row::File(f, _) => (f.path.clone(), state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && *i == FILE_ROW)),
             Row::Item(f, k) => (f.path.clone(), state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && i == k)),
+            Row::Related(f, k, j) => (f.path.clone(), state.problems_selected.as_ref().is_some_and(|(p, i)| p == &f.path && *i == related_key(*k, *j))),
         };
         let rid = match row {
             Row::File(f, _) => id.with(("problem-file", &f.path)),
             Row::Item(f, k) => id.with(("problem", &f.path, *k)),
+            Row::Related(f, k, j) => id.with(("problem-related", &f.path, *k, *j)),
         };
         let rresp = ui.interact(visible, rid, Sense::click());
         if selected {
@@ -1270,6 +1309,22 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                         }
                     }
                 }
+                // Related information folds under a twistie (expandOnlyOnTwistieClick).
+                if !item.related.is_empty() {
+                    let collapsed = state.problems_related_collapsed.contains(&(f.path.clone(), *k));
+                    let tw = Rect::from_center_size(Pos2::new(r.left() + 30.0, cy), Vec2::splat(16.0));
+                    let twr = ui.interact(tw.intersect(visible), id.with(("related-twistie", &f.path, *k)), Sense::click());
+                    let tip = if collapsed { "Expand" } else { "Collapse" };
+                    twr.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+                    let chev = if collapsed { "chevron-right" } else { "chevron-down" };
+                    clip.text(tw.center(), Align2::CENTER_CENTER, icons::codicon_by_name(chev).unwrap_or('v').to_string(), icons::codicon_font(16.0), Palette::FG());
+                    if twr.clicked() {
+                        let key = (f.path.clone(), *k);
+                        if !state.problems_related_collapsed.remove(&key) {
+                            state.problems_related_collapsed.insert(key);
+                        }
+                    }
+                }
                 let label = format!("{} {}, {}", icon, item.message, item.source.as_deref().unwrap_or(""));
                 rresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
                 if rresp.clicked() || rresp.double_clicked() {
@@ -1285,6 +1340,35 @@ fn problems_view(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[P
                 match guide_runs.last_mut() {
                     Some(last) if last.1 >= r.top() - 0.5 && last.2 == state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path) => last.1 = r.bottom(),
                     _ => guide_runs.push((r.top(), r.bottom(), state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path))),
+                }
+            }
+            Row::Related(f, k, j) => {
+                // RelatedInformationRenderer: the file's name, `[Ln, Col]`,
+                // ":" (4px after) at 70%, then the message, one level deeper.
+                let rel = &f.items[*k].related[*j];
+                let dim = fg.gamma_multiply(0.7);
+                let name = rel.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let mut x = r.left() + 54.0;
+                for (text, colour, pad) in [(name, dim, 0.0), (format!("[Ln {}, Col {}]", rel.line + 1, rel.col + 1), dim, 0.0), (":".to_string(), dim, 4.0)] {
+                    let g = clip.layout_no_wrap(text, FontId::proportional(13.0), colour);
+                    let w = g.size().x;
+                    clip.galley(Pos2::new(x, cy - g.size().y / 2.0 - 0.5), g, colour);
+                    x += w + pad;
+                }
+                let g = clip.layout_no_wrap(rel.message.clone(), FontId::proportional(13.0), fg);
+                clip.galley(Pos2::new(x, cy - g.size().y / 2.0 - 0.5), g, fg);
+                let label = format!("{}: {}", rel.path.display(), rel.message);
+                rresp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label.clone()));
+                if rresp.clicked() {
+                    state.problems_selected = Some((path.clone(), related_key(*k, *j)));
+                    ui.memory_mut(|m| m.request_focus(id.with("problems-list")));
+                    out.open_problem = Some((rel.path.clone(), rel.line, rel.col));
+                    state.problems_refocus = 3;
+                }
+                let active = state.problems_selected.as_ref().is_some_and(|(p, _)| p == &f.path);
+                match guide_runs.last_mut() {
+                    Some(last) if last.1 >= r.top() - 0.5 && last.2 == active => last.1 = r.bottom(),
+                    _ => guide_runs.push((r.top(), r.bottom(), active)),
                 }
             }
         }
@@ -1459,6 +1543,14 @@ fn problems_table(ui: &mut Ui, painter: &egui::Painter, card: Rect, problems: &[
 /// 24 greys).
 /// The "problem index" of a file row in the Problems selection.
 const FILE_ROW: usize = usize::MAX;
+/// Selection keys of related-information rows: above every problem index.
+const RELATED_BASE: usize = 1 << 40;
+const RELATED_STRIDE: usize = 1 << 16;
+
+/// The selection key of problem `k`'s related entry `j`.
+fn related_key(k: usize, j: usize) -> usize {
+    RELATED_BASE + k * RELATED_STRIDE + j
+}
 
 fn ansi(i: u8) -> Color32 {
     let theme = [

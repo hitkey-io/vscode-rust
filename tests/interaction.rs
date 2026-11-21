@@ -1707,3 +1707,48 @@ fn reopen_closed_editor_brings_the_file_back() {
     assert!(harness.query_by_role(egui::accesskit::Role::MultilineTextInput).is_some(), "the editor should be back");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn problems_show_related_information_under_the_problem() {
+    let mut app: Option<App> = None;
+    let runner = move |ctx: &egui::Context| {
+        if app.is_none() {
+            app = Some(App::for_testing(ctx));
+            return;
+        }
+        let a = app.as_mut().unwrap();
+        if !a.has_workspace() {
+            let file = workspace_path().join("tsconfig.json");
+            a.bootstrap_workspace(workspace_path());
+            a.bootstrap_problems(file.clone(), vec![(0, "Duplicate identifier 'x'", Some("ts"), Some("2300"), 2, 4)]);
+            a.bootstrap_problem_related(
+                &file,
+                0,
+                vec![(workspace_path().join("package.json"), 1, 2, "'x' was also declared here."), (file.clone(), 5, 0, "and here.")],
+            );
+            a.bootstrap_panel(ctx, "problems");
+        }
+        a.render(ctx);
+    };
+    let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
+    for _ in 0..4 {
+        harness.run();
+    }
+    // The related places are listed under the problem, unfolded.
+    let related = format!("{}: 'x' was also declared here.", workspace_path().join("package.json").display());
+    let _ = harness.get_by_label(&related);
+    harness.snapshot("interaction_problems_related");
+    // The twistie folds them away and back.
+    harness.get_by_label("Collapse").click();
+    harness.run();
+    harness.run();
+    assert!(harness.query_by_label(&related).is_none());
+    harness.get_by_label("Expand").click();
+    harness.run();
+    harness.run();
+    // A click on a related row opens its file.
+    harness.get_by_label(&related).click();
+    harness.run();
+    harness.run();
+    let _ = harness.get_by_label("tab:package.json");
+}

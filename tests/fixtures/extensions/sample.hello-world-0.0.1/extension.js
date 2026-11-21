@@ -148,6 +148,8 @@ function activate(context) {
 				if (at >= 0) {
 					const d = new vscode.Diagnostic(new vscode.Range(i, at, i, at + word.length), `${word} found`, severity);
 					d.source = 'hello';
+					// The first line of the file is where the list of words lives.
+					d.relatedInformation = [new vscode.DiagnosticRelatedInformation(new vscode.Location(document.uri, new vscode.Range(0, 0, 0, 4)), `${word} is a marker word`)];
 					out.push(d);
 				}
 			}
