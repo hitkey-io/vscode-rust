@@ -1783,3 +1783,49 @@ fn open_recent_picker_lists_folders_and_files() {
     let _ = harness.get_by_label(&folder_row);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn f2_renames_the_symbol_through_the_extension() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return;
+    }
+    use egui::{Key, Modifiers};
+    use egui_kittest::kittest::NodeT;
+    let dir = std::env::temp_dir().join("vscode-rust-rename-symbol");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.md");
+    std::fs::write(&file, "foo bar foo\n").unwrap();
+    let mut harness = launch_with_extensions(Some(dir.clone()), vec![file.clone()], None, Some(sample_extensions_dir()));
+    harness.step();
+    harness.step();
+    run_until_label(&mut harness, "$(smiley) Hello");
+    let value = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
+    // The caret at the start of the text: on the first "foo".
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.step();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowUp);
+    harness.step();
+    harness.step();
+    harness.key_press(Key::F2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.query_by_label("Rename input. Type new name and press Enter to commit.").is_none() {
+        assert!(std::time::Instant::now() < deadline, "the rename input never opened");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    harness.step();
+    // No snapshot: the caret blinks and the extension's activity bar icon
+    // arrives at its own time.
+    // The name is selected: typing replaces it, Enter renames every "foo".
+    harness.event(egui::Event::Text("baz".to_string()));
+    harness.step();
+    harness.key_press(Key::Enter);
+    while value(&harness) != "baz bar baz\n" {
+        assert!(std::time::Instant::now() < deadline, "the rename was never applied: {:?}", value(&harness));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    assert!(harness.query_by_label("Rename input. Type new name and press Enter to commit.").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

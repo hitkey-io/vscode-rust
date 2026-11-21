@@ -137,6 +137,27 @@ function activate(context) {
 			return edits;
 		},
 	}));
+	// Rename Symbol: every whole-word occurrence in the document (markdown only).
+	context.subscriptions.push(vscode.languages.registerRenameProvider({ language: 'markdown' }, {
+		prepareRename(document, position) {
+			const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+			if (!range) { throw new Error('You cannot rename this element.'); }
+			return { range, placeholder: document.getText(range) };
+		},
+		provideRenameEdits(document, position, newName) {
+			const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+			const edit = new vscode.WorkspaceEdit();
+			if (!range) { return edit; }
+			const word = document.getText(range);
+			const text = document.getText();
+			const re = new RegExp(`\\b${word}\\b`, 'g');
+			let m;
+			while ((m = re.exec(text))) {
+				edit.replace(document.uri, new vscode.Range(document.positionAt(m.index), document.positionAt(m.index + word.length)), newName);
+			}
+			return edit;
+		},
+	}));
 	const problems = vscode.languages.createDiagnosticCollection('hello');
 	context.subscriptions.push(problems);
 	const lint = document => {

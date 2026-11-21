@@ -400,3 +400,40 @@ fn tabs_and_diffs_reach_the_extension_and_back() {
     assert_eq!(title, "README (proposed)");
     svc.answer(request_id, serde_json::json!(true));
 }
+
+#[test]
+fn rename_prepares_at_the_word_and_returns_edits_per_file() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    svc.sync_documents(&[(path.clone(), "markdown", "foo bar foo\n(foo)\n", false)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(svc.wait_until(WAIT, |s| s.can_rename()), "log: {:#?}", svc.log);
+    let wait_for = |svc: &mut ExtensionService, id: u64| {
+        for _ in 0..200 {
+            if let Some(r) = svc.take_result(id) {
+                return r;
+            }
+            svc.wait_until(Duration::from_millis(30), |_| false);
+        }
+        panic!("no answer")
+    };
+    // Where it starts: the word at the position, offered as it is.
+    let id = svc.request_prepare_rename(&path, 0, 9).expect("a rename provider");
+    match wait_for(&mut svc, id) {
+        ProviderResult::RenameAt { range, placeholder } => {
+            assert_eq!(range, [0, 8, 0, 11]);
+            assert_eq!(placeholder, "foo");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Not on a word: the provider's own reason.
+    let id = svc.request_prepare_rename(&path, 1, 0).expect("a rename provider");
+    assert_eq!(wait_for(&mut svc, id), ProviderResult::Rejected("You cannot rename this element.".into()));
+    // The edits: every whole "foo" in the file.
+    let id = svc.request_rename(&path, 0, 9, "baz").expect("a rename provider");
+    let ProviderResult::FileEdits(files) = wait_for(&mut svc, id) else { panic!("edits") };
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].0, path);
+    let ranges: Vec<[usize; 4]> = files[0].1.iter().map(|e| e.range).collect();
+    assert_eq!(ranges, vec![[0, 0, 0, 3], [0, 8, 0, 11], [1, 1, 1, 4]]);
+    assert!(files[0].1.iter().all(|e| e.text == "baz"));
+}

@@ -1376,6 +1376,49 @@ async function provideDocumentSymbols(msg) {
 	return [];
 }
 
+/** Where a rename starts (`prepareRename`, else the word at the position):
+ *  `{ range, placeholder }`, or `{ reject }` with the provider's reason. */
+async function providePrepareRename(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return null; }
+	const position = new Position(msg.line, msg.character);
+	const token = new CancellationTokenSource().token;
+	for (const p of providersFor('rename', document)) {
+		if (typeof p.provider.prepareRename !== 'function') {
+			const word = document.getWordRangeAtPosition(position);
+			return word ? { range: toWire(word), placeholder: document.getText(word) } : { reject: "The element can't be renamed." };
+		}
+		try {
+			const r = await p.provider.prepareRename(document, position, token);
+			if (!r) { return { reject: "The element can't be renamed." }; }
+			const range = r.range || r;
+			return { range: toWire(range), placeholder: r.placeholder !== undefined ? String(r.placeholder) : document.getText(range) };
+		} catch (err) {
+			return { reject: String(err && err.message || err) };
+		}
+	}
+	return null;
+}
+
+/** The first rename provider's `WorkspaceEdit`, as edits per file. */
+async function provideRename(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return { files: [] }; }
+	const position = new Position(msg.line, msg.character);
+	const token = new CancellationTokenSource().token;
+	for (const p of providersFor('rename', document)) {
+		try {
+			const edit = await p.provider.provideRenameEdits(document, position, msg.newName, token);
+			if (edit) {
+				return { files: [...edit.entries()].map(([uri, edits]) => ({ path: uri.fsPath, edits: edits.map(e => ({ range: toWire(e.range), text: e.newText })) })) };
+			}
+		} catch (err) {
+			return { reject: String(err && err.message || err) };
+		}
+	}
+	return { reject: 'No result.' };
+}
+
 /** `TextEdit[]` of the first formatter that answers, as wire edits. */
 async function provideFormatting(msg) {
 	const document = docs.get(msg.path);
@@ -1406,6 +1449,7 @@ const languages = new Proxy({
 	registerDefinitionProvider: registerProvider('definition'),
 	registerDocumentSymbolProvider: registerProvider('documentSymbol'),
 	registerDocumentFormattingEditProvider: registerProvider('documentFormatting'),
+	registerRenameProvider: registerProvider('rename'),
 	registerDeclarationProvider: registerProvider('declaration'),
 	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
 	registerImplementationProvider: registerProvider('implementation'),
@@ -1844,6 +1888,8 @@ async function handle(msg) {
 		case 'provideHover':
 		case 'provideDocumentSymbols':
 		case 'provideFormatting':
+		case 'providePrepareRename':
+		case 'provideRename':
 		case 'provideDefinition': {
 			let result;
 			try {
@@ -1851,6 +1897,8 @@ async function handle(msg) {
 					: msg.type === 'provideHover' ? await provideHover(msg)
 						: msg.type === 'provideDocumentSymbols' ? await provideDocumentSymbols(msg)
 						: msg.type === 'provideFormatting' ? await provideFormatting(msg)
+						: msg.type === 'providePrepareRename' ? await providePrepareRename(msg)
+						: msg.type === 'provideRename' ? await provideRename(msg)
 						: [
 							...await provideLocations('definition', 'provideDefinition', msg),
 							...await provideLocations('declaration', 'provideDeclaration', msg),

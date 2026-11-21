@@ -162,6 +162,12 @@ pub enum ProviderResult {
     Symbols(Vec<DocumentSymbol>),
     /// A formatter's edits (`provideDocumentFormattingEdits`).
     Edits(Vec<WireEdit>),
+    /// Where a rename starts and the text to offer (`prepareRename`).
+    RenameAt { range: [usize; 4], placeholder: String },
+    /// The provider refused, with its reason (`prepareRename` / rename).
+    Rejected(String),
+    /// A rename's edits, per file (`provideRenameEdits`).
+    FileEdits(Vec<(PathBuf, Vec<WireEdit>)>),
 }
 
 /// A `DocumentSymbol`: the Outline view's rows.
@@ -873,6 +879,31 @@ impl ExtensionService {
         Some(id)
     }
 
+    /// Whether an extension offers renaming for some documents.
+    pub fn can_rename(&self) -> bool {
+        self.ready && self.provider_kinds.contains("rename")
+    }
+
+    /// Asks where a rename at (0-based line, UTF-16 character) starts.
+    pub fn request_prepare_rename(&mut self, path: &Path, line: usize, character: usize) -> Option<u64> {
+        if !self.can_rename() {
+            return None;
+        }
+        let id = self.request_id();
+        self.host.as_mut()?.send(&json!({ "type": "providePrepareRename", "requestId": id, "path": path, "line": line, "character": character }));
+        Some(id)
+    }
+
+    /// Asks for the edits renaming the symbol at the position to `new_name`.
+    pub fn request_rename(&mut self, path: &Path, line: usize, character: usize, new_name: &str) -> Option<u64> {
+        if !self.can_rename() {
+            return None;
+        }
+        let id = self.request_id();
+        self.host.as_mut()?.send(&json!({ "type": "provideRename", "requestId": id, "path": path, "line": line, "character": character, "newName": new_name }));
+        Some(id)
+    }
+
     /// The answer to a language feature request, once it has arrived.
     pub fn take_result(&mut self, request_id: u64) -> Option<ProviderResult> {
         self.provider_results.remove(&request_id)
@@ -1425,6 +1456,32 @@ impl ExtensionService {
                                 .map(|a| {
                                     a.iter()
                                         .filter_map(|e| Some(WireEdit { range: e.get("range").and_then(wire_range)?, text: e.get("text").and_then(Value::as_str).unwrap_or_default().to_string() }))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                        "providePrepareRename" | "provideRename" if result.get("reject").is_some() => {
+                            ProviderResult::Rejected(result.get("reject").and_then(Value::as_str).unwrap_or_default().to_string())
+                        }
+                        "providePrepareRename" => match result.get("range").and_then(wire_range) {
+                            Some(range) => ProviderResult::RenameAt { range, placeholder: result.get("placeholder").and_then(Value::as_str).unwrap_or_default().to_string() },
+                            None => ProviderResult::Rejected("The element can't be renamed.".into()),
+                        },
+                        "provideRename" => ProviderResult::FileEdits(
+                            result
+                                .get("files")
+                                .and_then(Value::as_array)
+                                .map(|a| {
+                                    a.iter()
+                                        .filter_map(|f| {
+                                            let edits = f
+                                                .get("edits")?
+                                                .as_array()?
+                                                .iter()
+                                                .filter_map(|e| Some(WireEdit { range: e.get("range").and_then(wire_range)?, text: e.get("text").and_then(Value::as_str).unwrap_or_default().to_string() }))
+                                                .collect();
+                                            Some((PathBuf::from(f.get("path")?.as_str()?), edits))
+                                        })
                                         .collect()
                                 })
                                 .unwrap_or_default(),

@@ -473,6 +473,22 @@ struct LanguageState {
     hover: Option<((usize, usize), egui::Pos2, Vec<String>)>,
     caret: Option<egui::Rect>,
     caret_char: Option<usize>,
+    /// Rename Symbol (F2) in progress.
+    rename: Option<Rename>,
+}
+
+/// Rename Symbol (rename.ts / renameWidget.ts): asking where it starts, the
+/// input over the symbol, then waiting for the edits.
+#[derive(Clone, Debug)]
+enum Rename {
+    /// `prepareRename` asked at (path, 0-based line, UTF-16 character); the
+    /// caret's rect places the input.
+    Preparing { id: u64, path: PathBuf, line: usize, character: usize, caret: egui::Rect },
+    /// The input is open: the new name so far, where the symbol starts on
+    /// screen and how many characters it had.
+    Editing { path: PathBuf, line: usize, character: usize, text: String, at: egui::Pos2, chars: usize, focus: bool },
+    /// The edits were asked for.
+    Applying { id: u64 },
 }
 
 /// How long a transient status-bar message stays visible.
@@ -1244,6 +1260,128 @@ impl App {
                 self.request_definition(ch);
             }
         }
+        // F2: Rename Symbol, while the editor holds the keyboard and a
+        // provider can rename.
+        if self.lang.rename.is_none()
+            && self.extensions.can_rename()
+            && ctx.wants_keyboard_input()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2))
+        {
+            self.start_rename();
+        }
+    }
+
+    /// Rename Symbol: asks the provider where the rename at the caret starts.
+    fn start_rename(&mut self) {
+        let Some((idx, byte)) = self.caret_byte() else { return };
+        let Some(caret) = self.lang.caret else { return };
+        let doc = &self.documents[idx];
+        if doc.read_only || doc.webview.is_some() || doc.welcome {
+            return;
+        }
+        let path = doc.path.clone();
+        let (line, character) = crate::extensions::text::byte_to_position(&doc.text, byte);
+        self.sync_extension_documents();
+        if let Some(id) = self.extensions.request_prepare_rename(&path, line, character) {
+            self.lang.rename = Some(Rename::Preparing { id, path, line, character, caret });
+        }
+    }
+
+    /// The rename's answers, and its input box over the symbol
+    /// (renameWidget.css: `editorWidget.background` box with a 1px border,
+    /// radius 4 and a shadow; the input 3px in on `input.background`, as wide
+    /// as max(1.1 × the name, 20) characters; Enter renames, Escape or
+    /// leaving it cancels).
+    fn rename_widget(&mut self, ctx: &Context) {
+        use crate::extensions::ProviderResult;
+        match self.lang.rename.clone() {
+            Some(Rename::Preparing { id, path, line, character, caret }) => match self.extensions.take_result(id) {
+                Some(ProviderResult::RenameAt { range, placeholder }) => {
+                    // The symbol's start on screen: back from the caret by the
+                    // characters between them.
+                    let char_w = ctx.fonts_mut(|f| f.glyph_width(&egui::FontId::monospace(12.0), 'x'));
+                    let back = character.saturating_sub(range[1]) as f32 * char_w;
+                    let at = egui::pos2(caret.left() - back, caret.bottom());
+                    let chars = placeholder.chars().count();
+                    self.lang.rename = Some(Rename::Editing { path, line, character, text: placeholder, at, chars, focus: true });
+                }
+                Some(ProviderResult::Rejected(reason)) => {
+                    self.lang.rename = None;
+                    self.extensions.notify_info(reason);
+                }
+                Some(_) => self.lang.rename = None,
+                None => {}
+            },
+            Some(Rename::Applying { id }) => match self.extensions.take_result(id) {
+                Some(ProviderResult::FileEdits(files)) => {
+                    self.lang.rename = None;
+                    for (path, edits) in files {
+                        if !edits.is_empty() {
+                            self.apply_extension_edits(&path, &edits);
+                        }
+                    }
+                }
+                Some(ProviderResult::Rejected(reason)) => {
+                    self.lang.rename = None;
+                    self.extensions.notify_info(reason);
+                }
+                Some(_) => self.lang.rename = None,
+                None => {}
+            },
+            Some(Rename::Editing { path, line, character, mut text, at, chars, focus }) => {
+                let font = egui::FontId::monospace(12.0);
+                let char_w = ctx.fonts_mut(|f| f.glyph_width(&font, 'x'));
+                let width = (chars as f32 * 1.1).max(20.0) * char_w;
+                let input_id = egui::Id::new("rename-input");
+                let mut submit = false;
+                let mut cancel = false;
+                egui::Area::new(egui::Id::new("rename-widget"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(at - egui::vec2(4.0, 0.0))
+                    .show(ctx, |ui| {
+                        egui::Frame::new()
+                            .fill(Palette::EDITOR_WIDGET_BG())
+                            .stroke(egui::Stroke::new(1.0, Palette::EDITOR_WIDGET_BORDER()))
+                            .corner_radius(4)
+                            .shadow(egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: egui::Color32::from_black_alpha(90) })
+                            .show(ui, |ui| {
+                                egui::Frame::new().fill(Palette::INPUT_BG()).corner_radius(4).inner_margin(3).show(ui, |ui| {
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut text)
+                                            .id(input_id)
+                                            .font(font.clone())
+                                            .frame(egui::Frame::NONE)
+                                            .margin(egui::Margin::ZERO)
+                                            .desired_width(width),
+                                    );
+                                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "Rename input. Type new name and press Enter to commit."));
+                                    if focus {
+                                        resp.request_focus();
+                                        let mut st = egui::TextEdit::load_state(ui.ctx(), input_id).unwrap_or_default();
+                                        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+                                        st.store(ui.ctx(), input_id);
+                                    }
+                                    if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                        cancel = true;
+                                    } else if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                        submit = true;
+                                    } else if !focus && !resp.has_focus() {
+                                        cancel = true;
+                                    }
+                                });
+                            });
+                    });
+                if cancel {
+                    self.lang.rename = None;
+                } else if submit {
+                    self.sync_extension_documents();
+                    self.lang.rename = self.extensions.request_rename(&path, line, character, &text).map(|id| Rename::Applying { id });
+                } else {
+                    self.lang.rename = Some(Rename::Editing { path, line, character, text, at, chars, focus: false });
+                }
+            }
+            None => {}
+        }
     }
 
     /// Ask for completions at the caret; `trigger` is the typed trigger
@@ -1423,6 +1561,7 @@ impl App {
     /// hover card.
     fn language_widgets(&mut self, ctx: &Context) {
         use crate::extensions::ProviderResult;
+        self.rename_widget(ctx);
         if let Some((id, path, start)) = self.lang.pending_completion.clone() {
             if let Some(ProviderResult::Completion { items, .. }) = self.extensions.take_result(id) {
                 self.lang.pending_completion = None;
