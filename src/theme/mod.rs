@@ -71,6 +71,8 @@ palette! {
     EDITOR_WIDGET_BG = Id("editorWidget.background");
     MENU_BG = Id("menu.background");
     MENU_FG = Id("menu.foreground");
+    /// `editorLightBulb.foreground` — the Quick Fix icon.
+    LIGHT_BULB_FG = Id("editorLightBulb.foreground");
     MENU_BORDER = Id("menu.border");
     MENU_SELECTION_BG = Id("menu.selectionBackground");
     MENU_SELECTION_FG = Id("menu.selectionForeground");

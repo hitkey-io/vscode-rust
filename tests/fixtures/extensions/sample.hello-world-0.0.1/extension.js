@@ -156,6 +156,30 @@ function activate(context) {
 			return help;
 		},
 	}, { triggerCharacters: ['('], retriggerCharacters: [','] }));
+	// Code actions (markdown only): a quick fix for each FIXME problem in the
+	// range, and a rewrite of the line.
+	context.subscriptions.push(vscode.languages.registerCodeActionsProvider({ language: 'markdown' }, {
+		provideCodeActions(document, range, context) {
+			const actions = [];
+			for (const d of context.diagnostics) {
+				if (d.message !== 'FIXME found') { continue; }
+				const fix = new vscode.CodeAction('Replace FIXME with TODO', vscode.CodeActionKind.QuickFix);
+				fix.edit = new vscode.WorkspaceEdit();
+				fix.edit.replace(document.uri, d.range, 'TODO');
+				fix.diagnostics = [d];
+				fix.isPreferred = true;
+				actions.push(fix);
+			}
+			const line = document.lineAt(range.start.line);
+			if (line.text.trim()) {
+				const upper = new vscode.CodeAction('Convert Line to Upper Case', vscode.CodeActionKind.RefactorRewrite);
+				upper.edit = new vscode.WorkspaceEdit();
+				upper.edit.replace(document.uri, line.range, line.text.toUpperCase());
+				actions.push(upper);
+			}
+			return actions;
+		},
+	}));
 	// Rename Symbol: every whole-word occurrence in the document (markdown only).
 	context.subscriptions.push(vscode.languages.registerRenameProvider({ language: 'markdown' }, {
 		prepareRename(document, position) {

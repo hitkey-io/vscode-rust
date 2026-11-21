@@ -478,6 +478,59 @@ struct LanguageState {
     /// Signature help asked for, and the one on screen with the overload shown.
     pending_signature: Option<u64>,
     signature: Option<(crate::extensions::SignatureHelp, usize)>,
+    /// Code actions asked for (⌘.): the request and where the caret was.
+    pending_code_actions: Option<(u64, egui::Rect)>,
+    /// The code action list on screen.
+    code_actions: Option<CodeActionMenu>,
+}
+
+/// The code action list (codeActionMenu.ts `toMenuItems` + actionList.ts):
+/// the request whose actions it shows, its rows and the focused one.
+#[derive(Clone, Debug)]
+struct CodeActionMenu {
+    request: u64,
+    rows: Vec<CodeActionRow>,
+    focused: Option<usize>,
+    at: egui::Pos2,
+}
+
+#[derive(Clone, Debug)]
+enum CodeActionRow {
+    Header(&'static str),
+    /// (index in the provider's answer, title, codicon, disabled reason)
+    Action(usize, String, &'static str, Option<String>),
+}
+
+/// codeActionMenu.ts `codeActionGroups`: (kind prefix, title, codicon); an
+/// action goes to the first group whose kind contains its kind.
+const CODE_ACTION_GROUPS: [(&str, &str, &str); 8] = [
+    ("quickfix", "Quick Fix", "lightbulb"),
+    ("refactor.extract", "Extract", "wrench"),
+    ("refactor.inline", "Inline", "wrench"),
+    ("refactor.rewrite", "Rewrite", "wrench"),
+    ("refactor.move", "Move", "wrench"),
+    ("surround", "Surround With", "surround-with"),
+    ("source", "Source Action", "symbol-file"),
+    ("", "More Actions...", "lightbulb"),
+];
+
+/// The rows of the code action list: each group with actions under its header.
+fn code_action_rows(entries: &[crate::extensions::CodeActionEntry]) -> Vec<CodeActionRow> {
+    let contains = |group: &str, kind: &str| group.is_empty() || kind == group || kind.starts_with(&format!("{group}."));
+    let mut rows = Vec::new();
+    let mut placed = vec![false; entries.len()];
+    for (group, title, icon) in CODE_ACTION_GROUPS {
+        let members: Vec<usize> = (0..entries.len()).filter(|&i| !placed[i] && contains(group, entries[i].kind.as_deref().unwrap_or(""))).collect();
+        if members.is_empty() {
+            continue;
+        }
+        rows.push(CodeActionRow::Header(title));
+        for i in members {
+            placed[i] = true;
+            rows.push(CodeActionRow::Action(i, entries[i].title.clone(), icon, entries[i].disabled.clone()));
+        }
+    }
+    rows
 }
 
 /// Rename Symbol (rename.ts / renameWidget.ts): asking where it starts, the
@@ -1258,6 +1311,42 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Space)) {
             self.request_completion(None);
         }
+        // The code action list holds the keys while it is open.
+        if let Some(menu) = self.lang.code_actions.as_mut() {
+            let enabled: Vec<usize> = menu.rows.iter().enumerate().filter(|(_, r)| matches!(r, CodeActionRow::Action(_, _, _, None))).map(|(i, _)| i).collect();
+            let mut apply = None;
+            let mut close = false;
+            ctx.input_mut(|i| {
+                let at = menu.focused.and_then(|f| enabled.iter().position(|&e| e == f));
+                if i.consume_key(Modifiers::NONE, Key::ArrowDown) && !enabled.is_empty() {
+                    menu.focused = Some(enabled[at.map(|a| (a + 1) % enabled.len()).unwrap_or(0)]);
+                }
+                if i.consume_key(Modifiers::NONE, Key::ArrowUp) && !enabled.is_empty() {
+                    menu.focused = Some(enabled[at.map(|a| (a + enabled.len() - 1) % enabled.len()).unwrap_or(enabled.len() - 1)]);
+                }
+                if i.consume_key(Modifiers::NONE, Key::Enter) {
+                    apply = menu.focused;
+                }
+                if i.consume_key(Modifiers::NONE, Key::Escape) {
+                    close = true;
+                }
+            });
+            if let Some(row) = apply {
+                if let Some(CodeActionRow::Action(index, ..)) = menu.rows.get(row) {
+                    let (request, index) = (menu.request, *index);
+                    self.extensions.apply_code_action(request, index);
+                }
+                close = true;
+            }
+            if close {
+                self.lang.code_actions = None;
+            }
+            return;
+        }
+        // ⌘.: Quick Fix — the code actions of the selection.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Period)) {
+            self.request_code_actions(ctx);
+        }
         // Parameter hints: ⇧⌘Space asks, Escape closes them (when the suggest
         // list, which takes Escape first, isn't open).
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Space)) {
@@ -1279,6 +1368,129 @@ impl App {
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2))
         {
             self.start_rename();
+        }
+    }
+
+    /// Asks the code action providers about the selection (or the caret).
+    fn request_code_actions(&mut self, ctx: &Context) {
+        let Some(idx) = self.active_doc else { return };
+        let Some(caret) = self.lang.caret else { return };
+        let doc = &self.documents[idx];
+        if doc.read_only || doc.webview.is_some() || doc.welcome {
+            return;
+        }
+        let path = doc.path.clone();
+        let (a, h) = ctx
+            .data(|d| d.get_temp::<(usize, usize)>(egui::Id::new(("marks-sel", &path))))
+            .or_else(|| self.lang.caret_char.map(|c| (c, c)))
+            .unwrap_or((0, 0));
+        let pos = |ch: usize| {
+            let byte = crate::extensions::text::char_to_byte(&doc.text, ch);
+            crate::extensions::text::byte_to_position(&doc.text, byte)
+        };
+        let (s, e) = (pos(a.min(h)), pos(a.max(h)));
+        self.sync_extension_documents();
+        match self.extensions.request_code_actions(&path, [s.0, s.1, e.0, e.1]) {
+            Some(id) => self.lang.pending_code_actions = Some((id, caret)),
+            None => self.extensions.notify_info("No code actions available".to_string()),
+        }
+    }
+
+    /// The code action list (actionWidget.css): under the caret's line, a
+    /// `menu.background` card with a 1px `editorHoverWidget.border`, radius 8,
+    /// 4px padding and a shadow; 24px rows 6px / 12px padded, radius 4; group
+    /// headers 11px semibold `descriptionForeground`; actions a 16px codicon
+    /// (Quick Fix's lightbulb in `editorLightBulb.foreground`) and the 13px
+    /// title; the focused row `list.hoverBackground`; disabled rows dimmed.
+    fn code_action_widget(&mut self, ctx: &Context) {
+        if let Some((id, caret)) = self.lang.pending_code_actions {
+            if let Some(result) = self.extensions.take_result(id) {
+                self.lang.pending_code_actions = None;
+                match result {
+                    crate::extensions::ProviderResult::CodeActions(entries) if !entries.is_empty() => {
+                        let rows = code_action_rows(&entries);
+                        // The preferred action first, else the first enabled one.
+                        let focus_index = entries.iter().position(|e| e.preferred && e.disabled.is_none());
+                        let focused = rows
+                            .iter()
+                            .position(|r| matches!(r, CodeActionRow::Action(i, _, _, None) if Some(*i) == focus_index))
+                            .or_else(|| rows.iter().position(|r| matches!(r, CodeActionRow::Action(_, _, _, None))));
+                        self.lang.code_actions = Some(CodeActionMenu { request: id, rows, focused, at: egui::pos2(caret.left(), caret.bottom() + 2.0) });
+                    }
+                    _ => self.extensions.notify_info("No code actions available".to_string()),
+                }
+            }
+        }
+        let Some(menu) = self.lang.code_actions.clone() else { return };
+        let mut apply = None;
+        let mut hovered = None;
+        let area = egui::Area::new(egui::Id::new("code-action-widget"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(menu.at)
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Palette::MENU_BG())
+                    .stroke(egui::Stroke::new(1.0, Palette::VSCE_HOVER_BORDER()))
+                    .corner_radius(8)
+                    .inner_margin(4)
+                    .shadow(egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: egui::Color32::from_black_alpha(90) })
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                        // As wide as the widest row (min 100px).
+                        let width = menu
+                            .rows
+                            .iter()
+                            .map(|r| match r {
+                                CodeActionRow::Header(t) => ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), crate::ui_font::semibold(11.0), Palette::FG()).size().x),
+                                CodeActionRow::Action(_, t, _, _) => 22.0 + ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), egui::FontId::proportional(13.0), Palette::FG()).size().x),
+                            })
+                            .fold(100.0f32, f32::max)
+                            + 18.0;
+                        for (n, row) in menu.rows.iter().enumerate() {
+                            let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::click());
+                            let p = ui.painter();
+                            match row {
+                                CodeActionRow::Header(title) => {
+                                    p.text(egui::pos2(rect.left() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, *title, crate::ui_font::semibold(11.0), Palette::FG_DESCRIPTION());
+                                }
+                                CodeActionRow::Action(_, title, icon, disabled) => {
+                                    if resp.hovered() && disabled.is_none() {
+                                        hovered = Some(n);
+                                    }
+                                    if menu.focused == Some(n) && disabled.is_none() {
+                                        p.rect_filled(rect, 4.0, Palette::LIST_HOVER_BG());
+                                    }
+                                    let fg = if disabled.is_some() { Palette::MENU_FG().gamma_multiply(0.5) } else { Palette::MENU_FG() };
+                                    let icon_fg = if *icon == "lightbulb" && disabled.is_none() { Palette::LIGHT_BULB_FG() } else { fg };
+                                    p.text(egui::pos2(rect.left() + 14.0, rect.center().y), egui::Align2::CENTER_CENTER, crate::icons::codicon_by_name(icon).unwrap_or('*').to_string(), crate::icons::codicon_font(16.0), icon_fg);
+                                    p.text(egui::pos2(rect.left() + 28.0, rect.center().y), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(13.0), fg);
+                                    let label = title.clone();
+                                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, disabled.is_none(), label.clone()));
+                                    if let Some(reason) = disabled {
+                                        resp.clone().on_hover_text(reason.clone());
+                                    }
+                                    if resp.clicked() && disabled.is_none() {
+                                        apply = Some(n);
+                                    }
+                                }
+                            }
+                        }
+                    });
+            });
+        if let Some(n) = hovered {
+            if let Some(m) = self.lang.code_actions.as_mut() {
+                m.focused = Some(n);
+            }
+        }
+        if let Some(n) = apply {
+            if let Some(CodeActionRow::Action(index, ..)) = menu.rows.get(n) {
+                self.extensions.apply_code_action(menu.request, *index);
+            }
+            self.lang.code_actions = None;
+        } else if ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer() {
+            // A press elsewhere closes it.
+            self.lang.code_actions = None;
         }
     }
 
@@ -1703,6 +1915,7 @@ impl App {
         use crate::extensions::ProviderResult;
         self.rename_widget(ctx);
         self.signature_widget(ctx);
+        self.code_action_widget(ctx);
         if let Some((id, path, start)) = self.lang.pending_completion.clone() {
             if let Some(ProviderResult::Completion { items, .. }) = self.extensions.take_result(id) {
                 self.lang.pending_completion = None;

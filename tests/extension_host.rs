@@ -467,3 +467,41 @@ fn signature_help_comes_back_with_the_active_parameter() {
     let id = svc.request_signature_help(&path, 0, 2, None).expect("a provider");
     assert_eq!(wait_for(&mut svc, id), ProviderResult::Signatures(None));
 }
+
+#[test]
+fn code_actions_come_back_and_apply_their_edits() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    svc.sync_documents(&[(path.clone(), "markdown", "FIXME later\n", false)], Some((path.clone(), [0, 0, 0, 0])));
+    // The FIXME problem must be there for the quick fix to be offered.
+    assert!(svc.wait_until(WAIT, |s| s.diagnostics_for(&path).len() == 1 && s.provider_kinds.contains("codeAction")), "log: {:#?}", svc.log);
+    let id = svc.request_code_actions(&path, [0, 2, 0, 2]).expect("a code action provider");
+    let mut result = None;
+    for _ in 0..200 {
+        if let Some(r) = svc.take_result(id) {
+            result = Some(r);
+            break;
+        }
+        svc.wait_until(Duration::from_millis(30), |_| false);
+    }
+    let Some(ProviderResult::CodeActions(actions)) = result else { panic!("code actions") };
+    let titles: Vec<(&str, Option<&str>, bool)> = actions.iter().map(|a| (a.title.as_str(), a.kind.as_deref(), a.preferred)).collect();
+    assert_eq!(titles, vec![("Replace FIXME with TODO", Some("quickfix"), true), ("Convert Line to Upper Case", Some("refactor.rewrite"), false)]);
+    // Applying the quick fix asks the editor to apply its edit.
+    svc.apply_code_action(id, 0);
+    let mut edit = None;
+    for _ in 0..200 {
+        for r in svc.take_requests() {
+            if let EditorRequest::ApplyEdits { request_id, edits, .. } = r {
+                edit = Some((request_id, edits));
+            }
+        }
+        if edit.is_some() {
+            break;
+        }
+        svc.wait_until(Duration::from_millis(30), |_| false);
+    }
+    let (request_id, edits) = edit.expect("the quick fix's edit");
+    assert_eq!(edits.iter().map(|e| (e.range, e.text.as_str())).collect::<Vec<_>>(), vec![([0, 0, 0, 5], "TODO")]);
+    svc.answer(request_id, serde_json::json!(true));
+}

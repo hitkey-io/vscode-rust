@@ -171,6 +171,20 @@ pub enum ProviderResult {
     /// Signature help: the signatures and which one is active; `None` when
     /// no provider had one.
     Signatures(Option<SignatureHelp>),
+    /// The code actions offered for a range, in provider order.
+    CodeActions(Vec<CodeActionEntry>),
+}
+
+/// One code action as the action list shows it; applying it goes back to
+/// the host by its index (`apply_code_action`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodeActionEntry {
+    pub title: String,
+    /// `CodeActionKind` value ("quickfix", "refactor.extract"…), if any.
+    pub kind: Option<String>,
+    pub preferred: bool,
+    /// Why it can't be applied, when disabled.
+    pub disabled: Option<String>,
 }
 
 /// `SignatureHelp`, flattened for the parameter hints widget.
@@ -940,6 +954,24 @@ impl ExtensionService {
         Some(id)
     }
 
+    /// Asks every code action provider for the actions of a range
+    /// ([start line, start char, end line, end char], UTF-16).
+    pub fn request_code_actions(&mut self, path: &Path, range: [usize; 4]) -> Option<u64> {
+        if !self.ready || !self.provider_kinds.contains("codeAction") {
+            return None;
+        }
+        let id = self.request_id();
+        self.host.as_mut()?.send(&json!({ "type": "provideCodeActions", "requestId": id, "path": path, "range": range }));
+        Some(id)
+    }
+
+    /// Applies action `index` of the answer to `request` (its edit, then its command).
+    pub fn apply_code_action(&mut self, request: u64, index: usize) {
+        if let Some(host) = self.host.as_mut() {
+            host.send(&json!({ "type": "applyCodeAction", "forRequest": request, "index": index }));
+        }
+    }
+
     /// The answer to a language feature request, once it has arrived.
     pub fn take_result(&mut self, request_id: u64) -> Option<ProviderResult> {
         self.provider_results.remove(&request_id)
@@ -1520,6 +1552,21 @@ impl ExtensionService {
                                                 .filter_map(|e| Some(WireEdit { range: e.get("range").and_then(wire_range)?, text: e.get("text").and_then(Value::as_str).unwrap_or_default().to_string() }))
                                                 .collect();
                                             Some((PathBuf::from(f.get("path")?.as_str()?), edits))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                        "provideCodeActions" => ProviderResult::CodeActions(
+                            result
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .map(|c| CodeActionEntry {
+                                            title: c.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                            kind: c.get("kind").and_then(Value::as_str).map(str::to_string),
+                                            preferred: c.get("preferred").and_then(Value::as_bool).unwrap_or(false),
+                                            disabled: c.get("disabled").and_then(Value::as_str).map(str::to_string),
                                         })
                                         .collect()
                                 })

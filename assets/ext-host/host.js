@@ -1463,6 +1463,55 @@ async function provideSignatureHelp(msg) {
 	return null;
 }
 
+/** Code actions offered by the last requests, kept to apply the chosen one. */
+const codeActionResults = new Map();
+
+/** Every code action provider's actions for a range, in provider order:
+ *  title, kind, preferred, disabled reason. */
+async function provideCodeActions(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return []; }
+	const r = msg.range;
+	const range = new Range(r[0], r[1], r[2], r[3]);
+	const token = new CancellationTokenSource().token;
+	const diagnostics = getDiagnostics(document.uri).filter(d => d.range.start.line <= range.end.line && d.range.end.line >= range.start.line);
+	const context = { diagnostics, only: undefined, triggerKind: 1 };
+	const found = [];
+	for (const p of providersFor('codeAction', document)) {
+		try {
+			const actions = await p.provider.provideCodeActions(document, range, context, token);
+			for (const action of actions || []) { found.push({ provider: p.provider, action }); }
+		} catch (err) { console.error(err); }
+	}
+	codeActionResults.clear();
+	codeActionResults.set(msg.requestId, found);
+	return found.map(({ action: a }) => ({
+		title: String(a.title),
+		kind: a.kind ? String(a.kind.value !== undefined ? a.kind.value : a.kind) : null,
+		preferred: !!a.isPreferred,
+		disabled: a.disabled ? String(a.disabled.reason || a.disabled) : null,
+	}));
+}
+
+/** Applies the `index`-th action of request `forRequest`: its edit (resolved
+ *  first when the provider resolves), then its command. */
+async function applyCodeAction(msg) {
+	const entry = (codeActionResults.get(msg.forRequest) || [])[msg.index];
+	if (!entry) { return; }
+	let action = entry.action;
+	try {
+		if (typeof action.command === 'string') {
+			await commands.executeCommand(action.command, ...(action.arguments || []));
+			return;
+		}
+		if (!action.edit && typeof entry.provider.resolveCodeAction === 'function') {
+			action = (await entry.provider.resolveCodeAction(action, new CancellationTokenSource().token)) || action;
+		}
+		if (action.edit) { await applyWorkspaceEdit(action.edit); }
+		if (action.command) { await commands.executeCommand(action.command.command, ...(action.command.arguments || [])); }
+	} catch (err) { console.error(err); }
+}
+
 /** `TextEdit[]` of the first formatter that answers, as wire edits. */
 async function provideFormatting(msg) {
 	const document = docs.get(msg.path);
@@ -1495,6 +1544,7 @@ const languages = new Proxy({
 	registerDocumentFormattingEditProvider: registerProvider('documentFormatting'),
 	registerRenameProvider: registerProvider('rename'),
 	registerSignatureHelpProvider: registerProvider('signatureHelp'),
+	registerCodeActionsProvider: registerProvider('codeAction'),
 	registerDeclarationProvider: registerProvider('declaration'),
 	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
 	registerImplementationProvider: registerProvider('implementation'),
@@ -1603,7 +1653,12 @@ const vscodeApi = {
 		appendPlaceholder(v, n = this._tab++) { this.value += '${' + n + ':' + (typeof v === 'string' ? v : '') + '}'; return this; }
 		appendVariable(name, def) { this.value += '${' + name + (def ? ':' + def : '') + '}'; return this; }
 	},
-	CodeAction: plainClass('CodeAction'),
+	CodeAction: class CodeAction {
+		constructor(title, kind) {
+			this.title = title; this.kind = kind; this.edit = undefined; this.command = undefined;
+			this.diagnostics = undefined; this.isPreferred = undefined; this.disabled = undefined;
+		}
+	},
 	CodeActionKind: hierarchicalKind('CodeActionKind', {
 		Empty: '', QuickFix: 'quickfix', Refactor: 'refactor', RefactorExtract: 'refactor.extract',
 		RefactorInline: 'refactor.inline', RefactorMove: 'refactor.move', RefactorRewrite: 'refactor.rewrite',
@@ -1938,6 +1993,7 @@ async function handle(msg) {
 		case 'providePrepareRename':
 		case 'provideRename':
 		case 'provideSignatureHelp':
+		case 'provideCodeActions':
 		case 'provideDefinition': {
 			let result;
 			try {
@@ -1948,6 +2004,7 @@ async function handle(msg) {
 						: msg.type === 'providePrepareRename' ? await providePrepareRename(msg)
 						: msg.type === 'provideRename' ? await provideRename(msg)
 						: msg.type === 'provideSignatureHelp' ? await provideSignatureHelp(msg)
+						: msg.type === 'provideCodeActions' ? await provideCodeActions(msg)
 						: [
 							...await provideLocations('definition', 'provideDefinition', msg),
 							...await provideLocations('declaration', 'provideDeclaration', msg),
@@ -1956,6 +2013,9 @@ async function handle(msg) {
 			send({ type: 'providerResult', requestId: msg.requestId, kind: msg.type, result });
 			break;
 		}
+		case 'applyCodeAction':
+			await applyCodeAction(msg);
+			break;
 		case 'activateByEvent':
 			await activateByEvent(msg.event);
 			break;
