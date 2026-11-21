@@ -1829,3 +1829,43 @@ fn f2_renames_the_symbol_through_the_extension() {
     assert!(harness.query_by_label("Rename input. Type new name and press Enter to commit.").is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_lightbulb_shows_code_actions_and_applies_one() {
+    if vscode_rust::extensions::host::find_node().is_none() {
+        return;
+    }
+    use egui::{Key, Modifiers};
+    use egui_kittest::kittest::NodeT;
+    let dir = std::env::temp_dir().join("vscode-rust-lightbulb");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.md");
+    std::fs::write(&file, "FIXME later\n").unwrap();
+    let mut harness = launch_with_extensions(Some(dir.clone()), vec![file.clone()], None, Some(sample_extensions_dir()));
+    harness.step();
+    harness.step();
+    run_until_label(&mut harness, "$(smiley) Hello");
+    let value = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.step();
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::ArrowUp);
+    harness.step();
+    // Once the caret rests on the FIXME line, the lightbulb shows.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while harness.query_by_label("Show Code Actions (⌘.)").is_none() {
+        assert!(std::time::Instant::now() < deadline, "the lightbulb never showed");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    harness.get_by_label("Show Code Actions (⌘.)").click();
+    harness.step();
+    harness.step();
+    harness.get_by_label("Replace FIXME with TODO").click();
+    while value(&harness) != "TODO later\n" {
+        assert!(std::time::Instant::now() < deadline, "the quick fix was never applied: {:?}", value(&harness));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        harness.step();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

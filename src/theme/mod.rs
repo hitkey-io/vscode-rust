@@ -73,6 +73,8 @@ palette! {
     MENU_FG = Id("menu.foreground");
     /// `editorLightBulb.foreground` — the Quick Fix icon.
     LIGHT_BULB_FG = Id("editorLightBulb.foreground");
+    /// `editorLightBulbAutoFix.foreground` — a preferred quick fix is there.
+    LIGHT_BULB_AUTOFIX_FG = Id("editorLightBulbAutoFix.foreground");
     MENU_BORDER = Id("menu.border");
     MENU_SELECTION_BG = Id("menu.selectionBackground");
     MENU_SELECTION_FG = Id("menu.selectionForeground");

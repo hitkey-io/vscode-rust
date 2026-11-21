@@ -482,6 +482,11 @@ struct LanguageState {
     pending_code_actions: Option<(u64, egui::Rect)>,
     /// The code action list on screen.
     code_actions: Option<CodeActionMenu>,
+    /// The lightbulb: the caret's (path, line) and since when it rests there,
+    /// the request asked for it, and the actions it found (request, entries).
+    bulb_at: Option<(PathBuf, usize, std::time::Instant)>,
+    pending_bulb: Option<u64>,
+    bulb: Option<(u64, Vec<crate::extensions::CodeActionEntry>)>,
 }
 
 /// The code action list (codeActionMenu.ts `toMenuItems` + actionList.ts):
@@ -1494,6 +1499,83 @@ impl App {
         }
     }
 
+    /// The code action lightbulb (lightBulbWidget.ts, `editor.lightbulb.enabled`
+    /// "onCode"): once the caret has rested on a line for 250ms the providers
+    /// are asked about it; if they offer anything, a lightbulb (the autofix
+    /// one, in `editorLightBulbAutoFix.foreground`, when a preferred quick fix
+    /// is there) shows in the gutter's glyph margin on that line, and a click
+    /// opens the code action list.
+    fn lightbulb(&mut self, ctx: &Context) {
+        let Some((idx, byte)) = self.caret_byte() else {
+            self.lang.bulb = None;
+            return;
+        };
+        let doc = &self.documents[idx];
+        let (path, line) = (doc.path.clone(), crate::extensions::text::byte_to_position(&doc.text, byte).0);
+        let moved = self.lang.bulb_at.as_ref().is_none_or(|(p, l, _)| p != &path || *l != line);
+        if moved {
+            self.lang.bulb_at = Some((path.clone(), line, std::time::Instant::now()));
+            self.lang.bulb = None;
+            self.lang.pending_bulb = None;
+        }
+        let Some((_, _, since)) = self.lang.bulb_at.clone() else { return };
+        let rested = since.elapsed() >= std::time::Duration::from_millis(250);
+        if !rested && !moved {
+            ctx.request_repaint_after(std::time::Duration::from_millis(260) - since.elapsed().min(std::time::Duration::from_millis(250)));
+        } else if moved {
+            ctx.request_repaint_after(std::time::Duration::from_millis(260));
+        }
+        if rested && self.lang.bulb.is_none() && self.lang.pending_bulb.is_none() && self.lang.code_actions.is_none() && self.lang.pending_code_actions.is_none() {
+            if self.extensions.provider_kinds.contains("codeAction") && !doc.read_only && doc.webview.is_none() && !doc.welcome {
+                let (l, c) = crate::extensions::text::byte_to_position(&doc.text, byte);
+                self.sync_extension_documents();
+                // Asked once per resting place: an empty answer leaves an
+                // empty list here, so it isn't asked again.
+                self.lang.pending_bulb = self.extensions.request_code_actions(&path, [l, c, l, c]);
+                if self.lang.pending_bulb.is_none() {
+                    self.lang.bulb = Some((0, Vec::new()));
+                }
+            }
+        }
+        if let Some(id) = self.lang.pending_bulb {
+            if let Some(result) = self.extensions.take_result(id) {
+                self.lang.pending_bulb = None;
+                let entries = match result {
+                    crate::extensions::ProviderResult::CodeActions(e) => e,
+                    _ => Vec::new(),
+                };
+                self.lang.bulb = Some((id, entries));
+            }
+        }
+        let Some((request, entries)) = self.lang.bulb.clone() else { return };
+        if entries.iter().all(|e| e.disabled.is_some()) {
+            return;
+        }
+        let (Some(caret), Some((editor, _))) = (self.lang.caret, ctx.data(|d| d.get_temp::<(egui::Rect, f32)>(egui::Id::new(crate::editor::find::ANCHOR)))) else { return };
+        let autofix = entries.iter().any(|e| e.preferred && e.kind.as_deref().is_some_and(|k| k == "quickfix" || k.starts_with("quickfix.")));
+        let (glyph, colour) = if autofix { ("lightbulb-autofix", Palette::LIGHT_BULB_AUTOFIX_FG()) } else { ("lightbulb", Palette::LIGHT_BULB_FG()) };
+        let rect = egui::Rect::from_center_size(egui::pos2(editor.left() + 9.0, caret.center().y), egui::vec2(18.0, 18.0));
+        let resp = egui::Area::new(egui::Id::new("code-action-lightbulb"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                let (r, resp) = ui.allocate_exact_size(rect.size(), egui::Sense::click());
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, crate::icons::codicon_by_name(glyph).unwrap_or('*').to_string(), crate::icons::codicon_font(16.0), colour);
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Show Code Actions (⌘.)"));
+                resp.on_hover_text("Show Code Actions (⌘.)")
+            })
+            .inner;
+        if resp.clicked() {
+            let rows = code_action_rows(&entries);
+            let focus_index = entries.iter().position(|e| e.preferred && e.disabled.is_none());
+            let focused = rows
+                .iter()
+                .position(|r| matches!(r, CodeActionRow::Action(i, _, _, None) if Some(*i) == focus_index))
+                .or_else(|| rows.iter().position(|r| matches!(r, CodeActionRow::Action(_, _, _, None))));
+            self.lang.code_actions = Some(CodeActionMenu { request, rows, focused, at: egui::pos2(rect.left(), rect.bottom() + 2.0) });
+        }
+    }
+
     /// Asks for signature help at the caret.
     fn request_signature_help(&mut self, trigger: Option<&str>) {
         let Some((idx, byte)) = self.caret_byte() else { return };
@@ -1802,6 +1884,8 @@ impl App {
         self.lang.caret_char = out.caret_char;
         if out.changed {
             self.lang.hover = None;
+            // The lightbulb asks again once the text rests.
+            self.lang.bulb_at = None;
             self.on_text_changed();
         }
         if let Some(ch) = out.command_clicked {
@@ -1916,6 +2000,7 @@ impl App {
         self.rename_widget(ctx);
         self.signature_widget(ctx);
         self.code_action_widget(ctx);
+        self.lightbulb(ctx);
         if let Some((id, path, start)) = self.lang.pending_completion.clone() {
             if let Some(ProviderResult::Completion { items, .. }) = self.extensions.take_result(id) {
                 self.lang.pending_completion = None;
