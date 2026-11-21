@@ -1108,6 +1108,12 @@ class DiagnosticRelatedInformation { constructor(location, message) { this.locat
 class CompletionItem { constructor(label, kind) { this.label = label; this.kind = kind; } }
 class CompletionList { constructor(items = [], isIncomplete = false) { this.items = items; this.isIncomplete = isIncomplete; } }
 /** A symbol with a range and children (the Outline's rows). */
+class ParameterInformation { constructor(label, documentation) { this.label = label; this.documentation = documentation; } }
+class SignatureInformation {
+	constructor(label, documentation) { this.label = label; this.documentation = documentation; this.parameters = []; this.activeParameter = undefined; }
+}
+class SignatureHelp { constructor() { this.signatures = []; this.activeSignature = 0; this.activeParameter = 0; } }
+
 class DocumentSymbol {
 	constructor(name, detail, kind, range, selectionRange) {
 		this.name = name; this.detail = detail; this.kind = kind; this.range = range; this.selectionRange = selectionRange; this.children = [];
@@ -1242,7 +1248,9 @@ function registerProvider(kind) {
 		const entry = { selector, provider, extra, owner: currentExtensionId };
 		if (!providers.has(kind)) { providers.set(kind, []); }
 		providers.get(kind).push(entry);
-		send({ type: 'providerRegistered', kind, triggerCharacters: kind === 'completion' ? extra.flat().filter(c => typeof c === 'string') : [] });
+		const meta = extra[0] && typeof extra[0] === 'object' && !Array.isArray(extra[0]) ? extra[0] : null;
+		const chars = meta ? [...(meta.triggerCharacters || []), ...(meta.retriggerCharacters || [])] : extra.flat().filter(c => typeof c === 'string');
+		send({ type: 'providerRegistered', kind, triggerCharacters: kind === 'completion' ? chars : [], signatureTriggers: kind === 'signatureHelp' ? chars : [] });
 		return new Disposable(() => {
 			const list = providers.get(kind);
 			const i = list.indexOf(entry);
@@ -1419,6 +1427,42 @@ async function provideRename(msg) {
 	return { reject: 'No result.' };
 }
 
+/** The first signature help: its signatures (label, documentation and each
+ *  parameter's [start, end) in the label) and which is active. */
+async function provideSignatureHelp(msg) {
+	const document = docs.get(msg.path);
+	if (!document) { return null; }
+	const position = new Position(msg.line, msg.character);
+	const token = new CancellationTokenSource().token;
+	const context = { triggerKind: msg.trigger ? 2 : 1, triggerCharacter: msg.trigger || undefined, isRetrigger: false, activeSignatureHelp: undefined };
+	for (const p of providersFor('signatureHelp', document)) {
+		try {
+			const h = await p.provider.provideSignatureHelp(document, position, token, context);
+			if (!h || !h.signatures || !h.signatures.length) { continue; }
+			return {
+				activeSignature: Math.min(h.activeSignature || 0, h.signatures.length - 1),
+				signatures: h.signatures.map(sig => {
+					const label = String(sig.label);
+					let from = 0;
+					const params = (sig.parameters || []).map(pr => {
+						if (Array.isArray(pr.label)) { return [pr.label[0], pr.label[1]]; }
+						const at = label.indexOf(String(pr.label), from);
+						if (at < 0) { return [0, 0]; }
+						from = at + String(pr.label).length;
+						return [at, from];
+					});
+					return {
+						label, documentation: markdownText(sig.documentation), parameters: params,
+						parameterDocs: (sig.parameters || []).map(pr => markdownText(pr.documentation)),
+						activeParameter: sig.activeParameter !== undefined ? sig.activeParameter : (h.activeParameter || 0),
+					};
+				}),
+			};
+		} catch (err) { console.error(err); }
+	}
+	return null;
+}
+
 /** `TextEdit[]` of the first formatter that answers, as wire edits. */
 async function provideFormatting(msg) {
 	const document = docs.get(msg.path);
@@ -1450,6 +1494,7 @@ const languages = new Proxy({
 	registerDocumentSymbolProvider: registerProvider('documentSymbol'),
 	registerDocumentFormattingEditProvider: registerProvider('documentFormatting'),
 	registerRenameProvider: registerProvider('rename'),
+	registerSignatureHelpProvider: registerProvider('signatureHelp'),
 	registerDeclarationProvider: registerProvider('declaration'),
 	registerTypeDefinitionProvider: registerProvider('typeDefinition'),
 	registerImplementationProvider: registerProvider('implementation'),
@@ -1532,6 +1577,8 @@ const vscodeApi = {
 	DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
 	UIKind: { Desktop: 1, Web: 2 },
 	LogLevel: { Off: 0, Trace: 1, Debug: 2, Info: 3, Warning: 4, Error: 5 },
+	SignatureHelp, SignatureInformation, ParameterInformation,
+	SignatureHelpTriggerKind: { Invoke: 1, TriggerCharacter: 2, ContentChange: 3 },
 	Diagnostic, DiagnosticRelatedInformation, CompletionItem, CompletionList, Hover, Location, DocumentSymbol, SymbolInformation,
 	NotebookCellOutputItem: class NotebookCellOutputItem {
 		static text(value, mime = 'text/plain') { return new NotebookCellOutputItem(Buffer.from(String(value)), mime); }
@@ -1890,6 +1937,7 @@ async function handle(msg) {
 		case 'provideFormatting':
 		case 'providePrepareRename':
 		case 'provideRename':
+		case 'provideSignatureHelp':
 		case 'provideDefinition': {
 			let result;
 			try {
@@ -1899,6 +1947,7 @@ async function handle(msg) {
 						: msg.type === 'provideFormatting' ? await provideFormatting(msg)
 						: msg.type === 'providePrepareRename' ? await providePrepareRename(msg)
 						: msg.type === 'provideRename' ? await provideRename(msg)
+						: msg.type === 'provideSignatureHelp' ? await provideSignatureHelp(msg)
 						: [
 							...await provideLocations('definition', 'provideDefinition', msg),
 							...await provideLocations('declaration', 'provideDeclaration', msg),

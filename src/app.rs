@@ -475,6 +475,9 @@ struct LanguageState {
     caret_char: Option<usize>,
     /// Rename Symbol (F2) in progress.
     rename: Option<Rename>,
+    /// Signature help asked for, and the one on screen with the overload shown.
+    pending_signature: Option<u64>,
+    signature: Option<(crate::extensions::SignatureHelp, usize)>,
 }
 
 /// Rename Symbol (rename.ts / renameWidget.ts): asking where it starts, the
@@ -1255,6 +1258,14 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(Modifiers::CTRL, Key::Space)) {
             self.request_completion(None);
         }
+        // Parameter hints: ⇧⌘Space asks, Escape closes them (when the suggest
+        // list, which takes Escape first, isn't open).
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Space)) {
+            self.request_signature_help(None);
+        }
+        if self.lang.signature.is_some() && self.lang.suggest.is_none() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.lang.signature = None;
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F12)) {
             if let Some(ch) = self.lang.caret_char {
                 self.request_definition(ch);
@@ -1268,6 +1279,128 @@ impl App {
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F2))
         {
             self.start_rename();
+        }
+    }
+
+    /// Asks for signature help at the caret.
+    fn request_signature_help(&mut self, trigger: Option<&str>) {
+        let Some((idx, byte)) = self.caret_byte() else { return };
+        let doc = &self.documents[idx];
+        let path = doc.path.clone();
+        let (line, character) = crate::extensions::text::byte_to_position(&doc.text, byte);
+        self.sync_extension_documents();
+        if let Some(id) = self.extensions.request_signature_help(&path, line, character, trigger) {
+            self.lang.pending_signature = Some(id);
+        }
+    }
+
+    /// The parameter hints (parameterHints.css): above the caret's line, an
+    /// `editorHoverWidget` card (radius 8, shadow, max 440px); the signature
+    /// in the editor font 4px / 5px in, the active parameter bold in
+    /// `editorHoverWidget.highlightForeground`; its documentation (or the
+    /// signature's) under a 50% rule; with several signatures a 22px column
+    /// on the left with ↑, "n/m", ↓ (⌥↑ / ⌥↓ step them).
+    fn signature_widget(&mut self, ctx: &Context) {
+        if let Some(id) = self.lang.pending_signature {
+            if let Some(result) = self.extensions.take_result(id) {
+                self.lang.pending_signature = None;
+                self.lang.signature = match result {
+                    crate::extensions::ProviderResult::Signatures(Some(h)) if !h.signatures.is_empty() => {
+                        // Keep the overload the person stepped to, if it still exists.
+                        let shown = self.lang.signature.as_ref().map(|(_, i)| *i).filter(|i| *i < h.signatures.len()).unwrap_or(h.active.min(h.signatures.len() - 1));
+                        Some((h, shown))
+                    }
+                    _ => None,
+                };
+            }
+        }
+        let (Some((help, shown)), Some(caret)) = (self.lang.signature.clone(), self.lang.caret) else { return };
+        let Some(sig) = help.signatures.get(shown) else { return };
+        let count = help.signatures.len();
+        let mut step: i32 = 0;
+        if count > 1 {
+            ctx.input_mut(|i| {
+                if i.consume_key(Modifiers::ALT, Key::ArrowUp) {
+                    step = -1;
+                } else if i.consume_key(Modifiers::ALT, Key::ArrowDown) {
+                    step = 1;
+                }
+            });
+        }
+        let fg = Palette::VSCE_HOVER_FG();
+        let font = crate::icons::editor_mono_font(12.0);
+        let bold = crate::icons::editor_mono_bold_font(12.0);
+        let mut job = egui::text::LayoutJob::default();
+        job.wrap.max_width = 420.0;
+        let active = sig.parameters.get(sig.active_parameter).copied();
+        let chars: Vec<char> = sig.label.chars().collect();
+        let mut push = |from: usize, to: usize, hl: bool| {
+            if from < to {
+                let text: String = chars[from.min(chars.len())..to.min(chars.len())].iter().collect();
+                let (f, c) = if hl { (bold.clone(), Palette::HOVER_HIGHLIGHT_FG()) } else { (font.clone(), fg) };
+                job.append(&text, 0.0, egui::TextFormat { font_id: f, color: c, line_height: Some(18.0), ..Default::default() });
+            }
+        };
+        match active {
+            Some((a, b)) if a < b => {
+                push(0, a, false);
+                push(a, b, true);
+                push(b, chars.len(), false);
+            }
+            _ => push(0, chars.len(), false),
+        }
+        let doc = sig.parameter_docs.get(sig.active_parameter).filter(|d| !d.trim().is_empty()).cloned().unwrap_or_else(|| sig.documentation.clone());
+        egui::Area::new(egui::Id::new("parameter-hints"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(egui::pos2(caret.left(), caret.top() - 1.0))
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .constrain(true)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(Palette::VSCE_HOVER_BG())
+                    .stroke(egui::Stroke::new(1.0, Palette::VSCE_HOVER_BORDER()))
+                    .corner_radius(8)
+                    .shadow(egui::Shadow { offset: [0, 2], blur: 8, spread: 0, color: egui::Color32::from_black_alpha(90) })
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                            if count > 1 {
+                                ui.vertical(|ui| {
+                                    ui.set_width(22.0);
+                                    let up = ui.add(egui::Button::new(egui::RichText::new(crate::icons::codicon_by_name("chevron-up").unwrap_or('^').to_string()).font(crate::icons::codicon_font(16.0))).frame(false));
+                                    ui.label(egui::RichText::new(format!("{}/{}", shown + 1, count)).font(crate::icons::editor_mono_font(11.0)).color(fg));
+                                    let down = ui.add(egui::Button::new(egui::RichText::new(crate::icons::codicon_by_name("chevron-down").unwrap_or('v').to_string()).font(crate::icons::codicon_font(16.0))).frame(false));
+                                    if up.clicked() {
+                                        step = -1;
+                                    }
+                                    if down.clicked() {
+                                        step = 1;
+                                    }
+                                });
+                            }
+                            ui.vertical(|ui| {
+                                ui.set_max_width(440.0);
+                                egui::Frame::new().inner_margin(egui::Margin::symmetric(5, 4)).show(ui, |ui| {
+                                    let label = sig.label.clone();
+                                    let r = ui.label(job);
+                                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("Signature: {label}")));
+                                });
+                                if !doc.trim().is_empty() {
+                                    let y = ui.cursor().top();
+                                    let x = ui.min_rect().x_range();
+                                    ui.painter().hline(x, y, egui::Stroke::new(1.0, Palette::VSCE_HOVER_BORDER().gamma_multiply(0.5)));
+                                    egui::Frame::new().inner_margin(egui::Margin { left: 5, right: 10, top: 6, bottom: 6 }).show(ui, |ui| {
+                                        ui.label(egui::RichText::new(doc.clone()).size(13.0).color(fg));
+                                    });
+                                }
+                            });
+                        });
+                    });
+            });
+        if step != 0 {
+            let n = count as i32;
+            let next = ((shown as i32 + step) % n + n) % n;
+            self.lang.signature = Some((help, next as usize));
         }
     }
 
@@ -1533,6 +1666,13 @@ impl App {
     /// character or a trigger character.
     fn on_text_changed(&mut self) {
         let Some((idx, caret)) = self.caret_byte() else { return };
+        // Signature help: a trigger character asks, and while the hints show
+        // every change asks again (the provider closes them by answering none).
+        let typed = self.documents[idx].text[..caret].chars().next_back().map(|c| c.to_string());
+        let trigger = typed.filter(|c| self.extensions.signature_triggers.contains(c));
+        if trigger.is_some() || self.lang.signature.is_some() {
+            self.request_signature_help(trigger.as_deref());
+        }
         let text = &self.documents[idx].text;
         let prev = text[..caret].chars().next_back();
         let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
@@ -1562,6 +1702,7 @@ impl App {
     fn language_widgets(&mut self, ctx: &Context) {
         use crate::extensions::ProviderResult;
         self.rename_widget(ctx);
+        self.signature_widget(ctx);
         if let Some((id, path, start)) = self.lang.pending_completion.clone() {
             if let Some(ProviderResult::Completion { items, .. }) = self.extensions.take_result(id) {
                 self.lang.pending_completion = None;

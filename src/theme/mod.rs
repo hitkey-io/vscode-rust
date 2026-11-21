@@ -329,6 +329,8 @@ palette! {
     VSCE_HOVER_BG = Id("editorHoverWidget.background");
     VSCE_HOVER_BORDER = Id("editorHoverWidget.border");
     VSCE_HOVER_FG = Id("editorHoverWidget.foreground");
+    /// `editorHoverWidget.highlightForeground` — the active parameter.
+    HOVER_HIGHLIGHT_FG = Id("editorHoverWidget.highlightForeground");
     VSCE_BUTTON_2026_BG = Id("button.background");
     VSCE_BUTTON_2026_HOVER_BG = Id("button.hoverBackground");
     VSCE_BUTTON_2026_BORDER = OneOf(&["button.border", "contrastBorder"]);

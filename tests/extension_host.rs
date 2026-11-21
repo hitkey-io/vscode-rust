@@ -437,3 +437,33 @@ fn rename_prepares_at_the_word_and_returns_edits_per_file() {
     assert_eq!(ranges, vec![[0, 0, 0, 3], [0, 8, 0, 11], [1, 1, 1, 4]]);
     assert!(files[0].1.iter().all(|e| e.text == "baz"));
 }
+
+#[test]
+fn signature_help_comes_back_with_the_active_parameter() {
+    let Some(mut svc) = started() else { return };
+    let path = fixtures().join("workspace/README.md");
+    svc.sync_documents(&[(path.clone(), "markdown", "say greet(ann, hi\n", false)], Some((path.clone(), [0, 0, 0, 0])));
+    assert!(svc.wait_until(WAIT, |s| s.signature_triggers.contains("(") && s.signature_triggers.contains(",")), "log: {:#?}", svc.log);
+    let wait_for = |svc: &mut ExtensionService, id: u64| {
+        for _ in 0..200 {
+            if let Some(r) = svc.take_result(id) {
+                return r;
+            }
+            svc.wait_until(Duration::from_millis(30), |_| false);
+        }
+        panic!("no answer")
+    };
+    // After the comma: the second overload, its second parameter.
+    let id = svc.request_signature_help(&path, 0, 17, Some(",")).expect("a provider");
+    let ProviderResult::Signatures(Some(help)) = wait_for(&mut svc, id) else { panic!("signatures") };
+    assert_eq!(help.signatures.len(), 2);
+    assert_eq!(help.active, 1);
+    let sig = &help.signatures[1];
+    assert_eq!(sig.label, "greet(name: string, greeting: string)");
+    assert_eq!(sig.active_parameter, 1);
+    assert_eq!(sig.parameters, vec![(6, 18), (20, 36)]);
+    assert_eq!(sig.parameter_docs[1], "What to say.");
+    // Outside the call: nothing.
+    let id = svc.request_signature_help(&path, 0, 2, None).expect("a provider");
+    assert_eq!(wait_for(&mut svc, id), ProviderResult::Signatures(None));
+}

@@ -137,6 +137,25 @@ function activate(context) {
 			return edits;
 		},
 	}));
+	// Signature help inside `greet(...)` (markdown only): two overloads, the
+	// active parameter counted by commas.
+	context.subscriptions.push(vscode.languages.registerSignatureHelpProvider({ language: 'markdown' }, {
+		provideSignatureHelp(document, position) {
+			const before = document.lineAt(position.line).text.slice(0, position.character);
+			const open = before.lastIndexOf('greet(');
+			if (open < 0 || before.indexOf(')', open) >= 0) { return null; }
+			const commas = (before.slice(open).match(/,/g) || []).length;
+			const one = new vscode.SignatureInformation('greet(name: string)', 'Says hello.');
+			one.parameters = [new vscode.ParameterInformation('name: string', 'Who to greet.')];
+			const two = new vscode.SignatureInformation('greet(name: string, greeting: string)', 'Says something to someone.');
+			two.parameters = [new vscode.ParameterInformation('name: string', 'Who to greet.'), new vscode.ParameterInformation('greeting: string', 'What to say.')];
+			const help = new vscode.SignatureHelp();
+			help.signatures = [one, two];
+			help.activeSignature = commas > 0 ? 1 : 0;
+			help.activeParameter = commas;
+			return help;
+		},
+	}, { triggerCharacters: ['('], retriggerCharacters: [','] }));
 	// Rename Symbol: every whole-word occurrence in the document (markdown only).
 	context.subscriptions.push(vscode.languages.registerRenameProvider({ language: 'markdown' }, {
 		prepareRename(document, position) {

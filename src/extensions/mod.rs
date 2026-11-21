@@ -168,6 +168,28 @@ pub enum ProviderResult {
     Rejected(String),
     /// A rename's edits, per file (`provideRenameEdits`).
     FileEdits(Vec<(PathBuf, Vec<WireEdit>)>),
+    /// Signature help: the signatures and which one is active; `None` when
+    /// no provider had one.
+    Signatures(Option<SignatureHelp>),
+}
+
+/// `SignatureHelp`, flattened for the parameter hints widget.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SignatureHelp {
+    pub signatures: Vec<Signature>,
+    pub active: usize,
+}
+
+/// One `SignatureInformation`: its label, documentation (markdown), each
+/// parameter's char range in the label with its documentation, and the
+/// active parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Signature {
+    pub label: String,
+    pub documentation: String,
+    pub parameters: Vec<(usize, usize)>,
+    pub parameter_docs: Vec<String>,
+    pub active_parameter: usize,
 }
 
 /// A `DocumentSymbol`: the Outline view's rows.
@@ -382,6 +404,8 @@ pub struct ExtensionService {
     pub provider_kinds: BTreeSet<String>,
     /// Characters that open completions (`registerCompletionItemProvider`).
     pub completion_triggers: BTreeSet<String>,
+    /// Characters that ask for signature help (trigger + retrigger).
+    pub signature_triggers: BTreeSet<String>,
     /// Context keys set with `setContext` (for `when` clauses).
     pub context: BTreeMap<String, Value>,
     /// Open webviews by handle.
@@ -586,6 +610,7 @@ impl ExtensionService {
         self.provider_results.clear();
         self.provider_kinds.clear();
         self.completion_triggers.clear();
+        self.signature_triggers.clear();
         self.context.clear();
         self.closed_panels.extend(self.webviews.keys().copied());
         self.webviews.clear();
@@ -901,6 +926,17 @@ impl ExtensionService {
         }
         let id = self.request_id();
         self.host.as_mut()?.send(&json!({ "type": "provideRename", "requestId": id, "path": path, "line": line, "character": character, "newName": new_name }));
+        Some(id)
+    }
+
+    /// Asks for signature help at (0-based line, UTF-16 character); `trigger`
+    /// is the typed character that asked, if any.
+    pub fn request_signature_help(&mut self, path: &Path, line: usize, character: usize, trigger: Option<&str>) -> Option<u64> {
+        if !self.ready || !self.provider_kinds.contains("signatureHelp") {
+            return None;
+        }
+        let id = self.request_id();
+        self.host.as_mut()?.send(&json!({ "type": "provideSignatureHelp", "requestId": id, "path": path, "line": line, "character": character, "trigger": trigger }));
         Some(id)
     }
 
@@ -1383,6 +1419,9 @@ impl ExtensionService {
                 if let Some(chars) = msg.get("triggerCharacters").and_then(Value::as_array) {
                     self.completion_triggers.extend(chars.iter().filter_map(Value::as_str).map(str::to_string));
                 }
+                if let Some(chars) = msg.get("signatureTriggers").and_then(Value::as_array) {
+                    self.signature_triggers.extend(chars.iter().filter_map(Value::as_str).map(str::to_string));
+                }
             }
             "diagnostics" => {
                 let items: Vec<Diagnostic> = msg
@@ -1486,6 +1525,34 @@ impl ExtensionService {
                                 })
                                 .unwrap_or_default(),
                         ),
+                        "provideSignatureHelp" => ProviderResult::Signatures(result.get("signatures").and_then(Value::as_array).map(|sigs| SignatureHelp {
+                            active: result.get("activeSignature").and_then(Value::as_u64).unwrap_or(0) as usize,
+                            signatures: sigs
+                                .iter()
+                                .map(|g| {
+                                    let label = g.get("label").and_then(Value::as_str).unwrap_or_default().to_string();
+                                    // UTF-16 offsets into the label → char offsets.
+                                    let to_char = |u: u64| {
+                                        let mut units = 0u64;
+                                        label.chars().take_while(|c| {
+                                            units += c.len_utf16() as u64;
+                                            units <= u
+                                        }).count()
+                                    };
+                                    Signature {
+                                        documentation: g.get("documentation").and_then(Value::as_str).unwrap_or_default().to_string(),
+                                        parameters: g
+                                            .get("parameters")
+                                            .and_then(Value::as_array)
+                                            .map(|a| a.iter().filter_map(|p| Some((to_char(p.get(0)?.as_u64()?), to_char(p.get(1)?.as_u64()?)))).collect())
+                                            .unwrap_or_default(),
+                                        parameter_docs: g.get("parameterDocs").and_then(Value::as_array).map(|a| a.iter().map(|d| d.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default(),
+                                        active_parameter: g.get("activeParameter").and_then(Value::as_u64).unwrap_or(0) as usize,
+                                        label,
+                                    }
+                                })
+                                .collect(),
+                        })),
                         "provideDocumentSymbols" => ProviderResult::Symbols(
                             result.as_array().map(|a| a.iter().filter_map(symbol_entry).collect()).unwrap_or_default(),
                         ),
