@@ -6,6 +6,7 @@ pub mod fold;
 pub mod highlight;
 pub mod marks;
 pub mod minimap;
+pub mod multi;
 pub mod smart;
 pub mod view;
 

@@ -315,6 +315,12 @@ fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
     let language = doc.language;
     let text = doc.text.clone();
     let alt = Modifiers::ALT;
+    let multi_action = action.filter(|a| matches!(*a, "add-next" | "select-all" | "cursor-above" | "cursor-below"));
+    if (focused && action.is_none()) || multi_action.is_some() {
+        if let Some(changed) = multi_keys(ctx, id, doc, state.clone(), (a, h), multi_action) {
+            return changed;
+        }
+    }
     // Expand / Shrink Selection: the ranges left behind are kept to shrink back.
     let pre: Option<smart::Edit> = match action {
         Some("expand") | Some("shrink") => {
@@ -420,6 +426,157 @@ fn smart_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document) -> bool {
 
 /// Editable path — no folds active. Standard `TextEdit` over the full text
 /// with the fold gutter painted alongside.
+/// The extra cursors of an editor (besides the `TextEdit`'s own, which is
+/// the primary one), kept in egui memory per file.
+pub fn extra_cursors_key(path: &std::path::Path) -> egui::Id {
+    egui::Id::new(("multi-sel", path))
+}
+
+/// Keys for several cursors (`editor/multi.rs`): ⌘D, ⇧⌘L, ⌥⌘↑ / ⌥⌘↓ add
+/// cursors; while there are extra ones, typing, Backspace, Delete, Enter,
+/// Tab, ← / →, Home / End (with ⇧) and paste act at all of them, ⌘C / ⌘X
+/// take every selection (one per line), Escape keeps the primary only, and
+/// any other key drops the extras before the editor handles it. `None` when
+/// nothing here applied.
+fn multi_keys(ctx: &egui::Context, id: egui::Id, doc: &mut Document, mut state: egui::text_edit::TextEditState, primary: (usize, usize), action: Option<&str>) -> Option<bool> {
+    use super::multi::{self, Op};
+    use egui::{Event, Key, Modifiers};
+    let key = extra_cursors_key(&doc.path);
+    let word_key = egui::Id::new(("multi-word", &doc.path));
+    let mut extras: Vec<multi::Sel> = ctx.data(|d| d.get_temp(key)).unwrap_or_default();
+    let mut word_mode: bool = ctx.data(|d| d.get_temp(word_key)).unwrap_or(false);
+    let mut all = extras.clone();
+    all.push(primary);
+    let mut next: Option<(String, Vec<multi::Sel>)> = None;
+    let mut handled = false;
+    ctx.input_mut(|i| {
+        if action == Some("add-next") || (action.is_none() && i.consume_key(Modifiers::COMMAND, Key::D)) {
+            handled = true;
+            if extras.is_empty() && primary.0 == primary.1 {
+                word_mode = false;
+            }
+            if let Some(s) = multi::add_next_occurrence(&doc.text, &all, &mut word_mode) {
+                next = Some((doc.text.clone(), s));
+            }
+        } else if action == Some("select-all") || (action.is_none() && i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::L)) {
+            handled = true;
+            next = Some((doc.text.clone(), multi::select_all_occurrences(&doc.text, primary)));
+        } else if action == Some("cursor-above") || (action.is_none() && i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowUp)) {
+            handled = true;
+            next = Some((doc.text.clone(), multi::add_cursor_vertical(&doc.text, &all, true)));
+        } else if action == Some("cursor-below") || (action.is_none() && i.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowDown)) {
+            handled = true;
+            next = Some((doc.text.clone(), multi::add_cursor_vertical(&doc.text, &all, false)));
+        }
+        if handled || extras.is_empty() || action.is_some() {
+            return;
+        }
+        if i.consume_key(Modifiers::NONE, Key::Escape) {
+            handled = true;
+            next = Some((doc.text.clone(), vec![primary]));
+            return;
+        }
+        let keys: [(Modifiers, Key, Op); 12] = [
+            (Modifiers::NONE, Key::Backspace, Op::Backspace),
+            (Modifiers::NONE, Key::Delete, Op::Delete),
+            (Modifiers::NONE, Key::Enter, Op::Insert("\n".into())),
+            (Modifiers::NONE, Key::Tab, Op::Insert("\t".into())),
+            (Modifiers::NONE, Key::ArrowLeft, Op::Left { shift: false }),
+            (Modifiers::SHIFT, Key::ArrowLeft, Op::Left { shift: true }),
+            (Modifiers::NONE, Key::ArrowRight, Op::Right { shift: false }),
+            (Modifiers::SHIFT, Key::ArrowRight, Op::Right { shift: true }),
+            (Modifiers::NONE, Key::Home, Op::Home { shift: false }),
+            (Modifiers::SHIFT, Key::Home, Op::Home { shift: true }),
+            (Modifiers::NONE, Key::End, Op::End { shift: false }),
+            (Modifiers::SHIFT, Key::End, Op::End { shift: true }),
+        ];
+        let mut op = None;
+        for (m, k, o) in keys {
+            if i.consume_key(m, k) {
+                op = Some(o);
+                break;
+            }
+        }
+        if op.is_none() {
+            // Typed text and paste go to every cursor; copy / cut take them all.
+            let mut copied = None;
+            let mut cut = false;
+            i.events.retain(|e| match e {
+                Event::Text(t) | Event::Paste(t) if op.is_none() => {
+                    op = Some(Op::Insert(t.clone()));
+                    false
+                }
+                Event::Copy | Event::Cut => {
+                    cut |= matches!(e, Event::Cut);
+                    copied = Some(());
+                    false
+                }
+                _ => true,
+            });
+            if copied.is_some() {
+                let chars: Vec<char> = doc.text.chars().collect();
+                let mut sorted = all.clone();
+                sorted.sort_by_key(|(a, h)| (*a).min(*h));
+                let text: Vec<String> = sorted.iter().map(|&(a, h)| chars[a.min(h)..a.max(h).min(chars.len())].iter().collect()).collect();
+                ctx.copy_text(text.join("\n"));
+                handled = true;
+                if cut {
+                    op = Some(Op::Insert(String::new()));
+                }
+            }
+        }
+        match op {
+            Some(o) => {
+                handled = true;
+                next = Some(multi::apply(&doc.text, &all, &o));
+            }
+            None => {
+                // Another key: back to one cursor, the editor handles it.
+                let other = i.events.iter().any(|e| matches!(e, Event::Key { pressed: true, .. }));
+                if other {
+                    extras.clear();
+                    ctx.data_mut(|d| d.remove::<Vec<multi::Sel>>(key));
+                }
+            }
+        }
+    });
+    ctx.data_mut(|d| d.insert_temp(word_key, word_mode));
+    let (text, mut sels) = next?;
+    let changed = text != doc.text;
+    doc.text = text;
+    let primary = sels.pop().unwrap_or(primary);
+    ctx.data_mut(|d| d.insert_temp(key, sels));
+    state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(primary.0), CCursor::new(primary.1))));
+    state.store(ctx, id);
+    if changed {
+        doc.check_dirty();
+    }
+    handled.then_some(changed)
+}
+
+/// Paints the extra cursors and their selections over the editor's text.
+fn paint_extra_cursors(ui: &Ui, clip: egui::Rect, galley: &egui::Galley, origin: egui::Pos2, text: &str, extras: &[(usize, usize)]) {
+    let p = ui.painter().with_clip_rect(clip.intersect(ui.clip_rect()));
+    let chars: Vec<char> = text.chars().collect();
+    let pos = |c: usize| galley.pos_from_cursor(CCursor::new(c.min(chars.len()))).translate(origin.to_vec2());
+    for &(a, h) in extras {
+        let (s, e) = (a.min(h), a.max(h));
+        if s != e {
+            // One rect per line of the selection.
+            let mut from = s;
+            while from < e {
+                let line_end = (from..e).find(|&k| chars[k] == '\n').unwrap_or(e);
+                let (r0, r1) = (pos(from), pos(line_end));
+                let right = if line_end < e { r1.left() + 6.0 } else { r1.left() };
+                p.rect_filled(egui::Rect::from_min_max(egui::pos2(r0.left(), r0.top()), egui::pos2(right, r0.bottom())), 0.0, Palette::SELECTION_BG());
+                from = line_end + 1;
+            }
+        }
+        let c = pos(h);
+        p.rect_filled(egui::Rect::from_min_size(c.left_top(), egui::vec2(2.0, c.height())), 0.0, Palette::CURSOR_FG());
+    }
+}
+
 fn show_editable(
     ui: &mut Ui,
     doc: &mut Document,
@@ -439,6 +596,7 @@ fn show_editable(
     let style = ui.style().clone();
     let language = doc.language;
     let mut find_owned = find.cloned();
+    let prev_sel = ctx.data(|d| d.get_temp::<(usize, usize)>(egui::Id::new(("marks-sel", &doc.path))));
     // Marks around the selection from the last frame's caret: other
     // occurrences of the selected text and the bracket pair at the caret.
     if let Some((anchor, head)) = ctx.data(|d| d.get_temp::<(usize, usize)>(egui::Id::new(("marks-sel", &doc.path)))) {
@@ -529,10 +687,11 @@ fn show_editable(
                 paint_indent_guides(ui, &doc.text, gutter_rect.right() + TEXT_PAD, gutter_rect.top(), cursor_line);
 
                 let text_id = ui.make_persistent_id(("editor_text", &doc.path));
+                let has_extras = ui.ctx().data(|d| d.get_temp::<Vec<(usize, usize)>>(extra_cursors_key(&doc.path))).is_some_and(|v| !v.is_empty());
                 if !doc.read_only && smart_keys(ui.ctx(), text_id, doc) {
                     smart_changed = true;
                 }
-                TextEdit::multiline(&mut doc.text)
+                let shown = TextEdit::multiline(&mut doc.text)
                         .id(text_id)
                         .font(FontId::monospace(EDITOR_FONT_SIZE))
                         .code_editor()
@@ -545,7 +704,13 @@ fn show_editable(
                                 .inner_margin(egui::Margin { left: TEXT_PAD as i8, right: TEXT_PAD as i8, top: 0, bottom: 0 }),
                         )
                         .layouter(&mut layouter)
-                        .show(ui)
+                        .show(ui);
+                // With extra cursors Escape stays in the editor (it drops
+                // them) instead of taking the keyboard away.
+                if has_extras && ui.memory(|m| m.has_focus(text_id)) {
+                    ui.memory_mut(|m| m.set_focus_lock_filter(text_id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, tab: true, escape: true }));
+                }
+                shown
             })
             .inner
         })
@@ -556,6 +721,7 @@ fn show_editable(
             (scroll.id, scroll.state.offset.y, scroll.content_size.y, scroll.inner_rect.height()),
         )
     });
+    let text_clip = scroll.inner_rect;
     let output = scroll.inner;
     if let Some(before) = read_only_before {
         if doc.text != before {
@@ -566,6 +732,28 @@ fn show_editable(
     let origin = output.galley_pos;
     for sq in squiggles {
         paint_squiggle(ui, &galley, origin, &doc.text, sq);
+    }
+    // ⌥-click adds a cursor (the one before stays); a plain click or an
+    // edit the editor made itself leaves one cursor.
+    {
+        let key = extra_cursors_key(&doc.path);
+        let resp = &output.response.response;
+        let mut extras: Vec<(usize, usize)> = ui.ctx().data(|d| d.get_temp(key)).unwrap_or_default();
+        if resp.clicked() || resp.changed() {
+            let alt = ui.input(|i| i.modifiers.alt && !i.modifiers.command);
+            match (alt && resp.clicked(), prev_sel) {
+                (true, Some(prev)) if output.cursor_range.is_some_and(|r| r.primary.index != prev.1) => {
+                    if !extras.contains(&prev) {
+                        extras.push(prev);
+                    }
+                }
+                _ => extras.clear(),
+            }
+            ui.ctx().data_mut(|d| d.insert_temp(key, extras.clone()));
+        }
+        if !extras.is_empty() {
+            paint_extra_cursors(ui, text_clip, &galley, origin, &doc.text, &extras);
+        }
     }
     if let Some(range) = output.cursor_range {
         out.caret = Some(galley.pos_from_cursor(range.primary).translate(origin.to_vec2()));

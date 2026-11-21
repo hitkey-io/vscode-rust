@@ -427,8 +427,8 @@ fn extension_completions_open_while_typing_and_insert_on_enter() {
     let extensions = sample_extensions_dir();
     let mut harness =
         launch_with_extensions(Some(ws.clone()), vec![ws.join("README.md")], None, Some(extensions));
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     run_until_label(&mut harness, "$(smiley) Hello");
 
     // Focus the code view and type a word: the extension's suggestions show.
@@ -808,7 +808,7 @@ fn outline_pane_lists_symbols_and_goes_to_them() {
     };
     let mut harness = Harness::builder().with_size(Vec2::new(1300.0, 820.0)).wgpu().build(runner);
     for _ in 0..4 {
-        harness.run();
+        harness.run_steps(3);
     }
     let _ = harness.get_by_label("outline:Title");
     let _ = harness.get_by_label("outline:greet");
@@ -816,8 +816,8 @@ fn outline_pane_lists_symbols_and_goes_to_them() {
     harness.snapshot("interaction_outline_pane");
     // A click goes to the symbol: line 7 (1-based) of the file.
     harness.get_by_label("outline:Point").click();
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     let _ = harness.get_by_label("Ln 7, Col 1");
     // The breadcrumbs follow: tsconfig.json > Title > Point.
     harness.snapshot("interaction_outline_breadcrumbs");
@@ -1555,37 +1555,37 @@ fn the_editor_closes_pairs_indents_on_enter_and_comments_lines() {
     std::fs::write(&file, "").unwrap();
     let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
     for _ in 0..3 {
-        harness.run();
+        harness.run_steps(3);
     }
     let value = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
     harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
-    harness.run();
+    harness.run_steps(3);
     // A bracket closes itself, the closer is typed over, quotes pair up.
     harness.event(egui::Event::Text("f".to_string()));
     harness.event(egui::Event::Text("(".to_string()));
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(value(&harness), "f()");
     harness.event(egui::Event::Text(")".to_string()));
     harness.event(egui::Event::Text(" ".to_string()));
     harness.event(egui::Event::Text("{".to_string()));
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(value(&harness), "f() {}");
     // Enter between the braces opens an indented line and puts } below.
     harness.key_press(Key::Enter);
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(value(&harness), "f() {\n    \n}");
     harness.event(egui::Event::Text("x".to_string()));
-    harness.run();
+    harness.run_steps(3);
     // ⌘/ comments the line, ⌘/ again takes it off.
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Slash);
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(value(&harness), "f() {\n    // x\n}");
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Slash);
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(value(&harness), "f() {\n    x\n}");
     // ⌥↑ moves the line up.
     harness.key_press_modifiers(Modifiers::ALT, Key::ArrowUp);
-    harness.run();
+    harness.run_steps(3);
     assert_eq!(value(&harness), "    x\nf() {\n}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1601,38 +1601,38 @@ fn the_find_widget_searches_with_options_and_replaces() {
     std::fs::write(&file, "Foo foo FOO food\n").unwrap();
     let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
     for _ in 0..3 {
-        harness.run();
+        harness.run_steps(3);
     }
     let value = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
     harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
-    harness.run();
+    harness.run_steps(3);
     harness.key_press_modifiers(Modifiers::COMMAND, Key::F);
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     harness.event(egui::Event::Text("foo".to_string()));
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     let _ = harness.get_by_label("Match Case (⌥⌘C)");
     harness.snapshot("interaction_find_widget");
     // Match Case narrows 4 matches to 2, and the toggle reports it.
     harness.get_by_label("Match Case (⌥⌘C)").click();
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     assert_eq!(harness.get_by_label("Match Case (⌥⌘C)").accesskit_node().toggled().map(|t| format!("{t:?}") == "True"), Some(true));
     // The replace row opens with the chevron; Replace All writes into the text.
     harness.get_by_label("Toggle Replace").click();
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     // ⌥⌘F puts the keyboard in the replace input.
     harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::F);
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     harness.event(egui::Event::Text("bar".to_string()));
-    harness.run();
+    harness.run_steps(3);
     harness.snapshot("interaction_find_replace_widget");
     harness.get_by_label("Replace All (⌘Enter)").click();
-    harness.run();
-    harness.run();
+    harness.run_steps(3);
+    harness.run_steps(3);
     // Case-sensitive "foo": the lower-case word and the start of "food".
     assert_eq!(value(&harness), "Foo bar FOO bard\n");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1917,5 +1917,59 @@ fn shift_f12_peeks_the_references_and_enter_goes_to_one() {
     harness.step();
     harness.step();
     assert!(harness.query_by_label("a.md, 2 references").is_none(), "Escape closes the peek");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cmd_d_adds_cursors_and_typing_edits_every_one() {
+    use egui_kittest::kittest::NodeT;
+    let dir = std::env::temp_dir().join("vscode-rust-multi-cursor");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.txt");
+    std::fs::write(&file, "foo bar foo\nfoo food\n").unwrap();
+    let mut harness = launch(Some(dir.clone()), vec![file.clone()], None);
+    for _ in 0..3 {
+        harness.run_steps(3);
+    }
+    let editor = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).accesskit_node().value().unwrap_or_default().to_string();
+    harness.get_by_role(egui::accesskit::Role::MultilineTextInput).click();
+    harness.run_steps(3);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowUp);
+    harness.run_steps(3);
+    // ⌘D: the word, then each next whole "foo" ("food" isn't one).
+    let top = |h: &Harness<'static>| h.get_by_role(egui::accesskit::Role::MultilineTextInput).rect().top();
+    let before = top(&harness);
+    for _ in 0..3 {
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+        harness.run_steps(3);
+    }
+    for t in ["x", "y", "z"] {
+        harness.event(egui::Event::Text(t.into()));
+        harness.run_steps(3);
+    }
+    assert_eq!(top(&harness), before, "typing at several cursors must not scroll");
+    for _ in 0..2 {
+        harness.key_press(egui::Key::Backspace);
+        harness.run_steps(3);
+    }
+    assert_eq!(editor(&harness), "x bar x\nx food\n");
+    harness.key_press(egui::Key::Backspace);
+    harness.run_steps(3);
+    assert_eq!(editor(&harness), " bar \n food\n");
+    // Escape leaves the primary cursor (the last one added) only.
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(3);
+    harness.event(egui::Event::Text("y".into()));
+    harness.run_steps(3);
+    assert_eq!(editor(&harness), " bar \ny food\n");
+    // ⌥⌘↓ adds a cursor on the line below, at the same column.
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowUp);
+    harness.run_steps(3);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::ALT, egui::Key::ArrowDown);
+    harness.run_steps(3);
+    harness.event(egui::Event::Text("-".into()));
+    harness.run_steps(3);
+    assert_eq!(editor(&harness), "- bar \n-y food\n");
     let _ = std::fs::remove_dir_all(&dir);
 }

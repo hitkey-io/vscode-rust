@@ -810,6 +810,16 @@ impl App {
                 ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::editor::view::EDITOR_ACTION), name));
                 return true;
             }
+            "editor.action.addSelectionToNextFindMatch" | "editor.action.selectHighlights" | "editor.action.insertCursorAbove" | "editor.action.insertCursorBelow" => {
+                let name = match id {
+                    "editor.action.addSelectionToNextFindMatch" => "add-next",
+                    "editor.action.selectHighlights" => "select-all",
+                    "editor.action.insertCursorAbove" => "cursor-above",
+                    _ => "cursor-below",
+                };
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::editor::view::EDITOR_ACTION), name));
+                return true;
+            }
             "editor.action.duplicateSelection" => {
                 ctx.data_mut(|d| d.insert_temp(egui::Id::new(crate::editor::view::EDITOR_ACTION), "duplicate"));
                 return true;
